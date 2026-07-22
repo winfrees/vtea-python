@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt5]"]
+dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt5]", "ruff"]
 
 [project.entry-points."napari.manifest"]
 vtea-napari = "vtea_napari:napari.yaml"
