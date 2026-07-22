@@ -31,8 +31,18 @@ That's the architecture already used for Cellpose, and the codebase shows its co
 
 Two packages:
 
-- **`vtea-core`** — pure Python library, no GUI dependency. Data model, I/O, segmentation, features, clustering/DR, gating, deep learning. Usable headless from scripts/Jupyter/CLI/HPC.
+- **`vtea-core`** — pure Python library, no GUI dependency. Data model, I/O, segmentation, features, clustering/DR, gating, classification. Usable headless from scripts/Jupyter/CLI/HPC.
 - **`vtea-napari`** — napari plugin (dock widgets + `npe2` manifest) that is a thin UI layer over `vtea-core`. napari is Qt-based (PyQt5/PySide2) and is the closest Python analog to the ImageJ/Fiji viewer VTEA plugs into today, with an active plugin ecosystem and native 3D volume rendering.
+
+### Why deep learning isn't a separate module
+
+`vtea.deeplearning` is its own 42-file Java package because it had to be: Cellpose ran over a Py4J subprocess bridge, and the native VAE/CNN stack went through JavaCPP's PyTorch bindings — neither fit the normal in-JVM call pattern the rest of VTEA used, so isolating them into one package was a plumbing necessity. In Python, `torch` and `cellpose` are ordinary imports with the same call mechanics as `scikit-image` or `scikit-learn`; the reason for the isolation is gone. So the port folds deep learning into the domains it actually belongs to instead of resurrecting the Java module boundary:
+
+- **Cellpose** → `vtea_core.segmentation.cellpose_segmentation()`, another way to go from intensity volume to label mask, next to `label_components`/`watershed_split`.
+- **DeepImageJ's generic model inference** → `vtea_core.segmentation.model_inference()`, via `bioimageio.core` (that's what DeepImageJ was used for in VTEA).
+- **The native VAE/CNN classification stack** → a new `vtea_core.classification` module, parallel to `clustering`/`reduction` — it's supervised/representation-learning classification of segmented objects, conceptually distinct from both (clustering is unsupervised grouping; classification here is trained per-object labeling), so it gets its own module rather than being force-fit into an existing one. A `class_map()` utility (same label-remap pattern `segmentation.filter_by_size()` already uses) maps predictions back onto the label image.
+
+What *does* stay isolated: the heavy dependencies (`torch`, `cellpose`, `bioimageio-core`) stay behind the `deeplearning` extra in `pyproject.toml`, so `pip install vtea-core` doesn't force a multi-GB PyTorch install. That's a packaging concern, independent of where the code lives.
 
 ### Dependency mapping
 
@@ -49,9 +59,9 @@ Two packages:
 | Swing (`MicroExplorer`, `ProtocolManagerMulti`, gate manager, morphology dialogs, plot windows) | `napari` dock widgets, `magicgui`, raw `qtpy` (PyQt5/PySide2) | See "Highest-risk area" below re: the protocol builder |
 | H2 (in-memory JDBC) | `DuckDB` (embedded, columnar, SQL, native Arrow/pandas interop) | Backs the `MEASUREMENTS`/`OBJECTS` tables; also enables on-disk persistence if wanted later |
 | Renjin/R (color palette only) | `matplotlib`/`seaborn` colormaps | Drop the R dependency entirely — usage found is a single palette string |
-| JavaCPP PyTorch bindings (3D VAE/CNN) | native `torch`, optionally `MONAI` for ready-made 3D medical-imaging architectures | Removes an entire binding layer; direct access to `torch.compile`, mixed precision, model zoo |
-| Py4J bridge + `python/cellpose_server.py` subprocess | in-process `cellpose` import | Deletes `CellposeInterface`, the subprocess/socket plumbing, and the bridge script entirely |
-| "DeepImageJ" generic model inference | `bioimageio.core` (the actual current successor to DeepImageJ, same BioImage Model Zoo spec) | |
+| JavaCPP PyTorch bindings (3D VAE/CNN) | native `torch`, in `vtea_core.classification` | Removes an entire binding layer; direct access to `torch.compile`, mixed precision, model zoo. Lands in `classification`, not a separate `deeplearning` module — see "Why deep learning isn't a separate module" above |
+| Py4J bridge + `python/cellpose_server.py` subprocess | in-process `cellpose` import, in `vtea_core.segmentation` | Deletes `CellposeInterface`, the subprocess/socket plumbing, and the bridge script entirely |
+| "DeepImageJ" generic model inference | `bioimageio.core`, in `vtea_core.segmentation` | The actual current successor to DeepImageJ, same BioImage Model Zoo spec |
 | JNI stub (`HelloJNI`, unused) | — | Drop, not functionally wired in today |
 
 ## Highest-risk area: the protocol builder
@@ -70,7 +80,7 @@ Recommend confirming with actual VTEA users which they rely on before committing
 | **0. Foundations & parity harness** | `vtea-core`/`vtea-napari` package skeletons, CI, dependency choices locked in. Build a golden-dataset regression harness: run today's Java pipeline against the two sample TIFFs (already in-repo) and any other representative datasets, capture segmentation masks, feature tables, and cluster/DR outputs as fixtures for every later phase to diff against. | 2–3 weeks |
 | **1. Core data model & I/O** | `VolumeDataset` (NumPy in-memory + Dask/Zarr chunked) replacing `vtea.dataset`+`vtea.partition`+`vtea.io.zarr`; object model as labeled arrays + DuckDB/pandas measurement tables replacing `vteaobjects.MicroObject`+H2; readers via `bioio`/`tifffile`/`ome-zarr-py`. | 3–4 weeks |
 | **2. Algorithm core** (largest phase) | Segmentation (~15 methods), feature/measurement extraction (`regionprops_table`-based), clustering (KMeans/GMM/hierarchical via sklearn; X-Means/G-Means/annealing ported directly with their BIC/AIC logic), DR (PCA/t-SNE/Isomap/Laplacian Eigenmap), gating, spatial stats, image preprocessing. | 6–10 weeks |
-| **3. Deep learning consolidation** | Native PyTorch (optionally MONAI) replacing the JavaCPP VAE/CNN stack; in-process `cellpose` replacing the Py4J bridge; `bioimageio.core` replacing DeepImageJ integration. | 3–5 weeks |
+| **3. Deep learning consolidation** | Not a separate `deeplearning` module (see "Why deep learning isn't a separate module") — lands in the domains it belongs to: `cellpose_segmentation()`/`model_inference()` (`bioimageio.core`) in `vtea_core.segmentation`; a new `vtea_core.classification` module (native PyTorch) for the VAE/CNN classification work, replacing the JavaCPP stack. | 3–5 weeks |
 | **4. napari plugin (GUI)** | Dock widgets recreating `MicroExplorer` (plots via matplotlib/vispy), gate manager (`PolygonSelector`/`LassoSelector` or vispy-based interactive gating), pipeline builder per the scope decision above, LUTs (largely free via napari's built-in colormaps), heatmap/violin plot widgets. | 6–10 weeks, pending Option A/B decision |
 | **5. Parity validation & cutover** | Run the Phase 0 golden-dataset suite end-to-end: segmentation IoU, feature-table numeric diffs, cluster-assignment ARI, against Java outputs. Beta with real users. Docs + workflow-XML migration converter. | 2–4 weeks |
 | **6. Decommission Java** | Archive/tag the Java codebase, update the Fiji update site listing to point at the new pip/conda package and napari plugin index. | 1 week |
