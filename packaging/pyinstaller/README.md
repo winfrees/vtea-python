@@ -49,3 +49,24 @@ OpenGL-context warnings in a headless/offscreen environment (no real GPU)
 are expected and not a packaging bug - confirmed by comparing against an
 unpackaged `pip install`ed run in the same environment, which shows the
 identical warnings.
+
+### Known limitation: Windows CI has no headless OpenGL
+
+`release.yml`'s smoke test runs each built binary under
+`QT_QPA_PLATFORM=offscreen` and checks its output for a crash. On the
+Linux runner this works cleanly - Mesa's llvmpipe backs `offscreen` mode
+with real (if slow) software OpenGL. GitHub's `windows-latest` runners
+have no such software GL implementation, so a packaged app that reaches
+vispy's canvas setup fails there with
+`OpenGL.error.GLError(err=1282, description=b'invalid operation', ...)`
+from `glGetIntegerv(GL_MAX_TEXTURE_SIZE)` - even though the exact same
+`.exe` launches fine on a real desktop with an actual GPU/display. This
+was confirmed by pulling the Windows CI job's traceback: the app had
+already created the napari main window and vispy canvas (proving the
+plugin/DLL bundling itself was fine) before failing on that one GL call.
+
+The smoke-test step recognizes this specific failure signature and treats
+it as a passing (but `::warning::`-flagged) result rather than failing the
+build - it only hard-fails on tracebacks that don't match this known
+signature, so a genuine Windows packaging regression still blocks the
+release.
