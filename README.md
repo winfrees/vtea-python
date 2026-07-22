@@ -27,16 +27,20 @@ packages/vtea-napari/  napari plugin GUI
 
 ## Status
 
-**Phase 1 — core data model & I/O.** Phase 0 (package skeletons, CI, parity
-harness scaffolding) is done. `vtea_core.data` now has a working
-`VolumeDataset` abstraction (`InMemoryVolumeDataset` / `ChunkedVolumeDataset`,
-canonical (C, Z, Y, X) axis order) and label-mask object helpers;
-`vtea_core.io` reads/writes TIFF (via tifffile, including ImageJ hyperstacks)
-and Zarr (via Dask); `vtea_core.measurements.MeasurementStore` is a DuckDB-
-backed table store replacing the Java H2 database. Segmentation, clustering,
-and reduction algorithms are still unimplemented (Phase 2). See
-`docs/PORT_PLAN.md` for the phase breakdown and current open decisions
-(notably, the protocol-builder UI scope call ahead of Phase 4).
+**Phase 2 — algorithm core.** Phases 0 (package skeletons, CI, parity
+harness scaffolding) and 1 (`VolumeDataset`, TIFF/Zarr I/O, `MeasurementStore`)
+are done. Phase 2 has landed segmentation (threshold → connected-component
+label → optional watershed split → size filter), regionprops-based
+measurement extraction, clustering (KMeans/GMM/hierarchical + BIC-based
+automatic-k), dimensionality reduction (PCA/Isomap/Laplacian
+Eigenmap/t-SNE), polygon/rectangle gating, and basic image preprocessing
+(Gaussian blur, median filter, contrast, background subtraction) - each
+consolidating several near-duplicate Java classes into one function; see
+`packages/vtea-core/README.md` for the specific mappings. Still open in
+Phase 2: spatial statistics and linear unmixing (lower priority, see
+`vtea-core`'s README for why). Deep learning (Cellpose/PyTorch/bioimageio)
+is Phase 3. See `docs/PORT_PLAN.md` for the phase breakdown and current open
+decisions (notably, the protocol-builder UI scope call ahead of Phase 4).
 
 ## Development
 
