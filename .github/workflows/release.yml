@@ -1,0 +1,101 @@
+name: Build standalone runtime
+
+# Builds the PyInstaller standalone bundle (see packaging/pyinstaller/) for
+# Linux and Windows, verifies each one actually launches (not just that
+# PyInstaller exits 0), and attaches the results to a GitHub Release when
+# triggered by a version tag. workflow_dispatch lets this run on-demand
+# without cutting a release, e.g. to test a packaging change.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # needed to attach build artifacts to a GitHub Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: vtea-napari-linux
+            binary: vtea-napari
+          - os: windows-latest
+            asset_name: vtea-napari-windows
+            binary: vtea-napari.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install vtea-core and vtea-napari (standalone extra)
+        run: |
+          pip install -e "packages/vtea-core"
+          pip install -e "packages/vtea-napari[standalone]"
+
+      - name: Build
+        shell: bash
+        run: scripts/build_standalone.sh dist
+
+      - name: Smoke test - the binary launches without error
+        shell: python
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # Plain "timeout <binary>" isn't reliably available on the
+          # Windows leg of this matrix, so use Python's own subprocess
+          # timeout instead - identical behavior on every runner OS.
+          import subprocess
+          import sys
+
+          def as_text(value):
+              # TimeoutExpired.stdout/.stderr are always bytes, even with
+              # text=True on the original run() call - only the
+              # non-timeout CompletedProcess path honors text=True.
+              if value is None:
+                  return ""
+              return value.decode(errors="replace") if isinstance(value, bytes) else value
+
+          binary = "dist/vtea-napari/${{ matrix.binary }}"
+          try:
+              result = subprocess.run(
+                  [binary], capture_output=True, text=True, timeout=15
+              )
+              output = as_text(result.stdout) + as_text(result.stderr)
+          except subprocess.TimeoutExpired as exc:
+              # Timing out is expected: a working GUI app blocks in its
+              # event loop until closed. Capture what it printed before
+              # the timeout killed it.
+              output = as_text(exc.stdout) + as_text(exc.stderr)
+
+          print(output)
+          lowered = output.lower()
+          if "traceback" in lowered or "failed to execute script" in lowered:
+              print("::error::Standalone build failed to launch cleanly")
+              sys.exit(1)
+
+      - name: Zip the distributable
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "../${{ matrix.asset_name }}.zip" vtea-napari
+          else
+            zip -r "../${{ matrix.asset_name }}.zip" vtea-napari
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}.zip
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset_name }}.zip

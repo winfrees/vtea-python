@@ -21,6 +21,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt5]", "ruff"]
+standalone = ["napari[pyqt5]", "pyinstaller>=6.0"]
+
+[project.scripts]
+vtea-napari = "vtea_napari.app:main"
 
 [project.entry-points."napari.manifest"]
 vtea-napari = "vtea_napari:napari.yaml"

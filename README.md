@@ -23,6 +23,7 @@ docs/PORT_PLAN.md      Full porting plan and roadmap
 tests/golden/          Golden-dataset parity fixtures (Java vs. Python outputs)
 packages/vtea-core/    Headless analysis library
 packages/vtea-napari/  napari plugin GUI
+packaging/pyinstaller/ Standalone runtime build (see "Standalone runtime" below)
 ```
 
 ## Status
@@ -59,6 +60,20 @@ pip install -e "packages/vtea-napari[dev]"
 
 Run tests with `pytest` from within each package directory, or see
 `.github/workflows/ci.yml` for the full matrix.
+
+## Standalone runtime
+
+For users who don't want to install Python: `.github/workflows/release.yml`
+builds a standalone `vtea-napari` bundle (PyInstaller, Linux + Windows) on
+every `vN.N.N` tag and attaches the results to that
+[GitHub Release](../../releases) - not committed into this repo. A ~550 MB
+binary bundle doesn't belong in git history (every future clone would pay
+for it permanently); Releases are the standard place for built artifacts.
+The deep-learning extra (Cellpose, PyTorch) isn't included in the
+standalone build to keep its size/build time reasonable - install normally
+via pip for that.
+
+To build one locally: see [`packaging/pyinstaller/README.md`](packaging/pyinstaller/README.md).
 
 ## License
 
