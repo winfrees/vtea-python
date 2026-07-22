@@ -23,6 +23,26 @@ jobs:
       - name: Test
         run: pytest packages/vtea-core -v
 
+  test-deeplearning:
+    # Separate job (not folded into the test-core matrix) since it needs
+    # torch/cellpose, which test-core deliberately doesn't install - most
+    # of vtea-core works without them (see vtea_core.classification and
+    # vtea_core.segmentation.deep's docstrings on why).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install torch (CPU-only, to keep this job's disk/time footprint down)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install vtea-core with the deeplearning extra
+        run: pip install -e "packages/vtea-core[dev,deeplearning]"
+      - name: Lint
+        run: ruff check packages/vtea-core/src
+      - name: Test
+        run: pytest packages/vtea-core -v
+
   test-golden-harness:
     runs-on: ubuntu-latest
     steps:

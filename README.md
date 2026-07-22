@@ -13,7 +13,7 @@ This is a monorepo with two independently installable packages:
 
 - [`packages/vtea-core`](packages/vtea-core) — headless core analysis
   library (data model, I/O, segmentation, measurements, clustering,
-  dimensionality reduction, gating, deep learning). No GUI dependency;
+  dimensionality reduction, gating, classification). No GUI dependency;
   usable from scripts, Jupyter, a CLI, or HPC batch jobs.
 - [`packages/vtea-napari`](packages/vtea-napari) — [napari](https://napari.org)
   plugin providing the interactive GUI, as a thin layer over `vtea-core`.
@@ -27,20 +27,21 @@ packages/vtea-napari/  napari plugin GUI
 
 ## Status
 
-**Phase 2 — algorithm core.** Phases 0 (package skeletons, CI, parity
-harness scaffolding) and 1 (`VolumeDataset`, TIFF/Zarr I/O, `MeasurementStore`)
-are done. Phase 2 has landed segmentation (threshold → connected-component
-label → optional watershed split → size filter), regionprops-based
-measurement extraction, clustering (KMeans/GMM/hierarchical + BIC-based
-automatic-k), dimensionality reduction (PCA/Isomap/Laplacian
-Eigenmap/t-SNE), polygon/rectangle gating, and basic image preprocessing
-(Gaussian blur, median filter, contrast, background subtraction) - each
-consolidating several near-duplicate Java classes into one function; see
-`packages/vtea-core/README.md` for the specific mappings. Still open in
-Phase 2: spatial statistics and linear unmixing (lower priority, see
-`vtea-core`'s README for why). Deep learning (Cellpose/PyTorch/bioimageio)
-is Phase 3. See `docs/PORT_PLAN.md` for the phase breakdown and current open
-decisions (notably, the protocol-builder UI scope call ahead of Phase 4).
+**Phase 3 — deep learning consolidation.** Phases 0-2 (package skeletons/CI,
+`VolumeDataset`/TIFF/Zarr I/O, and the algorithm core - segmentation,
+measurements, clustering, reduction, gates, image preprocessing) are done.
+Phase 3 does *not* introduce a separate `deeplearning` module - see
+`docs/PORT_PLAN.md`'s "Why deep learning isn't a separate module". Instead:
+`cellpose_segmentation` landed in `vtea_core.segmentation`, and a new
+`vtea_core.classification` module (parallel to `clustering`/`reduction`)
+holds `class_map` plus a small torch 3D CNN (`train_classifier`/`predict`)
+for supervised object classification. Both `torch` and `cellpose` stay
+behind the `deeplearning` extra, and the rest of `vtea-core` works without
+it. Still open in Phase 3: `bioimageio.core`-based generic model inference
+(the DeepImageJ replacement). See `packages/vtea-core/README.md` for the
+full module-by-module status and `docs/PORT_PLAN.md` for the phase
+breakdown and current open decisions (notably, the protocol-builder UI
+scope call ahead of Phase 4).
 
 ## Development
 
