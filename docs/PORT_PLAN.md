@@ -64,14 +64,15 @@ What *does* stay isolated: the heavy dependencies (`torch`, `cellpose`, `bioimag
 | "DeepImageJ" generic model inference | `bioimageio.core`, in `vtea_core.segmentation` | The actual current successor to DeepImageJ, same BioImage Model Zoo spec |
 | JNI stub (`HelloJNI`, unused) | — | Drop, not functionally wired in today |
 
-## Highest-risk area: the protocol builder
+## Protocol builder: Option A (decided)
 
-`vtea.protocol` is 63 files / ~15.5K LOC of bespoke drag-and-drop pipeline-building Swing UI — the single largest, hardest-to-mechanically-port piece in the codebase, and it doesn't map cleanly onto any existing Python widget toolkit. Before Phase 4 starts, make an explicit scope call rather than defaulting to a pixel-for-pixel Swing clone:
+`vtea.protocol` is 63 files / ~15.5K LOC of pipeline-building Swing UI. Originally flagged as the highest-risk area pending a scope call between a full visual clone (Option A) and a lighter step-list UI (Option B) — **decided: Option A**, a fully functional GUI in napari.
 
-- **Option A — full visual clone:** custom Qt node/block editor replicating today's drag-and-drop pipeline builder. Highest fidelity, highest UI cost.
-- **Option B — scriptable pipeline + light step-list UI (recommended default):** the pipeline becomes a plain Python object (ordered list of steps, each backed by the entry-point registry), scriptable directly from Jupyter/CLI, with a simpler linear step-list/parameter-form UI in napari rather than a full drag-and-drop canvas. Saved Java workflow XML gets an import converter into this format so existing user pipelines aren't stranded.
+Scoping this against the actual `ProtocolManagerMulti`/`blockstepgui` source corrected an earlier assumption: it is **not** a free-form node-graph editor. `grep` for `TransferHandler`/`DragSource`/`DropTarget`/drag-gesture code across `vtea.protocol` turns up nothing — the layout is a plain `FlowLayout`. There's no wire-based connection UI and no drag-to-reorder; the protocol is an ordered, numbered stack of step cards (process name, parameter-summary comment, thumbnail preview, Edit/Delete buttons) built by adding steps from a category menu (`ExplorationStepBlockGUI`/`FeatureStepBlockGUI`/`MeasurementStepBlockGUI`/`MorphologyStepBlockGUI`/`ObjectStepBlockGUI`/`ProcessStepBlockGUI`), executed top-to-bottom. That's a materially smaller/more tractable Option A than a general node editor would have been, and shapes the Python design:
 
-Recommend confirming with actual VTEA users which they rely on before committing engineering weeks here — this is the one area where scope, not technique, drives the estimate.
+- **`vtea_core.workflow`** (headless, no Qt): `Step`/`Pipeline` — the same engine whether driven from the GUI or a script/notebook, matching `vtea-core`'s headless-usable design goal. A step registry maps category → available functions, drawing on the real `vtea_core.segmentation`/`measurements`/`clustering`/`reduction`/`gates`/`imageprocessing`/`classification` functions built in Phases 2-3.
+- **`vtea-napari`**: a dock widget rendering the step stack as cards (matching the Java layout's information, not its Swing implementation), an "Add Step" category menu, and an Edit dialog. The Edit dialog is `magicgui`-generated directly from each step function's type-hinted signature, rather than hand-built per-algorithm forms (`MicroBlockSetup`'s Java equivalent) — another case of a modern library absorbing what used to be bespoke code.
+- Saved Java workflow XML still needs an import converter (unchanged from the original plan) so existing user pipelines aren't stranded — tracked as a follow-up, not blocking the GUI itself.
 
 ## Phased roadmap
 
@@ -81,11 +82,11 @@ Recommend confirming with actual VTEA users which they rely on before committing
 | **1. Core data model & I/O** | `VolumeDataset` (NumPy in-memory + Dask/Zarr chunked) replacing `vtea.dataset`+`vtea.partition`+`vtea.io.zarr`; object model as labeled arrays + DuckDB/pandas measurement tables replacing `vteaobjects.MicroObject`+H2; readers via `bioio`/`tifffile`/`ome-zarr-py`. | 3–4 weeks |
 | **2. Algorithm core** (largest phase) | Segmentation (~15 methods), feature/measurement extraction (`regionprops_table`-based), clustering (KMeans/GMM/hierarchical via sklearn; X-Means/G-Means/annealing ported directly with their BIC/AIC logic), DR (PCA/t-SNE/Isomap/Laplacian Eigenmap), gating, spatial stats, image preprocessing. | 6–10 weeks |
 | **3. Deep learning consolidation** | Not a separate `deeplearning` module (see "Why deep learning isn't a separate module") — lands in the domains it belongs to: `cellpose_segmentation()`/`model_inference()` (`bioimageio.core`) in `vtea_core.segmentation`; a new `vtea_core.classification` module (native PyTorch) for the VAE/CNN classification work, replacing the JavaCPP stack. | 3–5 weeks |
-| **4. napari plugin (GUI)** | Dock widgets recreating `MicroExplorer` (plots via matplotlib/vispy), gate manager (`PolygonSelector`/`LassoSelector` or vispy-based interactive gating), pipeline builder per the scope decision above, LUTs (largely free via napari's built-in colormaps), heatmap/violin plot widgets. | 6–10 weeks, pending Option A/B decision |
+| **4. napari plugin (GUI)** | `vtea_core.workflow` (headless Step/Pipeline engine + step registry); the protocol builder as a step-stack dock widget with `magicgui`-generated Edit dialogs (Option A, see above - scoped smaller than originally estimated once the actual Java UI turned out to be a step stack, not a node graph); dock widgets recreating `MicroExplorer` (plots via matplotlib/vispy); gate manager (`PolygonSelector`/`LassoSelector` or vispy-based interactive gating); LUTs (largely free via napari's built-in colormaps); heatmap/violin plot widgets. | 5–8 weeks |
 | **5. Parity validation & cutover** | Run the Phase 0 golden-dataset suite end-to-end: segmentation IoU, feature-table numeric diffs, cluster-assignment ARI, against Java outputs. Beta with real users. Docs + workflow-XML migration converter. | 2–4 weeks |
 | **6. Decommission Java** | Archive/tag the Java codebase, update the Fiji update site listing to point at the new pip/conda package and napari plugin index. | 1 week |
 
-**Total: roughly 23–37 engineer-weeks (~6–9 months at one senior engineer, less with parallelism across phases 2–4 once Phase 1 lands).**
+**Total: roughly 22–35 engineer-weeks (~5–8 months at one senior engineer, less with parallelism across phases 2–4 once Phase 1 lands).**
 
 ## Other risks / open questions
 
@@ -95,6 +96,7 @@ Recommend confirming with actual VTEA users which they rely on before committing
 - **Format coverage** — confirm `bioio`'s JVM-backed readers cover every vendor format current users rely on before dropping Bio-Formats from the primary code path.
 - **User pipeline continuity** — saved `.xml` workflow/protocol files from the Java app should have a conversion path into the new format (called out in Phase 5) so existing collaborators aren't blocked mid-migration.
 
-## Suggested next step
+## Status
 
-Confirm the Phase 4 protocol-builder scope (Option A vs B) with VTEA's actual users, since it's the single largest swing factor in the GUI estimate, then start Phase 0 (parity harness) — it's a prerequisite for validating every later phase and has no dependency on the scope decision.
+Phases 0–3 are done (see `packages/vtea-core/README.md` for the current
+module-by-module status). Phase 4 (napari GUI, Option A) is in progress.
