@@ -23,6 +23,23 @@ jobs:
       - name: Test
         run: pytest packages/vtea-core -v
 
+  test-golden-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install vtea-core
+        run: pip install -e "packages/vtea-core[dev]"
+      - name: Lint
+        run: ruff check tests/golden
+      - name: Test
+        # Parity tests skip themselves until tests/golden/fixtures/ is
+        # populated (see tests/golden/README.md); this still runs the
+        # comparison-utility unit tests on every push.
+        run: pytest tests/golden -v
+
   test-napari:
     runs-on: ubuntu-latest
     steps:
