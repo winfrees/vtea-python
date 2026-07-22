@@ -27,10 +27,16 @@ packages/vtea-napari/  napari plugin GUI
 
 ## Status
 
-**Phase 0 — foundations.** Package skeletons and CI are in place. No
-analysis functionality has been ported yet. See `docs/PORT_PLAN.md` for the
-phase breakdown and current open decisions (notably, the protocol-builder UI
-scope call ahead of Phase 4).
+**Phase 1 — core data model & I/O.** Phase 0 (package skeletons, CI, parity
+harness scaffolding) is done. `vtea_core.data` now has a working
+`VolumeDataset` abstraction (`InMemoryVolumeDataset` / `ChunkedVolumeDataset`,
+canonical (C, Z, Y, X) axis order) and label-mask object helpers;
+`vtea_core.io` reads/writes TIFF (via tifffile, including ImageJ hyperstacks)
+and Zarr (via Dask); `vtea_core.measurements.MeasurementStore` is a DuckDB-
+backed table store replacing the Java H2 database. Segmentation, clustering,
+and reduction algorithms are still unimplemented (Phase 2). See
+`docs/PORT_PLAN.md` for the phase breakdown and current open decisions
+(notably, the protocol-builder UI scope call ahead of Phase 4).
 
 ## Development
 

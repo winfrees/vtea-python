@@ -21,6 +21,7 @@ dependencies = [
     "pandas>=2.0",
     "duckdb>=0.10",
     "tifffile>=2024.1",
+    "imagecodecs>=2024.1",
 ]
 
 [project.optional-dependencies]
