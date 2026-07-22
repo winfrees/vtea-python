@@ -1,8 +1,14 @@
 name: vtea-napari
 display_name: VTEA
-# npe2 plugin manifest. No contributions registered yet (Phase 0 skeleton) —
-# dock widgets recreating MicroExplorer, the gate manager, and the
-# pipeline/protocol builder land in Phase 4. See /docs/PORT_PLAN.md.
+# npe2 plugin manifest.
+# Protocol Builder (Phase 4, Option A - see /docs/PORT_PLAN.md): the
+# step-stack pipeline builder. Still open for Phase 4: a MicroExplorer-
+# equivalent plot/table view, an interactive gate manager, and LUT controls.
 contributions:
-  commands: []
-  widgets: []
+  commands:
+    - id: vtea-napari.protocol_builder
+      python_name: vtea_napari.widgets:ProtocolBuilderWidget
+      title: Open Protocol Builder
+  widgets:
+    - command: vtea-napari.protocol_builder
+      display_name: Protocol Builder

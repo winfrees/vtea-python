@@ -1,7 +1,12 @@
 """napari dock widgets.
 
-Phase 4 targets: a MicroExplorer-equivalent plot/table view, an interactive
-gate manager, LUT/colormap controls (largely covered by napari's built-ins),
-and the pipeline/protocol builder (scope decision pending — see the
-"Highest-risk area" section of /docs/PORT_PLAN.md).
+Implemented: the protocol builder (Option A - see PORT_PLAN.md's "Protocol
+builder: Option A" section). Still open for Phase 4: a MicroExplorer-
+equivalent plot/table view, an interactive gate manager, and LUT/colormap
+controls (largely covered by napari's built-ins already).
 """
+
+from vtea_napari.widgets.protocol_builder import EditStepDialog, ProtocolBuilderWidget
+from vtea_napari.widgets.step_card import StepCardWidget
+
+__all__ = ["ProtocolBuilderWidget", "EditStepDialog", "StepCardWidget"]

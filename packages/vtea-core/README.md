@@ -13,7 +13,7 @@ full porting plan, architecture mapping, and phased roadmap.
 
 ## Status
 
-Phase 3 (deep learning consolidation) in progress. Implemented and tested:
+Phase 4 (napari GUI) in progress. Phases 0-3 are done. Implemented and tested:
 
 - **data**: `VolumeDataset`/`InMemoryVolumeDataset`/`ChunkedVolumeDataset`,
   `object_ids`/`object_pixel_indices`/`object_intensity_values`
@@ -29,9 +29,13 @@ Phase 3 (deep learning consolidation) in progress. Implemented and tested:
 - **gates**: `polygon_gate`, `rectangle_gate`
 - **imageprocessing**: `gaussian_blur`, `median_filter`, `enhance_contrast`,
   `subtract_background`
-- **classification** (new): `class_map` (no extra dependencies);
+- **classification**: `class_map` (no extra dependencies);
   `Cell3DClassifier`/`train_classifier`/`predict` (require the
   `deeplearning` extra - torch)
+- **workflow** (new): `Step`/`Pipeline` - the headless engine behind
+  `vtea-napari`'s protocol builder widget, and `STEP_REGISTRY`/
+  `available_steps`/`get_step_function`, the category -> function registry
+  both the GUI and scripts draw on
 
 There is no separate `deeplearning` module - see PORT_PLAN.md's "Why deep
 learning isn't a separate module". `cellpose_segmentation` lives in
@@ -65,6 +69,8 @@ src/vtea_core/
   imageprocessing/  Gaussian blur, median filter, contrast, background subtraction
   classification/   class_map (label-remap) + a small torch 3D CNN
                     (train_classifier/predict) for supervised object classification
+  workflow/         Step/Pipeline engine + the category -> function step registry
+                    driving vtea-napari's protocol builder widget
 ```
 
 Each subpackage's built-in implementations register into an

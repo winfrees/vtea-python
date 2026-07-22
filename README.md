@@ -27,21 +27,25 @@ packages/vtea-napari/  napari plugin GUI
 
 ## Status
 
-**Phase 3 — deep learning consolidation.** Phases 0-2 (package skeletons/CI,
-`VolumeDataset`/TIFF/Zarr I/O, and the algorithm core - segmentation,
-measurements, clustering, reduction, gates, image preprocessing) are done.
-Phase 3 does *not* introduce a separate `deeplearning` module - see
-`docs/PORT_PLAN.md`'s "Why deep learning isn't a separate module". Instead:
-`cellpose_segmentation` landed in `vtea_core.segmentation`, and a new
-`vtea_core.classification` module (parallel to `clustering`/`reduction`)
-holds `class_map` plus a small torch 3D CNN (`train_classifier`/`predict`)
-for supervised object classification. Both `torch` and `cellpose` stay
-behind the `deeplearning` extra, and the rest of `vtea-core` works without
-it. Still open in Phase 3: `bioimageio.core`-based generic model inference
-(the DeepImageJ replacement). See `packages/vtea-core/README.md` for the
-full module-by-module status and `docs/PORT_PLAN.md` for the phase
-breakdown and current open decisions (notably, the protocol-builder UI
-scope call ahead of Phase 4).
+**Phase 4 — napari GUI.** Phases 0-3 (package skeletons/CI; `VolumeDataset`/
+TIFF/Zarr I/O; the algorithm core - segmentation, measurements, clustering,
+reduction, gates, image preprocessing; and Cellpose segmentation + a
+`classification` module) are done - see `packages/vtea-core/README.md` for
+the full module-by-module status.
+
+The protocol-builder scope call is decided: **Option A**, a fully
+functional GUI. Scoping it against the actual Java source corrected an
+earlier assumption - `vtea.protocol` isn't a free-form node-graph editor,
+it's an ordered stack of step cards built from a category menu (no
+drag-drop/wire code exists in the Java source at all), which made Option A
+smaller than originally estimated. Landed so far: `vtea_core.workflow`
+(`Step`/`Pipeline`, the headless engine, shared between the GUI and
+scripts/notebooks) and `vtea-napari`'s `ProtocolBuilderWidget` - registered
+as a real napari plugin dock widget, verified by actually loading it
+through `napari.Viewer` in tests, not just constructing it standalone. See
+`docs/PORT_PLAN.md`'s "Protocol builder: Option A" section and
+`packages/vtea-napari/README.md` for what's built and what's still open
+(a `MicroExplorer`-equivalent plot view, gate manager, LUT controls).
 
 ## Development
 
