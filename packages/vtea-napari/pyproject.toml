@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vtea-napari"
+version = "0.1.0.dev0"
+description = "napari plugin GUI for VTEA (Volumetric Tissue Exploration and Analysis) - 3D tissue cytometry."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-2.0-only" }
+authors = [{ name = "Indiana Center for Biological Microscopy" }]
+
+dependencies = [
+    "napari>=0.5",
+    "magicgui>=0.9",
+    "qtpy>=2.4",
+    "matplotlib>=3.8",
+    "vtea-core",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt5]"]
+
+[project.entry-points."napari.manifest"]
+vtea-napari = "vtea_napari:napari.yaml"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vtea_napari"]
+# Ship the npe2 manifest alongside the package code.
+artifacts = ["src/vtea_napari/napari.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

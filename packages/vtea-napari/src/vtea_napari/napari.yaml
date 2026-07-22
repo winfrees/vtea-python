@@ -1,0 +1,8 @@
+name: vtea-napari
+display_name: VTEA
+# npe2 plugin manifest. No contributions registered yet (Phase 0 skeleton) —
+# dock widgets recreating MicroExplorer, the gate manager, and the
+# pipeline/protocol builder land in Phase 4. See /docs/PORT_PLAN.md.
+contributions:
+  commands: []
+  widgets: []
