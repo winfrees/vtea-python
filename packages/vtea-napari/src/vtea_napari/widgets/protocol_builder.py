@@ -9,10 +9,16 @@ steps from a category menu - not a node-graph editor, see PORT_PLAN.md's
 + function pickers, edited via a ParameterForm dialog, and removed with a
 button on each card - the same operations the Java UI exposed, execution
 handled by the shared Pipeline engine either here or from a script/notebook.
+
+run_pipeline() also threads each step's last-run output back onto its card
+as a thumbnail (StepCardWidget.set_thumbnail) - the Java UI had per-step
+previews and this first pass initially didn't; skip it when there's no
+`napari_viewer` (headless/script use) rather than requiring one.
 """
 
 from __future__ import annotations
 
+import numpy as np
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
@@ -54,11 +60,17 @@ class EditStepDialog(QDialog):
 
 
 class ProtocolBuilderWidget(QWidget):
-    """The napari dock widget: a Pipeline plus the UI to build it."""
+    """The napari dock widget: a Pipeline plus the UI to build it.
+    `napari_viewer` is auto-injected by napari's plugin engine when opened
+    from the Plugins menu; pass None for standalone/script/test use (the
+    "Run pipeline" button is only shown when a viewer is available, since
+    it needs a layer to pull the initial volume from)."""
 
-    def __init__(self, pipeline: Pipeline | None = None, parent=None):
+    def __init__(self, pipeline: Pipeline | None = None, napari_viewer=None, parent=None):
         super().__init__(parent)
         self.pipeline = pipeline if pipeline is not None else Pipeline()
+        self.viewer = napari_viewer
+        self.last_context: dict = {}
 
         root = QVBoxLayout(self)
 
@@ -74,6 +86,10 @@ class ProtocolBuilderWidget(QWidget):
         add_row.addWidget(QLabel("Step:"))
         add_row.addWidget(self.function_combo)
         add_row.addWidget(add_button)
+        if self.viewer is not None:
+            run_button = QPushButton("Run pipeline")
+            run_button.clicked.connect(self._run_pipeline_from_active_layer)
+            add_row.addWidget(run_button)
         root.addLayout(add_row)
 
         self._steps_container = QWidget()
@@ -86,6 +102,21 @@ class ProtocolBuilderWidget(QWidget):
 
         self._refresh_function_choices(self.category_combo.currentText())
         self.refresh_steps()
+
+    def run_pipeline(self, context: dict) -> dict:
+        """Runs the pipeline against `context` (e.g. {"volume": array}),
+        keeps the result to drive step-card thumbnails, and returns it."""
+        self.last_context = self.pipeline.run(context)
+        self.refresh_steps()
+        return self.last_context
+
+    def _run_pipeline_from_active_layer(self) -> None:
+        if self.viewer is None:
+            return
+        layer = self.viewer.layers.selection.active
+        if layer is None:
+            return
+        self.run_pipeline({"volume": np.asarray(layer.data)})
 
     def _refresh_function_choices(self, category: str) -> None:
         self.function_combo.clear()
@@ -108,7 +139,8 @@ class ProtocolBuilderWidget(QWidget):
                 widget.deleteLater()
 
         for position, step in enumerate(self.pipeline, start=1):
-            card = StepCardWidget(position, step)
+            thumbnail = self.last_context.get(step.output_key)
+            card = StepCardWidget(position, step, thumbnail=thumbnail)
             card.edit_requested.connect(lambda s=step: self._edit_step(s))
             card.delete_requested.connect(lambda s=step: self._delete_step(s))
             self._steps_layout.insertWidget(self._steps_layout.count() - 1, card)

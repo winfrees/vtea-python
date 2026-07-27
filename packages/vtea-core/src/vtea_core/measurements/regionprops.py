@@ -49,14 +49,17 @@ def _region_stddev(region_mask: np.ndarray, region_intensity: np.ndarray) -> flo
 
 
 def extract_measurements(labels: np.ndarray, intensity: np.ndarray) -> pd.DataFrame:
-    """Per-object measurement table: object_id, count, mean, sum, stddev, min, max, threshold_mean.
+    """Per-object measurement table: object_id, centroid-0..N, count, mean, sum,
+    stddev, min, max, threshold_mean.
 
-    `labels` and `intensity` must be the same shape (any dimensionality).
+    `labels` and `intensity` must be the same shape (any dimensionality). Centroid
+    columns follow the array's own axis order (e.g. centroid-0/1/2 = Z/Y/X for a
+    3D label array) - used for plot axes and to locate objects for gallery crops.
     """
     if labels.shape != intensity.shape:
         raise ValueError(f"labels shape {labels.shape} != intensity shape {intensity.shape}")
 
-    properties = ["label", "area", "intensity_mean", "intensity_min", "intensity_max"]
+    properties = ["label", "centroid", "area", "intensity_mean", "intensity_min", "intensity_max"]
     extra_properties = [_region_sum, _region_stddev, threshold_mean]
 
     table = regionprops_table(

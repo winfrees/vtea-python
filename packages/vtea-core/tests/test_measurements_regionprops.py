@@ -57,6 +57,13 @@ class TestExtractMeasurements:
         table = extract_measurements(labels, intensity)
         assert "threshold_mean" in table.columns
 
+    def test_includes_centroid_columns(self):
+        labels, intensity = self.make_two_object_volume()
+        table = extract_measurements(labels, intensity).set_index("object_id")
+        # object 1 occupies rows/cols 0:2, 0:2 -> centroid (0.5, 0.5)
+        assert table.loc[1, "centroid-0"] == pytest.approx(0.5)
+        assert table.loc[1, "centroid-1"] == pytest.approx(0.5)
+
     def test_shape_mismatch_raises(self):
         labels = np.zeros((5, 5), dtype=np.int32)
         intensity = np.zeros((3, 3))

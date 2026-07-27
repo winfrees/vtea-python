@@ -28,25 +28,36 @@ packaging/pyinstaller/ Standalone runtime build (see "Standalone runtime" below)
 
 ## Status
 
-**Phase 4 — napari GUI.** Phases 0-3 (package skeletons/CI; `VolumeDataset`/
-TIFF/Zarr I/O; the algorithm core - segmentation, measurements, clustering,
-reduction, gates, image preprocessing; and Cellpose segmentation + a
-`classification` module) are done - see `packages/vtea-core/README.md` for
-the full module-by-module status.
+**Phases 0-4 done**, plus a standalone runtime (see below). Phases 0-3
+(package skeletons/CI; `VolumeDataset`/TIFF/Zarr I/O; the algorithm core -
+segmentation, measurements, clustering, reduction, gates, image
+preprocessing; and Cellpose segmentation + a `classification` module) - see
+`packages/vtea-core/README.md` for the full module-by-module status.
 
-The protocol-builder scope call is decided: **Option A**, a fully
-functional GUI. Scoping it against the actual Java source corrected an
-earlier assumption - `vtea.protocol` isn't a free-form node-graph editor,
-it's an ordered stack of step cards built from a category menu (no
-drag-drop/wire code exists in the Java source at all), which made Option A
-smaller than originally estimated. Landed so far: `vtea_core.workflow`
-(`Step`/`Pipeline`, the headless engine, shared between the GUI and
-scripts/notebooks) and `vtea-napari`'s `ProtocolBuilderWidget` - registered
-as a real napari plugin dock widget, verified by actually loading it
-through `napari.Viewer` in tests, not just constructing it standalone. See
-`docs/PORT_PLAN.md`'s "Protocol builder: Option A" section and
-`packages/vtea-napari/README.md` for what's built and what's still open
-(a `MicroExplorer`-equivalent plot view, gate manager, LUT controls).
+Phase 4 (napari GUI) landed two dock widgets:
+
+- **`ProtocolBuilderWidget`** - the protocol builder. The scope call there
+  was **Option A**, a fully functional GUI clone: scoping it against the
+  actual Java source corrected an earlier assumption - `vtea.protocol`
+  isn't a free-form node-graph editor, it's an ordered stack of step cards
+  built from a category menu (no drag-drop/wire code exists in the Java
+  source at all), which made Option A smaller than originally estimated.
+  Built on `vtea_core.workflow` (`Step`/`Pipeline`, the headless engine,
+  shared between the GUI and scripts/notebooks); `run_pipeline()` also
+  drives thumbnail previews on each step's card.
+- **`ExplorerWidget`** ("Object Explorer") - the `MicroExplorer` equivalent:
+  a scatter plot with click-to-draw polygon gating, a gate management
+  table, LUT/colormap point-coloring, and a per-object thumbnail gallery.
+  Backed by a new `vtea_core.gates.Gate`/`GateSet` model with real gate
+  hierarchy, something the Java original never actually had (see
+  `docs/PORT_PLAN.md`'s "Object Explorer" section for the full comparison,
+  including which Java gate-related classes turned out to be dead code).
+
+Both are registered as real napari plugin dock widgets, verified by
+actually loading them through `napari.Viewer` in tests, not just
+constructing them standalone. See `docs/PORT_PLAN.md`'s "Protocol builder:
+Option A" and "Object Explorer" sections, and `packages/vtea-napari/README.md`,
+for the full design writeups.
 
 ## Development
 

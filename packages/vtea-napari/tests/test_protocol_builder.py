@@ -190,3 +190,79 @@ class TestEndToEnd:
 
         assert result["mask"].sum() == 13  # 4 + 9 above-threshold pixels
         assert result["labels"].max() == 2
+
+
+class TestRunPipelineThumbnails:
+    def test_run_pipeline_attaches_thumbnails_to_cards(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+        from vtea_napari.widgets.step_card import StepCardWidget
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        step = widget.pipeline.add_step(
+            Step(
+                category="segmentation",
+                function_name="threshold_mask",
+                input_keys={"volume": "volume"},
+                output_key="mask",
+                params={"method": "fixed", "value": 50.0},
+            )
+        )
+        widget.refresh_steps()
+
+        volume = np.zeros((10, 10))
+        volume[1:3, 1:3] = 100.0
+        result = widget.run_pipeline({"volume": volume})
+
+        assert result["mask"].sum() == 4
+        cards = widget.findChildren(StepCardWidget)
+        assert len(cards) == 1
+        assert not cards[0].thumbnail_label.pixmap().isNull()
+        assert step.output_key in widget.last_context
+
+    def test_run_button_not_shown_without_a_viewer(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        buttons = [b.text() for b in widget.findChildren(QPushButton)]
+        assert "Run pipeline" not in buttons
+
+    def test_run_button_pulls_volume_from_active_layer(self, qtbot):
+        import napari
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = napari.Viewer(show=False)
+        qtbot.addWidget(viewer.window._qt_window)
+        try:
+            volume = np.zeros((10, 10))
+            volume[1:3, 1:3] = 100.0
+            # add_labels rather than add_image: this container's offscreen
+            # GL setup can't create an Image layer's vispy visual (same
+            # class of headless-OpenGL gap as release.yml's Windows smoke
+            # test - see packaging/pyinstaller/README.md), but the widget
+            # code under test only reads `layer.data`, which works
+            # identically regardless of layer type.
+            layer = viewer.add_labels(volume.astype("int32"), name="input")
+            viewer.layers.selection.active = layer
+
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.pipeline.add_step(
+                Step(
+                    category="segmentation",
+                    function_name="threshold_mask",
+                    input_keys={"volume": "volume"},
+                    output_key="mask",
+                    params={"method": "fixed", "value": 50.0},
+                )
+            )
+            widget.refresh_steps()
+
+            _click_button(qtbot, widget, "Run pipeline")
+
+            assert widget.last_context["mask"].sum() == 4
+        finally:
+            viewer.close()

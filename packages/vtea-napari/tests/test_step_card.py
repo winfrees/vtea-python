@@ -1,3 +1,5 @@
+import numpy as np
+import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QLabel, QPushButton
 
@@ -43,6 +45,49 @@ class TestStepCardWidget:
         qtbot.addWidget(card)
         with qtbot.waitSignal(card.delete_requested, timeout=1000):
             _click_button(qtbot, card, "Delete")
+
+
+class TestThumbnail:
+    def test_no_thumbnail_by_default(self, qtbot):
+        step = Step(category="segmentation", function_name="threshold_mask")
+        card = StepCardWidget(1, step)
+        qtbot.addWidget(card)
+        assert card.thumbnail_label.pixmap() is None or card.thumbnail_label.pixmap().isNull()
+
+    def test_2d_array_thumbnail_is_shown(self, qtbot):
+        step = Step(category="segmentation", function_name="threshold_mask")
+        card = StepCardWidget(1, step, thumbnail=np.zeros((10, 10)))
+        qtbot.addWidget(card)
+        assert not card.thumbnail_label.pixmap().isNull()
+
+    def test_boolean_mask_thumbnail_is_shown(self, qtbot):
+        step = Step(category="segmentation", function_name="threshold_mask")
+        mask = np.zeros((10, 10), dtype=bool)
+        mask[2:5, 2:5] = True
+        card = StepCardWidget(1, step, thumbnail=mask)
+        qtbot.addWidget(card)
+        assert not card.thumbnail_label.pixmap().isNull()
+
+    def test_3d_volume_thumbnail_is_shown(self, qtbot):
+        step = Step(category="segmentation", function_name="threshold_mask")
+        card = StepCardWidget(1, step, thumbnail=np.zeros((3, 10, 10)))
+        qtbot.addWidget(card)
+        assert not card.thumbnail_label.pixmap().isNull()
+
+    def test_non_array_output_shows_no_thumbnail(self, qtbot):
+        step = Step(category="measurements", function_name="extract_measurements")
+        card = StepCardWidget(1, step, thumbnail=pd.DataFrame({"a": [1, 2]}))
+        qtbot.addWidget(card)
+        assert card.thumbnail_label.pixmap() is None or card.thumbnail_label.pixmap().isNull()
+
+    def test_set_thumbnail_updates_an_existing_card(self, qtbot):
+        step = Step(category="segmentation", function_name="threshold_mask")
+        card = StepCardWidget(1, step)
+        qtbot.addWidget(card)
+        card.set_thumbnail(np.zeros((10, 10)))
+        assert not card.thumbnail_label.pixmap().isNull()
+        card.set_thumbnail(None)
+        assert card.thumbnail_label.pixmap() is None or card.thumbnail_label.pixmap().isNull()
 
 
 def _collect_label_texts(widget):

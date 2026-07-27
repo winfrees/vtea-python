@@ -13,7 +13,7 @@ full porting plan, architecture mapping, and phased roadmap.
 
 ## Status
 
-Phase 4 (napari GUI) in progress. Phases 0-3 are done. Implemented and tested:
+Phases 0-4 are done. Implemented and tested:
 
 - **data**: `VolumeDataset`/`InMemoryVolumeDataset`/`ChunkedVolumeDataset`,
   `object_ids`/`object_pixel_indices`/`object_intensity_values`
@@ -22,11 +22,15 @@ Phase 4 (napari GUI) in progress. Phases 0-3 are done. Implemented and tested:
   `filter_by_size`, `labels_from_points`, `import_labels`,
   `cellpose_segmentation`
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
-  (regionprops-based), `threshold_mean`
+  (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
+  max, threshold_mean), `threshold_mean`
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`, `auto_k_kmeans`
 - **reduction**: `pca`, `pca_explained_variance`, `isomap`,
   `laplacian_eigenmap`, `tsne`
-- **gates**: `polygon_gate`, `rectangle_gate`
+- **gates**: `polygon_gate`, `rectangle_gate` (boolean-array primitives);
+  `Gate`/`GateSet` (new) - named, stateful gates with real hierarchy
+  (a subgate's membership is intersected with its parent's), backing
+  `vtea-napari`'s Object Explorer widget
 - **imageprocessing**: `gaussian_blur`, `median_filter`, `enhance_contrast`,
   `subtract_background`
 - **classification**: `class_map` (no extra dependencies);
@@ -66,6 +70,8 @@ src/vtea_core/
   clustering/       KMeans, GMM, hierarchical, BIC-based automatic-k selection
   reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE
   gates/            Boolean gate math (polygon/rectangle point-membership tests)
+                    plus Gate/GateSet (named, hierarchical gates over a
+                    measurement DataFrame)
   imageprocessing/  Gaussian blur, median filter, contrast, background subtraction
   classification/   class_map (label-remap) + a small torch 3D CNN
                     (train_classifier/predict) for supervised object classification
