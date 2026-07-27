@@ -14,11 +14,11 @@ from vtea_napari.widgets.protocol_builder import EditStepDialog, ProtocolBuilder
 from vtea_napari.widgets.step_card import StepCardWidget
 
 __all__ = [
-    "ProtocolBuilderWidget",
     "EditStepDialog",
-    "StepCardWidget",
     "ExplorerWidget",
     "GalleryWidget",
     "GateTableWidget",
+    "ProtocolBuilderWidget",
     "ScatterPlotWidget",
+    "StepCardWidget",
 ]

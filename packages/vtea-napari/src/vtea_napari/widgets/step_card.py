@@ -15,7 +15,6 @@ from __future__ import annotations
 import numpy as np
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
-
 from vtea_core.workflow import Step
 
 from vtea_napari.widgets.thumbnail import array_to_pixmap, max_projection

@@ -7,4 +7,4 @@ combine gates with &, |, ~ directly instead of dedicated AND/OR/NOT classes.
 from vtea_core.gates.gate import Gate, GateSet
 from vtea_core.gates.polygon import polygon_gate, rectangle_gate
 
-__all__ = ["polygon_gate", "rectangle_gate", "Gate", "GateSet"]
+__all__ = ["Gate", "GateSet", "polygon_gate", "rectangle_gate"]

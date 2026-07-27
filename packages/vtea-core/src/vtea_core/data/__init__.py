@@ -10,10 +10,10 @@ from vtea_core.data.objects import object_ids, object_intensity_values, object_p
 from vtea_core.data.volume import ChunkedVolumeDataset, InMemoryVolumeDataset, VolumeDataset
 
 __all__ = [
-    "VolumeDataset",
-    "InMemoryVolumeDataset",
     "ChunkedVolumeDataset",
+    "InMemoryVolumeDataset",
+    "VolumeDataset",
     "object_ids",
-    "object_pixel_indices",
     "object_intensity_values",
+    "object_pixel_indices",
 ]

@@ -20,11 +20,11 @@ from vtea_core.segmentation.manual import import_labels, labels_from_points
 from vtea_core.segmentation.threshold import threshold_mask
 
 __all__ = [
-    "threshold_mask",
-    "label_components",
-    "watershed_split",
-    "filter_by_size",
-    "labels_from_points",
-    "import_labels",
     "cellpose_segmentation",
+    "filter_by_size",
+    "import_labels",
+    "label_components",
+    "labels_from_points",
+    "threshold_mask",
+    "watershed_split",
 ]

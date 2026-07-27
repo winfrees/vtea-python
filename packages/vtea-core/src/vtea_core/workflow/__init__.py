@@ -7,4 +7,4 @@ pipeline.py and registry.py for the design rationale.
 from vtea_core.workflow.pipeline import Pipeline, Step
 from vtea_core.workflow.registry import STEP_REGISTRY, available_steps, get_step_function
 
-__all__ = ["Step", "Pipeline", "STEP_REGISTRY", "available_steps", "get_step_function"]
+__all__ = ["STEP_REGISTRY", "Pipeline", "Step", "available_steps", "get_step_function"]

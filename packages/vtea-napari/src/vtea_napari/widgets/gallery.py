@@ -25,7 +25,7 @@ _COLUMNS = 6
 class _ClickableThumbnail(QLabel):
     clicked = Signal()
 
-    def mousePressEvent(self, event):  # noqa: N802 - Qt override signature
+    def mousePressEvent(self, event):
         self.clicked.emit()
         super().mousePressEvent(event)
 
@@ -73,7 +73,7 @@ class GalleryWidget(QWidget):
         for position, object_id in enumerate(object_ids):
             if object_id not in indexed.index:
                 continue
-            row_center, col_center = (int(round(indexed.loc[object_id, c])) for c in spatial_columns)
+            row_center, col_center = (round(indexed.loc[object_id, c]) for c in spatial_columns)
             crop = _crop_2d(volume, row_center, col_center, crop_radius)
             if crop.size == 0:
                 continue

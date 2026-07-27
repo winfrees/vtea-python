@@ -11,12 +11,17 @@ later without changing Pipeline's interface.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from vtea_core.classification import class_map
 from vtea_core.clustering import auto_k_kmeans, gaussian_mixture, hierarchical, kmeans
 from vtea_core.gates import polygon_gate, rectangle_gate
-from vtea_core.imageprocessing import enhance_contrast, gaussian_blur, median_filter, subtract_background
+from vtea_core.imageprocessing import (
+    enhance_contrast,
+    gaussian_blur,
+    median_filter,
+    subtract_background,
+)
 from vtea_core.measurements import extract_measurements
 from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne
 from vtea_core.segmentation import (

@@ -8,4 +8,4 @@ was disabled/unregistered in the Java source. See clustering.py for details.
 
 from vtea_core.clustering.clustering import auto_k_kmeans, gaussian_mixture, hierarchical, kmeans
 
-__all__ = ["kmeans", "gaussian_mixture", "hierarchical", "auto_k_kmeans"]
+__all__ = ["auto_k_kmeans", "gaussian_mixture", "hierarchical", "kmeans"]

@@ -28,7 +28,7 @@ dependencies = [
 [project.optional-dependencies]
 bioformats = ["bioio>=1.0"]
 deeplearning = ["torch>=2.1", "cellpose>=3.0"]
-dev = ["pytest>=8.0", "pytest-cov", "ruff", "mypy"]
+dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.16,<0.17", "mypy"]
 
 # Entry-point groups mirror the SciJava extension points from the Java
 # vtea.services classes (Segmentation, Measurements, GateMath, ...).

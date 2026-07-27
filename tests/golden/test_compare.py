@@ -3,7 +3,6 @@
 import numpy as np
 import pandas as pd
 import pytest
-
 from compare import cluster_assignment_ari, feature_table_diff, segmentation_iou
 
 

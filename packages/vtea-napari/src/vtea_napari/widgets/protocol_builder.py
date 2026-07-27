@@ -30,7 +30,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 from vtea_core.workflow import STEP_REGISTRY, Pipeline, Step
 
 from vtea_napari.widgets.param_form import ParameterForm

@@ -17,7 +17,6 @@ import pandas as pd
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QTableWidget, QTableWidgetItem
-
 from vtea_core.gates import GateSet
 
 _COLUMNS = ["Visible", "Color", "Name", "X axis", "Y axis", "Gated", "Total", "%"]

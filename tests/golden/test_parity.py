@@ -9,7 +9,6 @@ cluster_assignment_ari) get filled in alongside each Phase 2 port.
 """
 
 import pytest
-
 from fixtures import (
     fixtures_available,
     load_label_mask,

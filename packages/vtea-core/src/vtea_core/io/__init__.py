@@ -14,7 +14,7 @@ from vtea_core.data.volume import VolumeDataset
 from vtea_core.io.tiff import read_tiff, write_tiff
 from vtea_core.io.zarr_io import read_zarr, write_zarr
 
-__all__ = ["read_tiff", "write_tiff", "read_zarr", "write_zarr", "open_volume"]
+__all__ = ["open_volume", "read_tiff", "read_zarr", "write_tiff", "write_zarr"]
 
 _ZARR_MARKERS = (".zarray", ".zgroup", "zarr.json")
 

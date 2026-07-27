@@ -20,8 +20,15 @@ import inspect
 from dataclasses import dataclass
 from typing import Any
 
-from qtpy.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QLineEdit, QSpinBox, QWidget
-
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QLineEdit,
+    QSpinBox,
+    QWidget,
+)
 from vtea_core.workflow import get_step_function
 
 # Parameter names that are data (arrays, dataframes, models, ...) resolved
@@ -176,9 +183,7 @@ class ParameterForm(QWidget):
                     values[spec.name] = text
             elif isinstance(widget, QCheckBox):
                 values[spec.name] = widget.isChecked()
-            elif isinstance(widget, QSpinBox):
-                values[spec.name] = widget.value()
-            elif isinstance(widget, QDoubleSpinBox):
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
                 values[spec.name] = widget.value()
             elif isinstance(widget, QComboBox):
                 values[spec.name] = widget.currentText()

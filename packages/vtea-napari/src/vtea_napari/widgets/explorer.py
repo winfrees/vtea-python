@@ -27,7 +27,6 @@ import numpy as np
 import pandas as pd
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
-
 from vtea_core.gates import Gate, GateSet
 
 from vtea_napari.widgets.gate_table import GateTableWidget

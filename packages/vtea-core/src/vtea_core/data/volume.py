@@ -9,12 +9,11 @@ ZarrVolumeDataset) from the Java codebase. Canonical axis order is always
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Union
 
 import dask.array as da
 import numpy as np
 
-Array = Union[np.ndarray, da.Array]
+Array = np.ndarray | da.Array
 
 # Placeholder budget for fits_in_memory() when the caller doesn't supply one.
 # Real memory-aware chunking (matching vtea.partition's "Memory-Based"

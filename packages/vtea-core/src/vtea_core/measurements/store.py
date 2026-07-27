@@ -8,8 +8,8 @@ pandas/Arrow interop instead.
 
 from __future__ import annotations
 
-import pandas as pd
 import duckdb
+import pandas as pd
 
 
 class MeasurementStore:
@@ -28,7 +28,7 @@ class MeasurementStore:
     def close(self) -> None:
         self._con.close()
 
-    def __enter__(self) -> "MeasurementStore":
+    def __enter__(self) -> MeasurementStore:  # noqa: PYI034 - typing.Self needs Python 3.11+, this package supports 3.10
         return self
 
     def __exit__(self, *exc_info) -> None:

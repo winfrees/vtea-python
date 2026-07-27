@@ -19,6 +19,6 @@ __all__ = ["class_map"]
 try:
     from vtea_core.classification.cnn import Cell3DClassifier, predict, train_classifier
 
-    __all__ += ["Cell3DClassifier", "train_classifier", "predict"]
+    __all__ += ["Cell3DClassifier", "predict", "train_classifier"]
 except ImportError:
     pass

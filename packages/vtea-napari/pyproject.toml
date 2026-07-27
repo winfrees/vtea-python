@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt5]", "ruff"]
+dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt5]", "ruff>=0.16,<0.17"]
 standalone = ["napari[pyqt5]", "pyinstaller>=6.0"]
 
 [project.scripts]

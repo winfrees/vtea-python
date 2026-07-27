@@ -5,6 +5,11 @@ IJMacro (arbitrary embedded ImageJ macros) are not ported - see
 PORT_PLAN.md's open question on ImageJ macro compatibility.
 """
 
-from vtea_core.imageprocessing.filters import enhance_contrast, gaussian_blur, median_filter, subtract_background
+from vtea_core.imageprocessing.filters import (
+    enhance_contrast,
+    gaussian_blur,
+    median_filter,
+    subtract_background,
+)
 
-__all__ = ["gaussian_blur", "median_filter", "enhance_contrast", "subtract_background"]
+__all__ = ["enhance_contrast", "gaussian_blur", "median_filter", "subtract_background"]
