@@ -75,14 +75,21 @@ Run tests with `pytest` from within each package directory, or see
 ## Standalone runtime
 
 For users who don't want to install Python: `.github/workflows/release.yml`
-builds a standalone `vtea-napari` bundle (PyInstaller, Linux + Windows) on
-every `vN.N.N` tag and attaches the results to that
-[GitHub Release](../../releases) - not committed into this repo. A ~550 MB
-binary bundle doesn't belong in git history (every future clone would pay
-for it permanently); Releases are the standard place for built artifacts.
-The deep-learning extra (Cellpose, PyTorch) isn't included in the
-standalone build to keep its size/build time reasonable - install normally
-via pip for that.
+builds a standalone `vtea-napari` bundle (PyInstaller, Linux + Windows) and
+publishes it as a [GitHub Release](../../releases) - not committed into
+this repo. A ~550 MB binary bundle doesn't belong in git history (every
+future clone would pay for it permanently); Releases are the standard
+place for built artifacts. The deep-learning extra (Cellpose, PyTorch)
+isn't included in the standalone build to keep its size/build time
+reasonable - install normally via pip for that.
+
+Versioning is internal to the workflow: it reads the highest existing
+`vMAJOR.MINOR.PATCH` git tag, bumps the patch number, tags that commit,
+and releases it - no one has to pick or push a version number by hand.
+A release is cut on every push to `main` (continuous delivery) and
+on-demand via the Actions tab ("Run workflow"); pushing a `v*` tag
+manually still works too and is used verbatim (skips the auto-bump), for
+a deliberate major/minor version bump.
 
 To build one locally: see [`packaging/pyinstaller/README.md`](packaging/pyinstaller/README.md).
 

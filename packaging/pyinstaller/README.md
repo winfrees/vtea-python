@@ -3,9 +3,11 @@
 Bundles `vtea-napari` (napari + the VTEA plugin, opened straight to the
 Protocol Builder) into a single-folder distributable per OS, so end users
 can run VTEA without installing Python. Built by
-`.github/workflows/release.yml` on tagged releases and published as
-GitHub Release assets - the binaries themselves are never committed to
-this repo (they're a few hundred MB; see the repo root README for why).
+`.github/workflows/release.yml` on every push to `main` (and on-demand via
+`workflow_dispatch`) and published as GitHub Release assets under an
+internally-versioned tag (see that workflow's header comment) - the
+binaries themselves are never committed to this repo (they're a few
+hundred MB; see the repo root README for why).
 
 Deep learning (`cellpose_segmentation`, `vtea_core.classification`'s CNN)
 is **not** included - the standalone build deliberately excludes the
