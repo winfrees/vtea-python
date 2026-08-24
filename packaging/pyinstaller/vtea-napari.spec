@@ -43,8 +43,18 @@ for package in (
 # frozen bundle, `add_plugin_dock_widget` fails with a bare
 # "TypeError: 'NoneType' object is not callable" (the widget factory
 # resolves to None because the plugin's entry point can't be found).
+#
+# recursive=True is load-bearing, not belt-and-braces: it copies metadata
+# for each distribution's dependencies too. Several of them read their own
+# metadata at import time - imageio's __init__ does
+# `__version__ = importlib.metadata.version("imageio")` - so without the
+# recursive walk the app starts fine and then dies with
+# "PackageNotFoundError: No package metadata was found for imageio" the
+# first time a user opens an image, since that's what finally imports
+# napari_builtins.io. Enumerating the affected distributions by hand is
+# how that bug shipped in v0.1.0; let the dependency graph decide instead.
 for distribution_name in ("napari", "napari-svg", "napari-console", "vtea-napari", "vtea-core"):
-    datas += copy_metadata(distribution_name)
+    datas += copy_metadata(distribution_name, recursive=True)
 
 a = Analysis(
     ["launcher.py"],

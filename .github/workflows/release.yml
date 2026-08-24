@@ -95,6 +95,19 @@ jobs:
         shell: bash
         run: scripts/build_standalone.sh dist
 
+      - name: Self-test - the packaged build resolves its plugins and reads an image
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # The launch smoke test below only proves the app starts. It never
+          # touches the plugin commands that npe2 resolves lazily from
+          # strings, nor the package metadata they read at import time - so
+          # v0.1.0 shipped a build that started fine and then died with
+          # "No package metadata was found for imageio" the first time a
+          # user opened a file. This exercises those paths directly.
+          "dist/vtea-napari/${{ matrix.binary }}" --self-test
+
       - name: Smoke test - the binary launches without error
         shell: python
         env:

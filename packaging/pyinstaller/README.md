@@ -27,7 +27,37 @@ Those features need a regular `pip install "vtea-core[deeplearning]"`.
   factory silently resolves to `None`. Both were found and fixed by
   actually building and running the result, not guessed upfront.
 - `launcher.py` — the entry script PyInstaller bundles; a thin wrapper
-  around `vtea_napari.app:main`.
+  around `vtea_napari.app:main`. It calls `sys.exit(main())` so a failed
+  `--self-test` actually reports a non-zero exit status.
+
+## Missing package metadata: the bug class that has bitten this build three times
+
+Three separate shipped-or-nearly-shipped failures here have all been the
+same root cause — a package read its own (or a plugin's) metadata via
+`importlib.metadata` at runtime, and that metadata wasn't in the bundle:
+
+1. napari's plugin manager couldn't find `vtea-napari`'s `napari.manifest`
+   entry point → `add_plugin_dock_widget` raised a bare
+   `TypeError: 'NoneType' object is not callable`.
+2. Same for `napari-svg` / `napari-console`.
+3. **Shipped in v0.1.0:** `imageio/__init__.py` runs
+   `__version__ = importlib.metadata.version("imageio")` at import time.
+   `imageio` is only imported when `napari_builtins.io` loads, which only
+   happens the first time something reads a file — so the app launched
+   perfectly and then died with
+   `PackageNotFoundError: No package metadata was found for imageio` the
+   moment a user dragged a TIFF in.
+
+The fix for (3) is `copy_metadata(..., recursive=True)`, which walks each
+distribution's dependency graph instead of relying on a hand-maintained
+list. Enumerating by hand is what let (3) through: the list only contained
+the packages whose failures had already been observed.
+
+**If you add a dependency that reads its own version at import time, you
+should not need to do anything** — the recursive walk covers it. If you
+ever see `PackageNotFoundError` from a frozen build anyway, that package
+is reachable at runtime but not a declared dependency of anything in the
+`copy_metadata` list, and needs adding there.
 
 ## Build locally
 
@@ -39,6 +69,28 @@ scripts/build_standalone.sh
 
 ## Verify a build
 
+Start with the self-test — it's the check that catches the failure mode
+above, and it needs no display:
+
+```bash
+# Linux / macOS
+QT_QPA_PLATFORM=offscreen dist/vtea-napari/vtea-napari --self-test
+# Windows
+dist\vtea-napari\vtea-napari.exe --self-test
+```
+
+It resolves every npe2 command the app depends on (napari's file reader
+plus both VTEA dock widgets) and reads a real TIFF back through napari's
+reader plugin, then exits 0 or 1. Both CI legs run it before the launch
+check below.
+
+Note that the Windows bundle is built windowed (`console=False`), so it has
+no stdout to print to — there the **exit code is the whole result**. The
+self-test is written to survive `sys.stdout` being `None` rather than
+crashing on it.
+
+Then confirm it actually launches:
+
 ```bash
 # Linux, no display available (CI, headless dev box):
 QT_QPA_PLATFORM=offscreen dist/vtea-napari/vtea-napari
@@ -47,6 +99,9 @@ dist\vtea-napari\vtea-napari.exe
 ```
 
 A successful run opens a napari window with the Protocol Builder docked.
+Launching alone is a weak check — it proves imports at startup work and
+nothing more, which is exactly why v0.1.0 passed CI with a broken file
+reader. Prefer the self-test.
 OpenGL-context warnings in a headless/offscreen environment (no real GPU)
 are expected and not a packaging bug - confirmed by comparing against an
 unpackaged `pip install`ed run in the same environment, which shows the
