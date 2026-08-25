@@ -97,6 +97,8 @@ def self_test() -> int:
     except Exception as exc:  # noqa: BLE001 - this is the check, report it rather than traceback
         failures.append(f"reading a TIFF failed: {type(exc).__name__}: {exc}")
 
+    failures.extend(_check_deeplearning())
+
     if failures:
         _emit("\nself-test FAILED:")
         for failure in failures:
@@ -106,8 +108,91 @@ def self_test() -> int:
     return 0
 
 
+def _check_deeplearning() -> list[str]:
+    """Checks the Cellpose path in builds that bundle it.
+
+    Skipped (not failed) in the slim build, which ships without
+    torch/cellpose by design. Runs cellpose_segmentation() against a stub
+    model rather than a real one: that exercises everything this bundle is
+    responsible for - imports, the 3-channel stacking, the label array
+    coming back - without depending on Cellpose's pretrained weights, which
+    are fetched from the network on first use and are not part of the
+    bundle.
+    """
+    import numpy as np
+
+    from vtea_napari.runtime import TORCH_PATH_ENV, torch_runtime_dir
+
+    try:
+        import torch
+    except ImportError:
+        _emit(
+            "skipped: no torch available - Cellpose is off. Add it with "
+            f"'vtea-napari --install-torch cpu' (or a CUDA build such as cu121 for GPU), "
+            f"or set {TORCH_PATH_ENV} to an existing install. Looked in "
+            f"{torch_runtime_dir()}"
+        )
+        return []
+
+    failures: list[str] = []
+    try:
+        if (torch.tensor([1.0, 2.0]) * 2).tolist() != [2.0, 4.0]:
+            failures.append("torch computed the wrong answer for a trivial tensor op")
+        else:
+            where = "bundled" if "_internal" in (torch.__file__ or "") else torch.__file__
+            accelerator = (
+                f"CUDA {torch.version.cuda}" if getattr(torch.version, "cuda", None) else "CPU-only"
+            )
+            _emit(f"ok: torch {torch.__version__} ({accelerator}) works - from {where}")
+            if getattr(torch.version, "cuda", None):
+                _emit(f"     torch.cuda.is_available() = {torch.cuda.is_available()}")
+    except Exception as exc:  # noqa: BLE001 - this is the check
+        failures.append(f"torch failed a trivial CPU op: {type(exc).__name__}: {exc}")
+
+    try:
+        from cellpose.models import CellposeModel  # noqa: F401
+
+        _emit("ok: cellpose.models.CellposeModel is importable")
+    except Exception as exc:  # noqa: BLE001 - this is the check
+        failures.append(f"importing cellpose failed: {type(exc).__name__}: {exc}")
+        return failures
+
+    try:
+        from vtea_core.segmentation import cellpose_segmentation
+
+        class _StubModel:
+            def eval(self, x, **kwargs):
+                return np.ones(x.shape[:-1], dtype=np.int32), None, None
+
+        labels = cellpose_segmentation(np.zeros((8, 8), dtype=np.float32), model=_StubModel())
+        if labels.shape != (8, 8):
+            failures.append(f"cellpose_segmentation returned {labels.shape}, expected (8, 8)")
+        else:
+            _emit("ok: cellpose_segmentation ran end-to-end")
+    except Exception as exc:  # noqa: BLE001 - this is the check
+        failures.append(f"cellpose_segmentation failed: {type(exc).__name__}: {exc}")
+
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+
+    if "--install-torch" in argv:
+        from vtea_napari.runtime import install_torch
+
+        position = argv.index("--install-torch")
+        remaining = argv[position + 1 :]
+        variant = remaining[0] if remaining and not remaining[0].startswith("-") else "cpu"
+        return install_torch(variant)
+
+    # Before anything can import torch: makes a user-installed torch
+    # (possibly a CUDA one) visible to this build. No-op when torch is
+    # bundled - see vtea_napari.runtime.
+    from vtea_napari.runtime import activate_external_torch
+
+    activate_external_torch()
+
     if "--self-test" in argv:
         return self_test()
 

@@ -9,10 +9,64 @@ internally-versioned tag (see that workflow's header comment) - the
 binaries themselves are never committed to this repo (they're a few
 hundred MB; see the repo root README for why).
 
-Deep learning (`cellpose_segmentation`, `vtea_core.classification`'s CNN)
-is **not** included - the standalone build deliberately excludes the
-`deeplearning` extra to keep the bundle size and build time reasonable.
-Those features need a regular `pip install "vtea-core[deeplearning]"`.
+Two variants are published per OS:
+
+| Asset | Size (zipped) | Cellpose | GPU |
+|---|---|---|---|
+| `vtea-napari-<os>.zip` | ~290 MB | via an external torch (below) | **yes**, with a CUDA torch |
+| `vtea-napari-<os>-deeplearning.zip` | ~550 MB | built in, no setup | no - CPU-only by construction |
+
+Pick the slim build if you have a GPU or already have a PyTorch
+environment; pick the deep-learning build if you want Cellpose to work
+offline with nothing to configure.
+
+## Using a GPU
+
+GPU acceleration is deliberately *not* delivered by bundling CUDA, for two
+reasons found by measuring rather than assuming:
+
+- **It doesn't fit.** PyPI's default Linux torch is a CUDA build and pulls
+  ~2.4 GB of `nvidia/*` plus 686 MB of `triton` through PyInstaller's
+  dependency walk - a 4.9 GB bundle, over the 2 GiB cap on a GitHub Release
+  asset. Deleting those payloads afterwards does not yield a CPU build: a
+  CUDA torch calls `_preload_cuda_deps()` on import and dies with
+  `Failed to load dynlib/dll ... libtorch_global_deps.so`. The spec
+  hard-fails on a CUDA torch rather than building something unshippable.
+- **A bundled torch can never be replaced.** PyInstaller's frozen importer
+  sits ahead of the normal path finder, so `import torch` in a frozen app
+  always resolves to the bundled copy - putting another on `PYTHONPATH`
+  does nothing (verified against a build that bundled one). Whichever torch
+  is baked in is the only one that will ever load, so bundling the CPU
+  build would permanently rule out GPU.
+
+So the slim build ships no torch and resolves one at runtime from a
+directory you control (`vtea_napari.runtime`). Either:
+
+```bash
+# let VTEA install one - pick the CUDA build matching your driver
+vtea-napari --install-torch cu121     # or cu124, or cpu
+```
+
+```bash
+# ...or point it at an environment you already have
+export VTEA_TORCH_PATH=/path/to/conda/env/lib/python3.11/site-packages
+```
+
+Then confirm what it picked up:
+
+```bash
+vtea-napari --self-test
+# ok: torch 2.x.y (CUDA 12.1) works - from /path/to/.../torch/__init__.py
+#      torch.cuda.is_available() = True
+```
+
+`vtea_core.classification`'s CNN follows the same rule as Cellpose: present
+in the deep-learning build, and in the slim build once an external torch is
+configured.
+
+Note that Cellpose downloads its pretrained weights on first use in either
+variant - they are not part of any bundle, so the first segmentation needs
+network access.
 
 ## Files
 

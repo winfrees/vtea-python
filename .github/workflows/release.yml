@@ -72,12 +72,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Slim builds: no PyTorch. Cellpose is available by pointing them
+          # at an external torch (vtea_napari.runtime) - which is also the
+          # only way to get GPU acceleration, since a bundled torch can
+          # never be overridden by one on sys.path.
           - os: ubuntu-latest
             asset_name: vtea-napari-linux
             binary: vtea-napari
+            deeplearning: false
           - os: windows-latest
             asset_name: vtea-napari-windows
             binary: vtea-napari.exe
+            deeplearning: false
+          # Deep-learning builds: CPU-only PyTorch + Cellpose baked in, so
+          # Cellpose segmentation works with no setup and no network. Much
+          # larger, and CPU-only by construction (see the spec's guard).
+          - os: ubuntu-latest
+            asset_name: vtea-napari-linux-deeplearning
+            binary: vtea-napari
+            deeplearning: true
+          - os: windows-latest
+            asset_name: vtea-napari-windows-deeplearning
+            binary: vtea-napari.exe
+            deeplearning: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -90,6 +107,17 @@ jobs:
         run: |
           pip install -e "packages/vtea-core"
           pip install -e "packages/vtea-napari[standalone]"
+
+      - name: Install CPU-only PyTorch and Cellpose
+        if: matrix.deeplearning
+        shell: bash
+        run: |
+          # The CPU index is not optional. PyPI's default Linux torch is a
+          # CUDA build, which makes a 4.9 GB bundle - over the 2 GiB cap on
+          # a release asset - and cannot be stripped back down to CPU. The
+          # spec hard-fails on a CUDA torch rather than building it.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install cellpose
 
       - name: Build
         shell: bash
