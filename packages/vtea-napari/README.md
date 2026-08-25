@@ -11,9 +11,10 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (80 tests, including real
+Phase 4 done. Implemented and tested (92 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
-would):
+would, and end-to-end tests that build a pipeline purely through the
+widget and run it):
 
 - **`ProtocolBuilderWidget`** — the protocol builder, registered as a napari
   dock widget (`napari.yaml`). Add steps from a category/function picker
@@ -24,6 +25,18 @@ would):
   runs the same whether triggered from this widget or a script.
   `run_pipeline()` (and the "Run pipeline" button, shown when opened as a
   plugin with a napari viewer) also drives step-card thumbnails.
+  Steps added from the menu wire themselves up via `Step.for_function()` /
+  `vtea_core.workflow.wiring`: each step's data arguments are resolved from
+  the run context by name and its result stored under a semantic key
+  (`threshold_mask -> mask`, feeding `label_components(mask)`), so a
+  pipeline built entirely by clicking runs without anyone hand-editing
+  `input_keys`.
+- **Channel selection** — "Channel axis" on the widget says which axis of
+  the loaded image holds channels (a property of the data, listed with each
+  axis's size, defaulting to none); each step's Edit dialog then picks which
+  channel *that step* runs on, shown on its card. Only inputs still
+  carrying the channel axis are sliced, so a step consuming an earlier
+  step's output never has a spatial axis sliced by mistake.
 - **`ParameterForm`** — builds the Edit-step form from a registered
   function's actual signature, split into data arguments (arrays/dataframes,
   excluded - resolved from the pipeline's run context) and editable

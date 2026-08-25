@@ -92,3 +92,24 @@ class TestReturnValue:
         stub = _StubCellposeModel()
         result = cellpose_segmentation(volume, model=stub)
         assert result[2, 2] == 1  # matches _StubCellposeModel's fixed marker
+
+
+def test_missing_deeplearning_extra_gives_an_actionable_message(monkeypatch):
+    """The standalone runtime ships without cellpose, so this path is the
+    expected outcome there - it should say what to do, not just
+    'No module named cellpose'."""
+    import builtins
+
+    import numpy as np
+
+    real_import = builtins.__import__
+
+    def no_cellpose(name, *args, **kwargs):
+        if name.startswith("cellpose"):
+            raise ImportError("No module named 'cellpose'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_cellpose)
+
+    with pytest.raises(ImportError, match="deeplearning"):
+        cellpose_segmentation(np.zeros((4, 4)))

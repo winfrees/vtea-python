@@ -35,16 +35,41 @@ from vtea_core.workflow import STEP_REGISTRY, Pipeline, Step
 from vtea_napari.widgets.param_form import ParameterForm
 from vtea_napari.widgets.step_card import StepCardWidget
 
+ALL_CHANNELS = "All channels"
+
 
 class EditStepDialog(QDialog):
-    """A modal dialog wrapping a ParameterForm, pre-filled with the step's current params."""
+    """A modal dialog wrapping a ParameterForm, pre-filled with the step's
+    current params, plus the channel this step should work on."""
 
-    def __init__(self, step: Step, parent=None):
+    def __init__(self, step: Step, parent=None, n_channels: int | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Edit {step.category}.{step.function_name}")
         self.step = step
 
         layout = QVBoxLayout(self)
+
+        # Channel first: which channel a step runs on is usually the most
+        # consequential choice for a multi-channel acquisition.
+        channel_row = QHBoxLayout()
+        channel_row.addWidget(QLabel("Channel:"))
+        self.channel_combo = QComboBox()
+        self.channel_combo.addItem(ALL_CHANNELS, None)
+        for index in range(n_channels or 0):
+            self.channel_combo.addItem(f"Channel {index}", index)
+        if step.channel is not None:
+            position = self.channel_combo.findData(step.channel)
+            if position == -1:
+                # The step remembers a channel the current image doesn't
+                # have (different file loaded since). Keep it visible rather
+                # than silently resetting it to "All channels".
+                self.channel_combo.addItem(f"Channel {step.channel} (not in image)", step.channel)
+                position = self.channel_combo.count() - 1
+            self.channel_combo.setCurrentIndex(position)
+        channel_row.addWidget(self.channel_combo)
+        channel_row.addStretch()
+        layout.addLayout(channel_row)
+
         self.form = ParameterForm(step.category, step.function_name)
         self.form.set_values(step.params)
         layout.addWidget(self.form)
@@ -56,6 +81,9 @@ class EditStepDialog(QDialog):
 
     def updated_params(self) -> dict:
         return self.form.get_values()
+
+    def updated_channel(self) -> int | None:
+        return self.channel_combo.currentData()
 
 
 class ProtocolBuilderWidget(QWidget):
@@ -91,6 +119,18 @@ class ProtocolBuilderWidget(QWidget):
             add_row.addWidget(run_button)
         root.addLayout(add_row)
 
+        # Which axis holds channels is a property of the loaded image, so
+        # it's set once here; which channel each step uses is per-step (in
+        # that step's Edit dialog).
+        channel_axis_row = QHBoxLayout()
+        channel_axis_row.addWidget(QLabel("Channel axis:"))
+        self.channel_axis_combo = QComboBox()
+        self.channel_axis_combo.currentIndexChanged.connect(self._on_channel_axis_changed)
+        channel_axis_row.addWidget(self.channel_axis_combo)
+        channel_axis_row.addStretch()
+        root.addLayout(channel_axis_row)
+        self._refresh_channel_axis_choices()
+
         self._steps_container = QWidget()
         self._steps_layout = QVBoxLayout(self._steps_container)
         self._steps_layout.addStretch()
@@ -102,6 +142,24 @@ class ProtocolBuilderWidget(QWidget):
         self._refresh_function_choices(self.category_combo.currentText())
         self.refresh_steps()
 
+    def active_image(self) -> np.ndarray | None:
+        """The selected layer's data, or None when there's nothing to run on."""
+        if self.viewer is None:
+            return None
+        layer = self.viewer.layers.selection.active
+        if layer is None:
+            return None
+        return np.asarray(layer.data)
+
+    def n_channels(self) -> int | None:
+        """How many channels the active image has along the chosen channel
+        axis, or None if no channel axis is set."""
+        axis = self.pipeline.channel_axis
+        image = self.active_image()
+        if axis is None or image is None or axis >= image.ndim:
+            return None
+        return image.shape[axis]
+
     def run_pipeline(self, context: dict) -> dict:
         """Runs the pipeline against `context` (e.g. {"volume": array}),
         keeps the result to drive step-card thumbnails, and returns it."""
@@ -110,12 +168,29 @@ class ProtocolBuilderWidget(QWidget):
         return self.last_context
 
     def _run_pipeline_from_active_layer(self) -> None:
-        if self.viewer is None:
+        image = self.active_image()
+        if image is None:
             return
-        layer = self.viewer.layers.selection.active
-        if layer is None:
-            return
-        self.run_pipeline({"volume": np.asarray(layer.data)})
+        # "intensity" is the untouched original, kept separate from "volume"
+        # so that a preprocessing step (which writes back to "volume") does
+        # not change what measurement steps read intensities from.
+        self.run_pipeline({"volume": image, "intensity": image})
+
+    def _refresh_channel_axis_choices(self) -> None:
+        image = self.active_image()
+        self.channel_axis_combo.blockSignals(True)
+        self.channel_axis_combo.clear()
+        self.channel_axis_combo.addItem("None (not multi-channel)", None)
+        if image is not None:
+            for axis, size in enumerate(image.shape):
+                self.channel_axis_combo.addItem(f"axis {axis} (size {size})", axis)
+        position = self.channel_axis_combo.findData(self.pipeline.channel_axis)
+        self.channel_axis_combo.setCurrentIndex(max(position, 0))
+        self.channel_axis_combo.blockSignals(False)
+
+    def _on_channel_axis_changed(self, _index: int) -> None:
+        self.pipeline.channel_axis = self.channel_axis_combo.currentData()
+        self.refresh_steps()
 
     def _refresh_function_choices(self, category: str) -> None:
         self.function_combo.clear()
@@ -127,10 +202,21 @@ class ProtocolBuilderWidget(QWidget):
         function_name = self.function_combo.currentText()
         if not category or not function_name:
             return
-        self.pipeline.add_step(Step(category=category, function_name=function_name))
+        # Step.for_function derives input_keys/output_key from the
+        # function's declared I/O. Building a bare Step(...) here instead is
+        # what made every GUI-built pipeline fail on Run with
+        # "missing 1 required positional argument" - nothing passed the data.
+        available = self.pipeline.available_keys({"volume", "intensity"})
+        self.pipeline.add_step(
+            Step.for_function(category, function_name, available=available)
+        )
         self.refresh_steps()
 
     def refresh_steps(self) -> None:
+        # The active layer can change between refreshes, so keep the axis
+        # choices in step with whatever image is currently selected.
+        self._refresh_channel_axis_choices()
+
         while self._steps_layout.count() > 1:
             item = self._steps_layout.takeAt(0)
             widget = item.widget()
@@ -145,9 +231,10 @@ class ProtocolBuilderWidget(QWidget):
             self._steps_layout.insertWidget(self._steps_layout.count() - 1, card)
 
     def _edit_step(self, step: Step) -> None:
-        dialog = EditStepDialog(step, parent=self)
+        dialog = EditStepDialog(step, parent=self, n_channels=self.n_channels())
         if dialog.exec() == QDialog.DialogCode.Accepted:
             step.params = dialog.updated_params()
+            step.channel = dialog.updated_channel()
             self.refresh_steps()
 
     def _delete_step(self, step: Step) -> None:

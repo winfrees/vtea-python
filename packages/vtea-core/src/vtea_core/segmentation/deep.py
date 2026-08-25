@@ -57,7 +57,20 @@ def cellpose_segmentation(
     background), matching this module's other segmentation functions.
     """
     if model is None:
-        from cellpose.models import CellposeModel
+        try:
+            from cellpose.models import CellposeModel
+        except ImportError as exc:
+            # The standalone runtime deliberately ships without cellpose and
+            # torch (they roughly triple the bundle size), so this is the
+            # expected outcome there rather than a broken install. Say so,
+            # instead of surfacing a bare "No module named 'cellpose'".
+            raise ImportError(
+                "cellpose_segmentation() needs the 'deeplearning' extra, which is not "
+                "installed. Install it with: pip install 'vtea-core[deeplearning]'. "
+                "Note that the standalone VTEA download does not include it - use a pip "
+                "install for Cellpose segmentation, or pass an already-loaded model via "
+                "the `model` argument."
+            ) from exc
 
         model = CellposeModel(pretrained_model=pretrained_model, gpu=gpu)
 

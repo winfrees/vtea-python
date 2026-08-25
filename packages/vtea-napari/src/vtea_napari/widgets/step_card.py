@@ -28,6 +28,12 @@ def summarize_params(step: Step) -> str:
     return ", ".join(f"{key}={value}" for key, value in step.params.items())
 
 
+def summarize_channel(step: Step) -> str:
+    """Which channel this step runs on, shown on the card so a per-step
+    channel choice is visible without opening the Edit dialog."""
+    return "all channels" if step.channel is None else f"channel {step.channel}"
+
+
 class StepCardWidget(QFrame):
     """Emits edit_requested/delete_requested; the parent widget owns the Pipeline."""
 
@@ -54,6 +60,9 @@ class StepCardWidget(QFrame):
         text_column.addWidget(headline)
         comment_text = step.comment if step.comment else summarize_params(step)
         text_column.addWidget(QLabel(comment_text))
+        self.channel_label = QLabel(summarize_channel(step))
+        self.channel_label.setStyleSheet("color: gray;")
+        text_column.addWidget(self.channel_label)
         outer.addLayout(text_column)
 
         outer.addStretch()

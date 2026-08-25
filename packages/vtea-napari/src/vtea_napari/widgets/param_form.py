@@ -29,38 +29,16 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QWidget,
 )
+from vtea_core.workflow import DATA_PARAMETERS as _DATA_PARAMETERS
 from vtea_core.workflow import get_step_function
 
-# Parameter names that are data (arrays, dataframes, models, ...) resolved
-# from the pipeline's run() context via Step.input_keys, not editable
-# literal form fields. Every other keyword the function accepts is treated
-# as an editable configuration value.
-DATA_PARAMETERS: dict[tuple[str, str], set[str]] = {
-    ("imageprocessing", "gaussian_blur"): {"volume"},
-    ("imageprocessing", "median_filter"): {"volume"},
-    ("imageprocessing", "enhance_contrast"): {"volume"},
-    ("imageprocessing", "subtract_background"): {"volume"},
-    ("segmentation", "threshold_mask"): {"volume"},
-    ("segmentation", "label_components"): {"mask"},
-    ("segmentation", "watershed_split"): {"intensity", "mask"},
-    ("segmentation", "filter_by_size"): {"labels"},
-    ("segmentation", "labels_from_points"): {"points", "shape"},
-    ("segmentation", "cellpose_segmentation"): {"volume", "model"},
-    ("measurements", "extract_measurements"): {"labels", "intensity"},
-    ("clustering", "kmeans"): {"data"},
-    ("clustering", "gaussian_mixture"): {"data"},
-    ("clustering", "hierarchical"): {"data"},
-    ("clustering", "auto_k_kmeans"): {"data"},
-    ("reduction", "pca"): {"data"},
-    ("reduction", "isomap"): {"data"},
-    ("reduction", "laplacian_eigenmap"): {"data"},
-    ("reduction", "tsne"): {"data"},
-    ("gates", "polygon_gate"): {"x", "y", "vertices"},
-    ("gates", "rectangle_gate"): {"x", "y"},
-    ("classification", "class_map"): {"labels", "object_ids", "class_labels"},
-    ("classification", "train_classifier"): {"model", "crops", "labels"},
-    ("classification", "predict"): {"model", "crops"},
-}
+# Which parameters are data (arrays, dataframes, models, ...) resolved from
+# the pipeline's run() context via Step.input_keys, rather than editable
+# literal form fields. This lives in vtea_core.workflow.wiring - it
+# describes the functions, not this widget, and the Pipeline engine needs
+# the same information to wire steps up. Re-exported here for callers that
+# import it from this module.
+DATA_PARAMETERS = _DATA_PARAMETERS
 
 
 @dataclass
