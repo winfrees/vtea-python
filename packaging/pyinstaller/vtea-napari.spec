@@ -119,12 +119,18 @@ if BUNDLE_DEEPLEARNING:
             f"('Using a GPU') - it is deliberately not solved by bundling CUDA."
         )
 
-    for package in ("torch", "cellpose"):
+    # torchvision is not optional here even though nothing in VTEA imports
+    # it: Cellpose does, and torchvision registers C++ operators from a
+    # compiled extension at import. Leaving it to PyInstaller's own analysis
+    # produced a bundle whose CPU torch loaded fine and then failed with
+    # "RuntimeError: operator torchvision::nms does not exist" the moment
+    # Cellpose was imported - caught by --self-test in CI before it shipped.
+    for package in ("torch", "torchvision", "cellpose"):
         pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(package)
         datas += pkg_datas
         binaries += pkg_binaries
         hiddenimports += pkg_hiddenimports
-    for distribution_name in ("torch", "cellpose"):
+    for distribution_name in ("torch", "torchvision", "cellpose"):
         datas += copy_metadata(distribution_name, recursive=True)
 
 a = Analysis(

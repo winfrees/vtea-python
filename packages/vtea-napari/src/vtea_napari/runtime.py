@@ -23,6 +23,7 @@ ships its own, and it is installed as an ordinary wheel.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,18 +51,48 @@ def torch_runtime_dir() -> Path:
     return Path(override).expanduser() if override else default_runtime_dir()
 
 
+def _bundle_dir() -> Path | None:
+    """The directory a frozen build unpacks itself into, or None when not
+    running frozen."""
+    if not getattr(sys, "frozen", False):
+        return None
+    meipass = getattr(sys, "_MEIPASS", None)
+    return Path(meipass) if meipass else None
+
+
+def _is_inside_bundle(path: str | None) -> bool:
+    bundle = _bundle_dir()
+    if bundle is None or not path:
+        return False
+    try:
+        return Path(path).resolve().is_relative_to(bundle.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def torch_is_bundled() -> bool:
-    """True when this build has torch frozen in, in which case an external
-    one cannot take precedence and activate_external_torch() is a no-op."""
-    if "torch" in sys.modules:
-        return True
+    """True when torch is frozen into *this build*, in which case an
+    external one cannot take precedence and activate_external_torch() is a
+    no-op.
+
+    Deliberately checks where torch actually lives rather than just whether
+    it's importable: once an external directory is on sys.path, a frozen app
+    can import a torch that is not bundled at all, and calling that
+    "bundled" told users their external install had been ignored when it
+    hadn't.
+    """
+    if _bundle_dir() is None:
+        return False
+    module = sys.modules.get("torch")
+    if module is not None:
+        return _is_inside_bundle(getattr(module, "__file__", None))
     try:
         import importlib.util
 
         spec = importlib.util.find_spec("torch")
     except (ImportError, ValueError):
         return False
-    return spec is not None and getattr(sys, "frozen", False)
+    return spec is not None and _is_inside_bundle(spec.origin)
 
 
 def activate_external_torch() -> Path | None:
@@ -80,6 +111,95 @@ def activate_external_torch() -> Path | None:
         sys.path.remove(resolved)
     sys.path.insert(0, resolved)
     return directory
+
+
+# PyTorch wheel indexes for CUDA builds, oldest first. A driver reports the
+# newest CUDA it supports, so the right wheel is the newest one at or below
+# that.
+_CUDA_WHEELS = ((11, 8), (12, 1), (12, 4), (12, 6), (12, 8))
+
+
+def detect_driver_cuda() -> tuple[int, int] | None:
+    """(major, minor) CUDA version this machine's NVIDIA driver supports, or
+    None when there's no usable GPU. Reads `nvidia-smi`, which ships with the
+    driver on both Windows and Linux."""
+    executable = shutil.which("nvidia-smi")
+    if executable is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [executable], capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    # nvidia-smi's header ends with e.g. "CUDA Version: 12.4"
+    match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", completed.stdout or "")
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def detect_torch_variant() -> str:
+    """The wheel variant to install on this machine: a CUDA build when a
+    supported NVIDIA GPU is present, otherwise "cpu"."""
+    driver = detect_driver_cuda()
+    if driver is None:
+        return "cpu"
+    usable = [wheel for wheel in _CUDA_WHEELS if wheel <= driver]
+    if not usable:
+        return "cpu"
+    major, minor = max(usable)
+    return f"cu{major}{minor}"
+
+
+def gpu_status() -> int:
+    """Print where torch is coming from, whether the GPU is usable, and the
+    exact next command if it isn't. Always exits 0 - it's a report."""
+    driver = detect_driver_cuda()
+    if driver is None:
+        print("GPU:            none detected (no nvidia-smi on PATH)")
+    else:
+        print(f"GPU:            NVIDIA driver supports CUDA {driver[0]}.{driver[1]}")
+
+    activate_external_torch()
+
+    try:
+        import torch
+    except ImportError:
+        print(f"torch source:   none - nothing installed at {torch_runtime_dir()}")
+        print("torch:          not installed")
+        print("\nTo enable Cellpose, run:\n  vtea-napari --install-torch")
+        print(f"which will install the {detect_torch_variant()} build for this machine.")
+        return 0
+
+    # Report where it actually came from, not where it was meant to.
+    if torch_is_bundled():
+        print("torch source:   bundled in this build (cannot be replaced)")
+    else:
+        print(f"torch source:   {torch.__file__}")
+
+    cuda_build = getattr(torch.version, "cuda", None)
+    print(f"torch:          {torch.__version__} ({'CUDA ' + cuda_build if cuda_build else 'CPU-only'})")
+    if cuda_build and torch.cuda.is_available():
+        print(f"GPU in use:     yes - {torch.cuda.get_device_name(0)}")
+        print("\nCellpose will run on the GPU.")
+    elif cuda_build:
+        print("GPU in use:     no - this torch is a CUDA build but no GPU is visible to it")
+        print("\nCheck your NVIDIA driver, or that this machine has an NVIDIA GPU.")
+    elif torch_is_bundled():
+        print("GPU in use:     no - this build has CPU-only torch baked in")
+        print(
+            "\nThe deep-learning download is CPU-only by design. For GPU, use the slim "
+            "download instead and run:\n  vtea-napari --install-torch"
+        )
+    else:
+        print("GPU in use:     no - CPU-only torch is installed")
+        print(
+            f"\nFor GPU, reinstall with:\n  vtea-napari --install-torch {detect_torch_variant()}"
+        )
+    return 0
 
 
 def _host_python() -> str | None:

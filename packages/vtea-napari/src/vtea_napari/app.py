@@ -178,12 +178,23 @@ def _check_deeplearning() -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
+    if "--gpu-status" in argv:
+        from vtea_napari.runtime import gpu_status
+
+        return gpu_status()
+
     if "--install-torch" in argv:
-        from vtea_napari.runtime import install_torch
+        from vtea_napari.runtime import detect_torch_variant, install_torch
 
         position = argv.index("--install-torch")
         remaining = argv[position + 1 :]
-        variant = remaining[0] if remaining and not remaining[0].startswith("-") else "cpu"
+        if remaining and not remaining[0].startswith("-"):
+            variant = remaining[0]
+        else:
+            # No variant given: pick from the machine's own GPU driver, so
+            # nobody has to know which cuXXX matches their hardware.
+            variant = detect_torch_variant()
+            print(f"Detected the right build for this machine: {variant}")
         return install_torch(variant)
 
     # Before anything can import torch: makes a user-installed torch

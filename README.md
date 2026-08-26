@@ -75,13 +75,27 @@ Run tests with `pytest` from within each package directory, or see
 ## Standalone runtime
 
 For users who don't want to install Python: `.github/workflows/release.yml`
-builds a standalone `vtea-napari` bundle (PyInstaller, Linux + Windows) and
-publishes it as a [GitHub Release](../../releases) - not committed into
-this repo. A ~550 MB binary bundle doesn't belong in git history (every
-future clone would pay for it permanently); Releases are the standard
-place for built artifacts. The deep-learning extra (Cellpose, PyTorch)
-isn't included in the standalone build to keep its size/build time
-reasonable - install normally via pip for that.
+builds standalone `vtea-napari` bundles (PyInstaller, Linux + Windows) and
+publishes them as a [GitHub Release](../../releases) - not committed into
+this repo. A few-hundred-MB binary bundle doesn't belong in git history
+(every future clone would pay for it permanently); Releases are the
+standard place for built artifacts.
+
+Two variants are published per OS:
+
+| Asset | Cellpose | GPU |
+|---|---|---|
+| `vtea-napari-<os>.zip` | via `--install-torch` (one command) | **yes** |
+| `vtea-napari-<os>-deeplearning.zip` | built in, works offline | no - CPU-only |
+
+**Using a GPU: see [`docs/GPU_SETUP.md`](docs/GPU_SETUP.md).** Short
+version - use the slim download and run `vtea-napari --install-torch`,
+which detects your NVIDIA driver and installs the matching PyTorch build;
+or point `VTEA_TORCH_PATH` at a conda/venv environment you already have.
+`vtea-napari --gpu-status` reports what's actually in use. GPU is
+deliberately not delivered by bundling CUDA - that build is 4.9 GB (over
+the 2 GiB release-asset cap), and a bundled PyTorch can never be replaced
+by one on `sys.path`, so baking one in would rule out GPU permanently.
 
 Versioning is internal to the workflow: it reads the highest existing
 `vMAJOR.MINOR.PATCH` git tag, bumps the patch number, tags that commit,

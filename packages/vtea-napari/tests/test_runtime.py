@@ -81,11 +81,15 @@ class TestInstallTorch:
 
 
 class TestCliDispatch:
-    def test_install_torch_flag_defaults_to_cpu(self):
+    def test_install_torch_flag_without_a_gpu_installs_cpu(self):
+        """Pinned rather than relying on the test machine having no GPU -
+        otherwise this passes for the wrong reason on CI and fails on a
+        workstation."""
         from vtea_napari.app import main
 
-        with patch("vtea_napari.runtime.install_torch", return_value=0) as install:
-            assert main(["--install-torch"]) == 0
+        with patch("vtea_napari.runtime.detect_torch_variant", return_value="cpu"):
+            with patch("vtea_napari.runtime.install_torch", return_value=0) as install:
+                assert main(["--install-torch"]) == 0
         install.assert_called_once_with("cpu")
 
     def test_install_torch_flag_takes_a_variant(self):
@@ -109,3 +113,113 @@ class TestCliDispatch:
 def test_runtime_dir_expands_a_user_path(monkeypatch):
     monkeypatch.setenv(TORCH_PATH_ENV, "~/somewhere")
     assert torch_runtime_dir() == Path.home() / "somewhere"
+
+
+class TestCudaDetection:
+    def _nvidia_smi_output(self, cuda_version="12.4"):
+        return (
+            "Fri Aug 25 02:00:00 2026\n"
+            "+---------------------------------------------------------------+\n"
+            f"| NVIDIA-SMI 550.54.14  Driver Version: 550.54.14  CUDA Version: {cuda_version} |\n"
+        )
+
+    def test_reads_the_driver_cuda_version(self):
+        from vtea_napari.runtime import detect_driver_cuda
+
+        with patch("vtea_napari.runtime.shutil.which", return_value="/usr/bin/nvidia-smi"):
+            with patch("vtea_napari.runtime.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = self._nvidia_smi_output("12.4")
+                assert detect_driver_cuda() == (12, 4)
+
+    def test_no_nvidia_smi_means_no_gpu(self):
+        from vtea_napari.runtime import detect_driver_cuda
+
+        with patch("vtea_napari.runtime.shutil.which", return_value=None):
+            assert detect_driver_cuda() is None
+
+    def test_nvidia_smi_failure_is_not_fatal(self):
+        from vtea_napari.runtime import detect_driver_cuda
+
+        with patch("vtea_napari.runtime.shutil.which", return_value="/usr/bin/nvidia-smi"):
+            with patch("vtea_napari.runtime.subprocess.run", side_effect=OSError("boom")):
+                assert detect_driver_cuda() is None
+
+    def test_picks_the_newest_wheel_the_driver_supports(self):
+        from vtea_napari.runtime import detect_torch_variant
+
+        # A 12.4 driver must not get a cu126/cu128 wheel.
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=(12, 4)):
+            assert detect_torch_variant() == "cu124"
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=(12, 2)):
+            assert detect_torch_variant() == "cu121"
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=(13, 0)):
+            assert detect_torch_variant() == "cu128"
+
+    def test_falls_back_to_cpu(self):
+        from vtea_napari.runtime import detect_torch_variant
+
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=None):
+            assert detect_torch_variant() == "cpu"
+        # A driver older than every published CUDA wheel.
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=(10, 2)):
+            assert detect_torch_variant() == "cpu"
+
+    def test_install_torch_without_a_variant_auto_detects(self):
+        from vtea_napari.app import main
+
+        with patch("vtea_napari.runtime.detect_torch_variant", return_value="cu124"):
+            with patch("vtea_napari.runtime.install_torch", return_value=0) as install:
+                assert main(["--install-torch"]) == 0
+        install.assert_called_once_with("cu124")
+
+
+class TestGpuStatus:
+    def test_reports_missing_torch_with_the_next_command(self, tmp_path, monkeypatch, capsys):
+        from vtea_napari.runtime import gpu_status
+
+        monkeypatch.setenv(TORCH_PATH_ENV, str(tmp_path / "absent"))
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=(12, 4)):
+            with patch.dict(sys.modules, {"torch": None}):
+                assert gpu_status() == 0
+        out = capsys.readouterr().out
+        assert "CUDA 12.4" in out
+        assert "--install-torch" in out
+
+    def test_reports_a_working_gpu(self, tmp_path, monkeypatch, capsys):
+        from unittest.mock import MagicMock
+
+        from vtea_napari.runtime import gpu_status
+
+        monkeypatch.setenv(TORCH_PATH_ENV, str(tmp_path))
+        fake_torch = MagicMock()
+        fake_torch.__version__ = "2.6.0+cu124"
+        fake_torch.__file__ = str(tmp_path / "torch" / "__init__.py")
+        fake_torch.version.cuda = "12.4"
+        fake_torch.cuda.is_available.return_value = True
+        fake_torch.cuda.get_device_name.return_value = "NVIDIA RTX A4000"
+
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=(12, 4)):
+            with patch("vtea_napari.runtime.torch_is_bundled", return_value=False):
+                with patch.dict(sys.modules, {"torch": fake_torch}):
+                    assert gpu_status() == 0
+        out = capsys.readouterr().out
+        assert "RTX A4000" in out
+        assert "run on the GPU" in out
+
+    def test_tells_deeplearning_users_to_switch_builds(self, capsys):
+        from unittest.mock import MagicMock
+
+        from vtea_napari.runtime import gpu_status
+
+        fake_torch = MagicMock()
+        fake_torch.__version__ = "2.13.0+cpu"
+        fake_torch.version.cuda = None
+
+        with patch("vtea_napari.runtime.detect_driver_cuda", return_value=(12, 4)):
+            with patch("vtea_napari.runtime.torch_is_bundled", return_value=True):
+                with patch.dict(sys.modules, {"torch": fake_torch}):
+                    assert gpu_status() == 0
+        out = capsys.readouterr().out
+        assert "CPU-only torch baked in" in out
+        assert "slim download" in out
