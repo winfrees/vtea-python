@@ -20,6 +20,35 @@ Pick the slim build if you have a GPU or already have a PyTorch
 environment; pick the deep-learning build if you want Cellpose to work
 offline with nothing to configure.
 
+## Archive formats and file count
+
+Each build is published twice:
+
+| Format | Slim bundle | Notes |
+|---|---|---|
+| `.7z` | 243 MB | Solid LZMA2. ~31% smaller and ~31% faster to extract. Needs [7-Zip](https://www.7-zip.org/) on Windows. |
+| `.zip` | 352 MB | Universal - Windows opens it with no extra tooling. |
+
+A zip stores every file as its own deflate stream, so thousands of small
+files cost thousands of independent decompressions; a solid 7z archive
+decompresses as one stream. Measured on the slim bundle: 16s → 11s to
+extract, on top of the smaller download.
+
+The spec also prunes two trees that are pure build-time weight and dominated
+the file count (see `_PRUNE_PREFIXES`): `jedi/third_party` (5,534 typeshed
+`.pyi` stubs) and, in the deep-learning build, `torch/include` (9,196 C++
+headers). That takes the slim bundle from 9,003 to 3,467 files and the
+deep-learning one from 21,009 to 6,277.
+
+**Where that actually helps:** on Linux the two extract in the same time
+(15s vs 16s measured - ext4 file creation is cheap, and the time is
+dominated by decompressing ~350 MB either way). The win is on Windows,
+where each extracted file costs an NTFS create plus a Defender real-time
+scan, so file count drives extraction time far more than bytes do. If
+extraction is still slow there, adding a Defender exclusion for the folder
+you unpack into is the single biggest remaining lever - that is a property
+of the machine, not something a build can fix.
+
 ## Using a GPU
 
 GPU acceleration is deliberately *not* delivered by bundling CUDA, for two

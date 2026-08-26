@@ -146,6 +146,32 @@ a = Analysis(
     noarchive=False,
 )
 
+# Prune trees that are pure build-time weight. Both are dead at runtime and
+# together they dominate the bundle's file count, which is what makes
+# extraction slow on Windows - every extracted file costs an NTFS create
+# plus a Defender scan, so 20k files hurts far more than the megabytes do.
+#
+#   jedi/third_party  5,534 files /  32 MB - typeshed .pyi stubs that jedi
+#                                            reads for console autocompletion
+#   torch/include     9,196 files /  59 MB - C++ headers, only needed to
+#                                            compile against libtorch
+#
+# Measured effect: slim 9,003 -> 3,467 files, deep-learning 21,009 -> 6,277.
+# Verified by deleting each from a built bundle and re-running --self-test
+# and a real launch: napari starts, the plugin loads, and torch/cellpose
+# still import and segment.
+_PRUNE_PREFIXES = (
+    "jedi/third_party/",
+    "torch/include/",
+)
+
+
+def _is_prunable(dest_name: str) -> bool:
+    return dest_name.replace("\\", "/").startswith(_PRUNE_PREFIXES)
+
+
+a.datas = [entry for entry in a.datas if not _is_prunable(entry[0])]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
