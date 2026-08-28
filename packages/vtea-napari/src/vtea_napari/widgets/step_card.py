@@ -39,6 +39,7 @@ class StepCardWidget(QFrame):
 
     edit_requested = Signal()
     delete_requested = Signal()
+    show_requested = Signal()
 
     def __init__(self, position: int, step: Step, parent=None, thumbnail: np.ndarray | None = None):
         super().__init__(parent)
@@ -66,6 +67,14 @@ class StepCardWidget(QFrame):
         outer.addLayout(text_column)
 
         outer.addStretch()
+
+        # Enabled only once this step has actually produced something - a
+        # "Show" that silently does nothing is worse than a greyed-out one.
+        self.show_button = QPushButton("Show")
+        self.show_button.setToolTip("Add this step's result to the napari viewer as a layer")
+        self.show_button.setEnabled(thumbnail is not None)
+        self.show_button.clicked.connect(self.show_requested.emit)
+        outer.addWidget(self.show_button)
 
         edit_button = QPushButton("Edit")
         edit_button.clicked.connect(self.edit_requested.emit)

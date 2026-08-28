@@ -19,6 +19,8 @@ previews and this first pass initially didn't; skip it when there's no
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
@@ -26,14 +28,15 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
-from vtea_core.workflow import STEP_REGISTRY, Pipeline, Step
+from vtea_core.workflow import Pipeline, Step
 
 from vtea_napari.widgets.param_form import ParameterForm
-from vtea_napari.widgets.step_card import StepCardWidget
+from vtea_napari.widgets.plot import ScatterPlotWidget
+from vtea_napari.widgets.step_stack import StepStackWidget
 
 ALL_CHANNELS = "All channels"
 
@@ -87,60 +90,98 @@ class EditStepDialog(QDialog):
 
 
 class ProtocolBuilderWidget(QWidget):
-    """The napari dock widget: a Pipeline plus the UI to build it.
+    """The napari dock widget: two step stacks plus the results plot.
+
+    Split into a processing pane (image processing, segmentation - the steps
+    that turn an image into labels) and an analysis pane (measurements,
+    clustering, reduction, gates, classification - the steps that turn
+    labels into per-object numbers). They run as two Pipelines threading one
+    shared context, and sit in a vertical splitter so each gets half the
+    height by default and can be re-dragged.
+
+    The analysis pane also plots the result: one point per segmented object,
+    with the axes chosen from whatever measurements were computed.
+
     `napari_viewer` is auto-injected by napari's plugin engine when opened
     from the Plugins menu; pass None for standalone/script/test use (the
-    "Run pipeline" button is only shown when a viewer is available, since
-    it needs a layer to pull the initial volume from)."""
+    "Run" button needs a layer to pull the initial volume from).
+    """
 
-    def __init__(self, pipeline: Pipeline | None = None, napari_viewer=None, parent=None):
+    PROCESSING_CATEGORIES = ("imageprocessing", "segmentation")
+    ANALYSIS_CATEGORIES = ("measurements", "clustering", "reduction", "gates", "classification")
+
+    def __init__(
+        self,
+        pipeline: Pipeline | None = None,
+        napari_viewer=None,
+        analysis_pipeline: Pipeline | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
+        # `pipeline` stays the processing pipeline so existing callers and
+        # scripts keep working.
         self.pipeline = pipeline if pipeline is not None else Pipeline()
+        self.analysis_pipeline = analysis_pipeline if analysis_pipeline is not None else Pipeline()
         self.viewer = napari_viewer
         self.last_context: dict = {}
 
         root = QVBoxLayout(self)
 
-        add_row = QHBoxLayout()
-        self.category_combo = QComboBox()
-        self.category_combo.addItems(sorted(STEP_REGISTRY))
-        self.category_combo.currentTextChanged.connect(self._refresh_function_choices)
-        self.function_combo = QComboBox()
-        add_button = QPushButton("Add Step")
-        add_button.clicked.connect(self._add_step_from_selection)
-        add_row.addWidget(QLabel("Category:"))
-        add_row.addWidget(self.category_combo)
-        add_row.addWidget(QLabel("Step:"))
-        add_row.addWidget(self.function_combo)
-        add_row.addWidget(add_button)
+        top_row = QHBoxLayout()
         if self.viewer is not None:
             run_button = QPushButton("Run pipeline")
             run_button.clicked.connect(self._run_pipeline_from_active_layer)
-            add_row.addWidget(run_button)
-        root.addLayout(add_row)
-
-        # Which axis holds channels is a property of the loaded image, so
-        # it's set once here; which channel each step uses is per-step (in
-        # that step's Edit dialog).
-        channel_axis_row = QHBoxLayout()
-        channel_axis_row.addWidget(QLabel("Channel axis:"))
+            top_row.addWidget(run_button)
+        top_row.addWidget(QLabel("Channel axis:"))
         self.channel_axis_combo = QComboBox()
         self.channel_axis_combo.currentIndexChanged.connect(self._on_channel_axis_changed)
-        channel_axis_row.addWidget(self.channel_axis_combo)
-        channel_axis_row.addStretch()
-        root.addLayout(channel_axis_row)
+        top_row.addWidget(self.channel_axis_combo)
+        top_row.addStretch()
+        root.addLayout(top_row)
         self._refresh_channel_axis_choices()
 
-        self._steps_container = QWidget()
-        self._steps_layout = QVBoxLayout(self._steps_container)
-        self._steps_layout.addStretch()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self._steps_container)
-        root.addWidget(scroll)
+        self.processing_stack = StepStackWidget(
+            self.PROCESSING_CATEGORIES,
+            self.pipeline,
+            title="Processing",
+            seed_keys={"volume", "intensity"},
+            n_channels_provider=lambda: self.n_channels(),
+            results_provider=lambda: self.last_context,
+        )
+        self.processing_stack.show_result_requested.connect(self.show_step_result)
 
-        self._refresh_function_choices(self.category_combo.currentText())
-        self.refresh_steps()
+        self.analysis_stack = StepStackWidget(
+            self.ANALYSIS_CATEGORIES,
+            self.analysis_pipeline,
+            title="Analysis",
+            # Analysis steps consume what processing produced.
+            seed_keys={"volume", "intensity", "labels", "mask"},
+            n_channels_provider=lambda: self.n_channels(),
+            results_provider=lambda: self.last_context,
+        )
+        self.analysis_stack.show_result_requested.connect(self.show_step_result)
+
+        analysis_pane = QWidget()
+        analysis_layout = QVBoxLayout(analysis_pane)
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
+        analysis_layout.addWidget(self.analysis_stack)
+        self.plot = ScatterPlotWidget()
+        analysis_layout.addWidget(self.plot, 1)
+
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        self.splitter.addWidget(self.processing_stack)
+        self.splitter.addWidget(analysis_pane)
+        self.splitter.setChildrenCollapsible(False)
+        # Equal stretch: each pane takes half the dock's height rather than
+        # the steps list being squeezed to a single visible card.
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 1)
+        root.addWidget(self.splitter, 1)
+
+        self.status_label = QLabel("")
+        root.addWidget(self.status_label)
+
+    # -- data -------------------------------------------------------------
 
     def active_image(self) -> np.ndarray | None:
         """The selected layer's data, or None when there's nothing to run on."""
@@ -160,21 +201,88 @@ class ProtocolBuilderWidget(QWidget):
             return None
         return image.shape[axis]
 
+    # -- running ----------------------------------------------------------
+
     def run_pipeline(self, context: dict) -> dict:
-        """Runs the pipeline against `context` (e.g. {"volume": array}),
-        keeps the result to drive step-card thumbnails, and returns it."""
-        self.last_context = self.pipeline.run(context)
+        """Runs processing then analysis over one shared context, keeps the
+        result for step thumbnails/Show buttons, and updates the plot."""
+        result = self.pipeline.run(context)
+        self.analysis_pipeline.channel_axis = self.pipeline.channel_axis
+        result = self.analysis_pipeline.run(result)
+        self.last_context = result
         self.refresh_steps()
-        return self.last_context
+        self._refresh_plot()
+        return result
 
     def _run_pipeline_from_active_layer(self) -> None:
         image = self.active_image()
         if image is None:
+            self.status_label.setText("Select an image layer to run on.")
             return
         # "intensity" is the untouched original, kept separate from "volume"
-        # so that a preprocessing step (which writes back to "volume") does
-        # not change what measurement steps read intensities from.
-        self.run_pipeline({"volume": image, "intensity": image})
+        # so a preprocessing step (which writes back to "volume") doesn't
+        # change what measurement steps read intensities from.
+        try:
+            self.run_pipeline({"volume": image, "intensity": image})
+        except Exception as exc:  # noqa: BLE001 - surface it in the UI, don't crash napari
+            self.status_label.setText(f"{type(exc).__name__}: {exc}")
+            return
+        self.status_label.setText("Pipeline finished.")
+
+    def refresh_steps(self) -> None:
+        self._refresh_channel_axis_choices()
+        self.processing_stack.refresh_steps()
+        self.analysis_stack.refresh_steps()
+
+    # -- results ----------------------------------------------------------
+
+    def show_step_result(self, step: Step) -> None:
+        """Add one step's result to the viewer as a layer."""
+        if self.viewer is None:
+            return
+        result = self.last_context.get(step.output_key)
+        if not isinstance(result, np.ndarray) or result.ndim < 2:
+            self.status_label.setText(f"{step.output_key}: not an image, nothing to show")
+            return
+        name = f"{step.function_name} ({step.output_key})"
+        for existing in list(self.viewer.layers):
+            if existing.name == name:
+                self.viewer.layers.remove(existing)
+        # Integer arrays are object labels; booleans are masks, which napari
+        # also renders best as labels. Anything else is intensity.
+        if result.dtype == bool:
+            self.viewer.add_labels(result.astype(np.uint8), name=name)
+        elif np.issubdtype(result.dtype, np.integer):
+            self.viewer.add_labels(result.astype(np.int32), name=name)
+        else:
+            self.viewer.add_image(result, name=name)
+        self.status_label.setText(f"Added layer '{name}'")
+
+    def results_table(self) -> pd.DataFrame | None:
+        """The per-object measurement table, with any per-object analysis
+        outputs (cluster ids, reduced dimensions) joined on as extra columns
+        so they can be used as plot axes or colours."""
+        frame = self.last_context.get("measurements")
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return None
+        frame = frame.copy()
+        for key, value in self.last_context.items():
+            if key == "measurements" or not isinstance(value, np.ndarray):
+                continue
+            if value.ndim == 1 and len(value) == len(frame):
+                frame[key] = value
+            elif value.ndim == 2 and value.shape[0] == len(frame) and value.shape[1] <= 8:
+                for column in range(value.shape[1]):
+                    frame[f"{key}{column + 1}"] = value[:, column]
+        return frame
+
+    def _refresh_plot(self) -> None:
+        frame = self.results_table()
+        if frame is None:
+            return
+        self.plot.set_data(frame)
+
+    # -- channel axis -----------------------------------------------------
 
     def _refresh_channel_axis_choices(self) -> None:
         image = self.active_image()
@@ -190,54 +298,5 @@ class ProtocolBuilderWidget(QWidget):
 
     def _on_channel_axis_changed(self, _index: int) -> None:
         self.pipeline.channel_axis = self.channel_axis_combo.currentData()
-        self.refresh_steps()
-
-    def _refresh_function_choices(self, category: str) -> None:
-        self.function_combo.clear()
-        if category:
-            self.function_combo.addItems(sorted(STEP_REGISTRY[category]))
-
-    def _add_step_from_selection(self) -> None:
-        category = self.category_combo.currentText()
-        function_name = self.function_combo.currentText()
-        if not category or not function_name:
-            return
-        # Step.for_function derives input_keys/output_key from the
-        # function's declared I/O. Building a bare Step(...) here instead is
-        # what made every GUI-built pipeline fail on Run with
-        # "missing 1 required positional argument" - nothing passed the data.
-        available = self.pipeline.available_keys({"volume", "intensity"})
-        self.pipeline.add_step(
-            Step.for_function(category, function_name, available=available)
-        )
-        self.refresh_steps()
-
-    def refresh_steps(self) -> None:
-        # The active layer can change between refreshes, so keep the axis
-        # choices in step with whatever image is currently selected.
-        self._refresh_channel_axis_choices()
-
-        while self._steps_layout.count() > 1:
-            item = self._steps_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        for position, step in enumerate(self.pipeline, start=1):
-            thumbnail = self.last_context.get(step.output_key)
-            card = StepCardWidget(position, step, thumbnail=thumbnail)
-            card.edit_requested.connect(lambda s=step: self._edit_step(s))
-            card.delete_requested.connect(lambda s=step: self._delete_step(s))
-            self._steps_layout.insertWidget(self._steps_layout.count() - 1, card)
-
-    def _edit_step(self, step: Step) -> None:
-        dialog = EditStepDialog(step, parent=self, n_channels=self.n_channels())
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            step.params = dialog.updated_params()
-            step.channel = dialog.updated_channel()
-            self.refresh_steps()
-
-    def _delete_step(self, step: Step) -> None:
-        index = self.pipeline.steps.index(step)
-        self.pipeline.remove_step(index)
+        self.analysis_pipeline.channel_axis = self.pipeline.channel_axis
         self.refresh_steps()

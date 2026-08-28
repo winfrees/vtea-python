@@ -202,20 +202,53 @@ def gpu_status() -> int:
     return 0
 
 
-def _host_python() -> str | None:
-    """An interpreter to run pip with.
+def _usable_python(command: list[str]) -> bool:
+    """True if `command` is a real interpreter that has pip.
 
-    A frozen build has no pip and sys.executable is the app itself, so
-    installing needs a Python from the machine. Most people running a
-    scientific imaging tool have one; if not, say so rather than failing
-    obscurely.
+    Guards against Windows' Microsoft Store alias: a stub `python.exe` sits
+    in %LOCALAPPDATA%\\Microsoft\\WindowsApps and is on PATH by default, so
+    shutil.which() finds it, but running it opens the Store instead of
+    executing anything. Checking that pip answers rules it out.
+    """
+    try:
+        completed = subprocess.run(
+            [*command, "-m", "pip", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0 and "pip" in (completed.stdout or "")
+
+
+def _host_python() -> list[str] | None:
+    """A working interpreter command to run pip with, or None.
+
+    A frozen build has no pip of its own and sys.executable is the app, so
+    installing borrows a Python from the machine. Returns a command list
+    because Windows' launcher is two tokens (`py -3`).
     """
     if not getattr(sys, "frozen", False):
-        return sys.executable
-    for candidate in ("python3", "python"):
-        found = shutil.which(candidate)
-        if found:
-            return found
+        return [sys.executable]
+
+    candidates: list[list[str]] = []
+    if sys.platform == "win32":
+        # The py launcher first: it's the documented way to find Python on
+        # Windows, is installed by the python.org installer even when
+        # "Add to PATH" was skipped, and never resolves to the Store stub.
+        launcher = shutil.which("py")
+        if launcher:
+            candidates.append([launcher, "-3"])
+    for name in ("python3", "python"):
+        found = shutil.which(name)
+        if found and "WindowsApps" not in found:
+            candidates.append([found])
+
+    for candidate in candidates:
+        if _usable_python(candidate):
+            return candidate
     return None
 
 
@@ -235,17 +268,23 @@ def install_torch(variant: str = "cpu", *, target: Path | None = None) -> int:
 
     python = _host_python()
     if python is None:
+        hint = (
+            "Install Python 3.10+ from python.org, then re-run this command."
+            if sys.platform == "win32"
+            else "Install Python 3.10+, then re-run this command."
+        )
         print(
-            "Installing PyTorch needs a Python interpreter on your PATH, and none was "
-            "found. Install Python 3.10+ and re-run, or install torch yourself and "
-            f"point {TORCH_PATH_ENV} at its site-packages directory."
+            f"No working Python with pip was found, which this needs in order to "
+            f"download PyTorch.\n{hint}\n"
+            f"Already have one? Point {TORCH_PATH_ENV} at its site-packages folder "
+            f"instead - see docs/GPU_SETUP.md."
         )
         return 2
 
     directory = target or torch_runtime_dir()
     directory.mkdir(parents=True, exist_ok=True)
     command = [
-        python,
+        *python,
         "-m",
         "pip",
         "install",
