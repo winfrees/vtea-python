@@ -23,7 +23,11 @@ Phases 0-4 are done. Implemented and tested:
   `cellpose_segmentation`
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
   (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
-  max, threshold_mean), `threshold_mean`
+  max, threshold_mean), `extract_measurements_by_channel` (one segmentation
+  against every channel as one flat table, intensity columns suffixed with
+  the channel they were measured on: `mean_ch0`, `mean_ch2`, ...),
+  `feature_matrix` (that table as the float array clustering and reduction
+  take as `data`), `threshold_mean`
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`, `auto_k_kmeans`
 - **reduction**: `pca`, `pca_explained_variance`, `isomap`,
   `laplacian_eigenmap`, `tsne`

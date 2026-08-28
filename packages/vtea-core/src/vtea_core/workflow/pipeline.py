@@ -10,12 +10,29 @@ it doesn't own execution.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
 from vtea_core.workflow.registry import get_step_function
+
+
+def unique_step_name(base: str, taken: Iterable[str]) -> str:
+    """`base_1`, or the next free `base_N`.
+
+    Steps are named after the function that produced them, numbered so that
+    two watershed segmentations in one protocol stay distinguishable
+    (`watershed_split_1`, `watershed_split_2`) without the user having to
+    invent names before the protocol even runs.
+    """
+    used = set(taken)
+    index = 1
+    while f"{base}_{index}" in used:
+        index += 1
+    return f"{base}_{index}"
 
 
 @dataclass
@@ -36,6 +53,13 @@ class Step:
     `channel` picks one channel out of a multi-channel image for this step
     to work on (None = use the array as-is). See run() for exactly which
     inputs that applies to.
+
+    `name` identifies this step's result on its own. `output_key` is
+    semantic and shared - every segmentation writes "labels" - which is what
+    makes a chain wire itself up, but it also means a protocol with two
+    segmentations can't say *which* one a measurement step should measure.
+    Each step's result is therefore also published under its (unique) name,
+    so `input_keys["labels"] = "watershed_split_1"` picks one of them.
     """
 
     category: str
@@ -45,6 +69,7 @@ class Step:
     output_key: str = "result"
     comment: str = ""
     channel: int | None = None
+    name: str = ""
 
     @classmethod
     def for_function(
@@ -53,21 +78,40 @@ class Step:
         function_name: str,
         *,
         available: set[str] | None = None,
+        taken_names: Iterable[str] = (),
         **kwargs: Any,
     ) -> Step:
         """A Step with input_keys/output_key derived from the function's
         declared I/O (see vtea_core.workflow.wiring), so it can actually run
-        without the caller wiring the data arguments themselves."""
+        without the caller wiring the data arguments themselves, and a
+        default name that doesn't collide with `taken_names`."""
         from vtea_core.workflow.wiring import default_wiring
 
         input_keys, output_key = default_wiring(category, function_name, available)
         kwargs.setdefault("input_keys", input_keys)
         kwargs.setdefault("output_key", output_key)
+        kwargs.setdefault("name", unique_step_name(function_name, taken_names))
         return cls(category=category, function_name=function_name, **kwargs)
 
     @property
     def function(self):
         return get_step_function(self.category, self.function_name)
+
+    @property
+    def result_key(self) -> str:
+        """Where this step's result is looked up from when it's referred to
+        individually - its name, or the shared output key if unnamed."""
+        return self.name or self.output_key
+
+    @property
+    def channel_aware(self) -> bool:
+        """True when the function handles the channel axis itself (it takes
+        `channel_axis`/`channel` arguments) and so must be handed the whole
+        multi-channel array rather than a pre-sliced single channel."""
+        from vtea_core.workflow.wiring import STEP_IO
+
+        spec = STEP_IO.get((self.category, self.function_name))
+        return bool(spec is not None and spec.channel_aware)
 
     def run(
         self,
@@ -86,6 +130,11 @@ class Step:
         dimension, so it is passed through untouched - which is what keeps a
         second channel-selecting step from slicing a spatial axis by
         mistake.
+
+        A channel-aware function (see `channel_aware`) is the exception: it
+        gets the whole multi-channel array and `self.channel` as an argument,
+        because it needs to see every channel at once to label its output
+        columns by the channel each came from.
         """
         missing = [key for key in self.input_keys.values() if key not in context]
         if missing:
@@ -93,10 +142,16 @@ class Step:
                 f"step '{self.category}.{self.function_name}' needs context key(s) {missing}, "
                 f"available: {list(context)}"
             )
-        kwargs = {
-            arg: self._select_channel(context[key], channel_axis, full_ndim)
-            for arg, key in self.input_keys.items()
-        }
+        if self.channel_aware:
+            kwargs = {arg: context[key] for arg, key in self.input_keys.items()}
+            parameters = inspect.signature(self.function).parameters
+            if "channel" in parameters and "channel" not in self.params:
+                kwargs["channel"] = self.channel
+        else:
+            kwargs = {
+                arg: self._select_channel(context[key], channel_axis, full_ndim)
+                for arg, key in self.input_keys.items()
+            }
         kwargs.update(self.params)
         return self.function(**kwargs)
 
@@ -138,7 +193,17 @@ class Pipeline:
         keys = set() if seed_keys is None else set(seed_keys)
         for step in self.steps:
             keys.add(step.output_key)
+            if step.name:
+                keys.add(step.name)
         return keys
+
+    def step_names(self) -> list[str]:
+        return [step.name for step in self.steps if step.name]
+
+    def names_producing(self, output_key: str) -> list[str]:
+        """Names of the steps that produce `output_key` - the choices for
+        "which segmentation should this measurement step measure?"."""
+        return [step.name for step in self.steps if step.name and step.output_key == output_key]
 
     def add_step(self, step: Step) -> Step:
         self.steps.append(step)
@@ -161,7 +226,8 @@ class Pipeline:
         """Runs every step in order, threading results through a shared context.
 
         Returns the final context (the input context plus every step's
-        output_key); the input dict itself isn't mutated.
+        output_key, and its name where it has one); the input dict itself
+        isn't mutated.
 
         `channel_axis` overrides the pipeline's own setting for this run.
         The widest array in the starting context defines "still has a
@@ -172,9 +238,12 @@ class Pipeline:
         seeded = [value for value in context.values() if isinstance(value, np.ndarray)]
         full_ndim = max((value.ndim for value in seeded), default=None)
         for step in self.steps:
-            context[step.output_key] = step.run(
-                context, channel_axis=axis, full_ndim=full_ndim
-            )
+            result = step.run(context, channel_axis=axis, full_ndim=full_ndim)
+            context[step.output_key] = result
+            if step.name:
+                # Also under its own name, so a later step can name the one
+                # segmentation it wants instead of taking whichever ran last.
+                context[step.name] = result
         return context
 
     def __len__(self) -> int:

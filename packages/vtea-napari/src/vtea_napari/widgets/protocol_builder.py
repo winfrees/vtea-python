@@ -29,10 +29,12 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
+from vtea_core.measurements import feature_matrix
 from vtea_core.workflow import Pipeline, Step
 
 from vtea_napari.widgets.param_form import ParameterForm
@@ -52,20 +54,86 @@ RUN_BUTTON_STYLE = (
     "QPushButton:pressed { background-color: #d99000; }"
 )
 
+# A 2D per-object result wider than this is a crop stack or a distance
+# matrix, not a handful of features to plot against each other.
+MAX_DERIVED_FEATURES = 8
+
+
+def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
+    """The columns a step's result contributes to the measurement table.
+
+    A per-object vector (cluster ids) becomes one column named after the
+    step; a per-object matrix (PCA/t-SNE coordinates) becomes one column per
+    component, `name_1`, `name_2`, ... Anything that isn't one row per
+    object contributes nothing. Naming after the step is what keeps a second
+    reduction from overwriting the first one's columns, and is what makes
+    those columns findable in the plot's X/Y menus.
+    """
+    if not isinstance(result, np.ndarray) or result.shape[:1] != (n_objects,):
+        return {}
+    if result.ndim == 1:
+        return {name: result}
+    if result.ndim == 2 and result.shape[1] <= MAX_DERIVED_FEATURES:
+        return {f"{name}_{index + 1}": result[:, index] for index in range(result.shape[1])}
+    return {}
+
 
 
 class EditStepDialog(QDialog):
     """A modal dialog wrapping a ParameterForm, pre-filled with the step's
-    current params, plus the channel this step should work on."""
+    current params, plus the step's name, the channel it should work on, and
+    which named upstream result each of its data inputs reads from.
 
-    def __init__(self, step: Step, parent=None, n_channels: int | None = None):
+    `input_candidates` answers "what could this input be wired to?" for one
+    input name (e.g. "labels" -> ["labels", "watershed_split_1",
+    "cellpose_segmentation_1"]); without it the input rows are omitted.
+    """
+
+    def __init__(
+        self,
+        step: Step,
+        parent=None,
+        n_channels: int | None = None,
+        input_candidates=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle(f"Edit {step.category}.{step.function_name}")
         self.step = step
 
         layout = QVBoxLayout(self)
 
-        # Channel first: which channel a step runs on is usually the most
+        # The step's name is what other steps use to refer to its result, so
+        # it's the first thing to be able to change.
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name:"))
+        self.name_edit = QLineEdit(step.name)
+        self.name_edit.setToolTip(
+            "How other steps refer to this step's result (e.g. the segmentation "
+            "a measurement step measures)."
+        )
+        name_row.addWidget(self.name_edit, 1)
+        layout.addLayout(name_row)
+
+        # Which upstream result each data input reads from - this is how a
+        # measurement step picks one of several segmentations.
+        self.input_combos: dict[str, QComboBox] = {}
+        for argument, key in step.input_keys.items():
+            choices = list(input_candidates(argument)) if input_candidates else []
+            if key not in choices:
+                choices.insert(0, key)
+            if len(choices) < 2:
+                continue
+            input_row = QHBoxLayout()
+            input_row.addWidget(QLabel(f"{argument}:"))
+            combo = QComboBox()
+            for choice in choices:
+                combo.addItem(choice, choice)
+            combo.setCurrentIndex(max(combo.findData(key), 0))
+            input_row.addWidget(combo, 1)
+            layout.addLayout(input_row)
+            self.input_combos[argument] = combo
+
+        # Channel next: which channel a step runs on is usually the most
         # consequential choice for a multi-channel acquisition.
         channel_row = QHBoxLayout()
         channel_row.addWidget(QLabel("Channel:"))
@@ -100,6 +168,15 @@ class EditStepDialog(QDialog):
 
     def updated_channel(self) -> int | None:
         return self.channel_combo.currentData()
+
+    def updated_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def updated_input_keys(self) -> dict[str, str]:
+        keys = dict(self.step.input_keys)
+        for argument, combo in self.input_combos.items():
+            keys[argument] = combo.currentData()
+        return keys
 
 
 class ProtocolBuilderWidget(QWidget):
@@ -183,24 +260,32 @@ class ProtocolBuilderWidget(QWidget):
             n_channels_provider=lambda: self.n_channels(),
             results_provider=lambda: self.last_context,
             default_channel_provider=lambda: self.default_channel(),
+            taken_names_provider=lambda: self.step_names(),
+            input_candidates_provider=self.input_candidates,
             action_text="Run Processing" if napari_viewer is not None else "",
             action_style=RUN_BUTTON_STYLE,
         )
         if self.processing_stack.action_button is not None:
             self.processing_stack.action_button.clicked.connect(self.run_processing)
         self.processing_stack.run_step_requested.connect(self.run_single_step)
+        self.processing_stack.step_renamed.connect(self.repoint_inputs)
 
         self.analysis_stack = StepStackWidget(
             self.ANALYSIS_CATEGORIES,
             self.analysis_pipeline,
             title="Analysis",
-            # Analysis steps consume what processing produced.
-            seed_keys={"volume", "intensity", "labels", "mask"},
+            # Analysis steps consume what processing produced, plus the two
+            # things the widget itself supplies: how to read the channel axis,
+            # and the measurement table flattened into a feature matrix.
+            seed_keys={"volume", "intensity", "labels", "mask", "channel_axis", "data"},
             n_channels_provider=lambda: self.n_channels(),
             results_provider=lambda: self.last_context,
             default_channel_provider=lambda: self.default_channel(),
+            taken_names_provider=lambda: self.step_names(),
+            input_candidates_provider=self.input_candidates,
         )
         self.analysis_stack.run_step_requested.connect(self.run_single_step)
+        self.analysis_stack.step_renamed.connect(self.repoint_inputs)
 
         analysis_pane = QWidget()
         analysis_layout = QVBoxLayout(analysis_pane)
@@ -288,6 +373,36 @@ class ProtocolBuilderWidget(QWidget):
         self._refresh_channel_axis_choices()
         self._refresh_z_axis_choices()
 
+    def all_steps(self) -> list[Step]:
+        return list(self.pipeline.steps) + list(self.analysis_pipeline.steps)
+
+    def step_names(self) -> list[str]:
+        """Every step name in use, across both pipelines - names have to be
+        unique between them because they share one run context."""
+        return [step.name for step in self.all_steps() if step.name]
+
+    def input_candidates(self, argument: str) -> list[str]:
+        """What an input called `argument` could be wired to: the shared key
+        of the same name, plus the name of every step that produces it.
+
+        This is what turns "measure the labels" into "measure
+        watershed_split_2" - with two segmentations in a protocol, the shared
+        "labels" key holds whichever ran last, which isn't a choice.
+        """
+        choices = [argument]
+        for step in self.all_steps():
+            if step.name and step.output_key == argument and step.name not in choices:
+                choices.append(step.name)
+        return choices
+
+    def repoint_inputs(self, old_name: str, new_name: str) -> None:
+        """Follow a rename through every step that referred to the old name."""
+        for step in self.all_steps():
+            for parameter, key in list(step.input_keys.items()):
+                if key == old_name:
+                    step.input_keys[parameter] = new_name
+        self.refresh_steps()
+
     def n_channels(self) -> int | None:
         """How many channels the active image has along the chosen channel
         axis, or None if no channel axis is set."""
@@ -301,14 +416,32 @@ class ProtocolBuilderWidget(QWidget):
 
     def run_pipeline(self, context: dict) -> dict:
         """Runs processing then analysis over one shared context, keeps the
-        result for step thumbnails/Show buttons, and updates the plot."""
-        result = self.pipeline.run(context)
+        result for step thumbnails/Show buttons, and updates the plot.
+
+        The analysis steps are stepped through one at a time rather than
+        handed to Pipeline.run, because `data` - the feature matrix the
+        clustering and reduction steps consume - has to be rebuilt from the
+        measurement table between them; a clustering that follows a
+        reduction should see the reduced dimensions as features.
+        """
+        self.last_context = self.pipeline.run(context)
         self.analysis_pipeline.channel_axis = self.pipeline.channel_axis
-        result = self.analysis_pipeline.run(result)
-        self.last_context = result
+        for step in self.analysis_pipeline.steps:
+            working = dict(self.last_context)
+            self._seed_feature_matrix(working)
+            result = step.run(
+                working,
+                channel_axis=self.pipeline.channel_axis,
+                full_ndim=self._seed_ndim(working),
+            )
+            working[step.output_key] = result
+            if step.name:
+                working[step.name] = result
+            self.last_context = working
+            self._merge_into_measurements(step, result)
         self.refresh_steps()
         self._refresh_plot()
-        return result
+        return self.last_context
 
     def default_channel(self) -> int | None:
         """The channel a newly added step should start on: whichever one the
@@ -323,11 +456,18 @@ class ProtocolBuilderWidget(QWidget):
 
     def seed_context(self) -> dict:
         """Starting context for a run: the chosen image under both the key
-        processing consumes and the untouched one measurements read."""
+        processing consumes and the untouched one measurements read, plus
+        the channel axis, which a measurement step needs in order to measure
+        every channel and label its features with the channel each came
+        from."""
         image = self.active_image()
         if image is None:
             return {}
-        return {"volume": image, "intensity": image}
+        return {
+            "volume": image,
+            "intensity": image,
+            "channel_axis": self.pipeline.channel_axis,
+        }
 
     def run_processing(self) -> dict:
         """Run only the processing pipeline. Analysis steps are run
@@ -360,6 +500,11 @@ class ProtocolBuilderWidget(QWidget):
         context = dict(self.last_context)
         for key, value in self.seed_context().items():
             context.setdefault(key, value)
+        # Rebuild `data` from the current table each time, so a clustering
+        # step run after a reduction step sees the reduced dimensions as
+        # features too - that feedback is the point of running these
+        # individually.
+        self._seed_feature_matrix(context)
 
         try:
             result = step.run(
@@ -372,35 +517,52 @@ class ProtocolBuilderWidget(QWidget):
             return
 
         context[step.output_key] = result
+        if step.name:
+            context[step.name] = result
         self.last_context = context
-        self._merge_into_measurements(step.output_key, result)
+        self._merge_into_measurements(step, result)
         self.refresh_steps()
         self._refresh_plot()
 
         if isinstance(result, np.ndarray) and result.ndim >= 2:
             self.show_step_result(step)
         else:
-            self.status_label.setText(f"Ran {step.function_name} -> '{step.output_key}'")
+            self.status_label.setText(f"Ran {step.function_name} -> '{step.result_key}'")
 
     def _seed_ndim(self, context: dict) -> int | None:
         arrays = [value for value in context.values() if isinstance(value, np.ndarray)]
         return max((value.ndim for value in arrays), default=None)
 
-    def _merge_into_measurements(self, key: str, result) -> None:
+    def _seed_feature_matrix(self, context: dict) -> None:
+        """Put the measurement table's numeric features into the context as
+        `data`, which is what clustering and reduction steps consume.
+
+        Nothing in a protocol produces a `data` key, so without this every
+        clustering/reduction step fails with "needs context key(s) ['data']"
+        the moment it's run.
+        """
+        frame = self.results_table()
+        if frame is None:
+            return
+        matrix, columns = feature_matrix(frame)
+        if columns:
+            context["data"] = matrix
+
+    def _merge_into_measurements(self, step: Step, result) -> None:
         """Fold a per-object result into the measurement table so it becomes
         a feature - a cluster id or a reduced dimension is then available to
         later steps and as a plot axis, which is the feedback the analysis
-        steps are meant to support."""
+        steps are meant to support.
+
+        Columns are named after the *step*, not its shared output key, so two
+        clusterings give `kmeans_1` and `kmeans_2` instead of overwriting one
+        `clusters` column.
+        """
         frame = self.last_context.get("measurements")
-        if key == "measurements" or not isinstance(frame, pd.DataFrame) or frame.empty:
+        if step.output_key == "measurements" or not isinstance(frame, pd.DataFrame) or frame.empty:
             return
-        if not isinstance(result, np.ndarray):
-            return
-        if result.ndim == 1 and len(result) == len(frame):
-            frame[key] = result
-        elif result.ndim == 2 and result.shape[0] == len(frame) and result.shape[1] <= 8:
-            for column in range(result.shape[1]):
-                frame[f"{key}{column + 1}"] = result[:, column]
+        for column, values in feature_columns(step.result_key, result, len(frame)).items():
+            frame[column] = values
 
     def _run_pipeline_from_active_layer(self) -> None:
         image = self.active_image()
@@ -461,13 +623,13 @@ class ProtocolBuilderWidget(QWidget):
         """Add one step's result to the viewer as a layer."""
         if self.viewer is None:
             return
-        result = self.last_context.get(step.output_key)
+        result = self.last_context.get(step.result_key, self.last_context.get(step.output_key))
         if not isinstance(result, np.ndarray) or result.ndim < 2:
-            self.status_label.setText(f"{step.output_key}: not an image, nothing to show")
+            self.status_label.setText(f"{step.result_key}: not an image, nothing to show")
             return
 
         result = self.align_to_source(result)
-        name = f"{step.function_name} ({step.output_key})"
+        name = step.result_key
         for existing in list(self.viewer.layers):
             if existing.name == name:
                 self.viewer.layers.remove(existing)
@@ -488,28 +650,37 @@ class ProtocolBuilderWidget(QWidget):
         self.status_label.setText(f"Added layer '{name}'")
 
     def results_table(self) -> pd.DataFrame | None:
-        """The per-object measurement table, with any per-object analysis
-        outputs (cluster ids, reduced dimensions) joined on as extra columns
-        so they can be used as plot axes or colours."""
+        """The per-object "data" table: the measurements, with every
+        per-object analysis output (cluster ids, PCA/t-SNE coordinates)
+        joined on as extra columns under the producing step's name.
+
+        This one flat table is what the plot's X and Y menus list, so a
+        feature measured on channel 2 (`mean_ch2`) and a cluster assignment
+        (`kmeans_1`) are plottable against each other without the user
+        having to join anything themselves.
+        """
         frame = self.last_context.get("measurements")
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             return None
         frame = frame.copy()
-        for key, value in self.last_context.items():
-            if key == "measurements" or not isinstance(value, np.ndarray):
+        # Only named step results, so a result stored under both its name and
+        # its shared output key doesn't produce two identical columns.
+        for step in self.all_steps():
+            if not step.name or step.output_key == "measurements":
                 continue
-            if value.ndim == 1 and len(value) == len(frame):
-                frame[key] = value
-            elif value.ndim == 2 and value.shape[0] == len(frame) and value.shape[1] <= 8:
-                for column in range(value.shape[1]):
-                    frame[f"{key}{column + 1}"] = value[:, column]
+            result = self.last_context.get(step.name)
+            for column, values in feature_columns(step.name, result, len(frame)).items():
+                frame[column] = values
         return frame
 
     def _refresh_plot(self) -> None:
         frame = self.results_table()
         if frame is None:
             return
-        self.plot.set_data(frame)
+        # Keep whatever axes are on screen: re-running a step to see how it
+        # moved the points shouldn't jump the plot back to the first two
+        # columns.
+        self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
 
     # -- channel axis -----------------------------------------------------
 

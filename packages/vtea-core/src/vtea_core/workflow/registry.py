@@ -22,7 +22,7 @@ from vtea_core.imageprocessing import (
     median_filter,
     subtract_background,
 )
-from vtea_core.measurements import extract_measurements
+from vtea_core.measurements import extract_measurements, extract_measurements_by_channel
 from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne
 from vtea_core.segmentation import (
     cellpose_segmentation,
@@ -50,6 +50,7 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
     },
     "measurements": {
         "extract_measurements": extract_measurements,
+        "extract_measurements_by_channel": extract_measurements_by_channel,
     },
     "clustering": {
         "kmeans": kmeans,

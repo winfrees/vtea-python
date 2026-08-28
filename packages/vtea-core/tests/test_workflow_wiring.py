@@ -161,4 +161,7 @@ class TestAvailableKeys:
             "volume",
             "intensity",
             "mask",
+            # A step's result is reachable by its own name too, so a later
+            # step can name the one it wants.
+            "threshold_mask_1",
         }

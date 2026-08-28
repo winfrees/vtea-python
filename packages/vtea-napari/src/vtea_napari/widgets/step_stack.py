@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vtea_core.workflow import STEP_REGISTRY, Pipeline, Step
+from vtea_core.workflow import STEP_REGISTRY, Pipeline, Step, unique_step_name
 
 from vtea_napari.widgets.step_card import StepCardWidget
 
@@ -33,6 +33,13 @@ from vtea_napari.widgets.step_card import StepCardWidget
 # the real estate evenly and lets the user re-drag it.
 MINIMUM_STACK_HEIGHT = 240
 
+# Which function a category should land on when it's picked. Alphabetical
+# order puts plain `extract_measurements` first, but the multi-channel one
+# is what a measurement step normally wants: it measures the chosen
+# segmentation against every channel and tags the resulting feature names
+# with the channel each came from.
+PREFERRED_FUNCTIONS = {"measurements": "extract_measurements_by_channel"}
+
 
 class StepStackWidget(QWidget):
     """Add/edit/delete/show for the steps of one Pipeline, limited to
@@ -40,6 +47,7 @@ class StepStackWidget(QWidget):
 
     steps_changed = Signal()
     run_step_requested = Signal(object)  # vtea_core.workflow.Step
+    step_renamed = Signal(str, str)  # old name, new name
 
     def __init__(
         self,
@@ -51,6 +59,8 @@ class StepStackWidget(QWidget):
         n_channels_provider: Callable[[], int | None] | None = None,
         results_provider: Callable[[], dict] | None = None,
         default_channel_provider: Callable[[], int | None] | None = None,
+        taken_names_provider: Callable[[], list[str]] | None = None,
+        input_candidates_provider: Callable[[str], list[str]] | None = None,
         action_text: str = "",
         action_style: str = "",
         parent: QWidget | None = None,
@@ -62,6 +72,11 @@ class StepStackWidget(QWidget):
         self._n_channels_provider = n_channels_provider or (lambda: None)
         self._results_provider = results_provider or dict
         self._default_channel_provider = default_channel_provider or (lambda: None)
+        # Names must be unique across *both* stacks - an analysis step refers
+        # to a segmentation produced in the processing stack - so the owner
+        # supplies the full set rather than each stack knowing only its own.
+        self._taken_names_provider = taken_names_provider or self.pipeline.step_names
+        self._input_candidates_provider = input_candidates_provider
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -111,8 +126,14 @@ class StepStackWidget(QWidget):
 
     def _refresh_function_choices(self, category: str) -> None:
         self.function_combo.clear()
-        if category:
-            self.function_combo.addItems(sorted(STEP_REGISTRY[category]))
+        if not category:
+            return
+        self.function_combo.addItems(sorted(STEP_REGISTRY[category]))
+        preferred = PREFERRED_FUNCTIONS.get(category)
+        if preferred:
+            position = self.function_combo.findText(preferred)
+            if position != -1:
+                self.function_combo.setCurrentIndex(position)
 
     def _add_step_from_selection(self) -> None:
         category = self.category_combo.currentText()
@@ -120,17 +141,20 @@ class StepStackWidget(QWidget):
         if not category or not function_name:
             return
         available = self.pipeline.available_keys(self.seed_keys)
+        step = Step.for_function(
+            category,
+            function_name,
+            available=available,
+            taken_names=self._taken_names_provider(),
+        )
         # Inherit the channel already in use: picking channel 2 for
         # segmentation and leaving a later step on "all channels" fed
-        # mismatched shapes into it and aborted the run.
-        self.pipeline.add_step(
-            Step.for_function(
-                category,
-                function_name,
-                available=available,
-                channel=self._default_channel_provider(),
-            )
-        )
+        # mismatched shapes into it and aborted the run. A channel-aware step
+        # is exempt - it reads every channel by default, which is what a
+        # measurement step should do.
+        if not step.channel_aware:
+            step.channel = self._default_channel_provider()
+        self.pipeline.add_step(step)
         self.refresh_steps()
         self.steps_changed.emit()
 
@@ -143,7 +167,10 @@ class StepStackWidget(QWidget):
 
         results = self._results_provider()
         for position, step in enumerate(self.pipeline, start=1):
-            result = results.get(step.output_key)
+            # Prefer this step's own named result: with two segmentations in
+            # one protocol, the shared "labels" key holds whichever ran last,
+            # so every card would show the same thumbnail.
+            result = results.get(step.result_key, results.get(step.output_key))
             card = StepCardWidget(position, step, thumbnail=result)
             card.edit_requested.connect(lambda s=step: self._edit_step(s))
             card.delete_requested.connect(lambda s=step: self._delete_step(s))
@@ -153,12 +180,39 @@ class StepStackWidget(QWidget):
     def _edit_step(self, step: Step) -> None:
         from vtea_napari.widgets.protocol_builder import EditStepDialog
 
-        dialog = EditStepDialog(step, parent=self, n_channels=self._n_channels_provider())
+        dialog = EditStepDialog(
+            step,
+            parent=self,
+            n_channels=self._n_channels_provider(),
+            input_candidates=self._input_candidates_provider,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             step.params = dialog.updated_params()
             step.channel = dialog.updated_channel()
+            step.input_keys = dialog.updated_input_keys()
+            self.rename_step(step, dialog.updated_name())
             self.refresh_steps()
             self.steps_changed.emit()
+
+    def rename_step(self, step: Step, name: str) -> None:
+        """Apply an edited name, keeping names unique. A blank name means
+        "give me a default one back" rather than leaving the step unnamed,
+        since an unnamed step can't be referred to by other steps.
+
+        Emits step_renamed so the owner can re-point any input that was
+        wired to the old name - a rename that silently broke a downstream
+        measurement step would be worse than not allowing renames at all.
+        """
+        previous = step.name
+        taken = [other for other in self._taken_names_provider() if other != previous]
+        if not name:
+            step.name = unique_step_name(step.function_name, taken)
+        elif name in taken:
+            step.name = unique_step_name(name, taken)
+        else:
+            step.name = name
+        if previous and step.name != previous:
+            self.step_renamed.emit(previous, step.name)
 
     def _delete_step(self, step: Step) -> None:
         self.pipeline.remove_step(self.pipeline.steps.index(step))

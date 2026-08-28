@@ -618,16 +618,23 @@ class TestAnalysisPaneAndPlot:
 
     def test_per_object_analysis_output_becomes_a_plot_column(self, qtbot):
         """Cluster ids and similar per-object results should be selectable as
-        axes/colours alongside the raw measurements."""
+        axes/colours alongside the raw measurements, named after the step
+        that produced them."""
         import numpy as np
+
+        from vtea_core.workflow import Step
 
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
         self._measured(widget)
-        widget.last_context["clusters"] = np.array([0, 1])
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        widget.last_context[step.name] = np.array([0, 1])
 
         frame = widget.results_table()
-        assert "clusters" in frame.columns
+        assert step.name == "kmeans_1"
+        assert "kmeans_1" in frame.columns
 
     def test_no_measurements_leaves_the_plot_empty_without_error(self, qtbot):
         widget = ProtocolBuilderWidget()
@@ -1006,9 +1013,11 @@ class TestPerStepRun:
         )
         widget.run_single_step(cluster)
 
-        assert "clusters" in widget.last_context["measurements"].columns
+        # Named after the step, not its shared "clusters" output key, so a
+        # second clustering doesn't overwrite the first one's column.
+        assert cluster.name in widget.last_context["measurements"].columns
         axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
-        assert "clusters" in axes
+        assert cluster.name in axes
 
     def test_a_failing_step_reports_instead_of_raising(self, qtbot):
         from vtea_core.workflow import Step
@@ -1097,3 +1106,349 @@ class TestCompactStyling:
         margins = widget.layout().contentsMargins()
         assert margins.top() <= 4 and margins.left() <= 4
         assert widget.layout().spacing() <= 3
+
+
+def _measured_multichannel(qtbot):
+    """A builder that has segmented one channel of a (z, c, y, x) image and
+    measured that segmentation against every channel - the state the last
+    five UI items are all about."""
+    import numpy as np
+
+    from vtea_core.workflow import Step
+
+    viewer = _model_viewer()
+    image = np.zeros((4, 3, 12, 12))
+    for channel in range(3):
+        image[:, channel, 1:5, 1:5] = 100.0 * (channel + 1)
+        image[:, channel, 8:11, 8:11] = 50.0 * (channel + 1)
+    viewer.add_image(image, name="src")
+    widget = ProtocolBuilderWidget(napari_viewer=viewer)
+    qtbot.addWidget(widget)
+    widget.channel_axis_combo.setCurrentIndex(widget.channel_axis_combo.findData(1))
+
+    widget.pipeline.add_step(
+        Step.for_function(
+            "segmentation",
+            "threshold_mask",
+            params={"method": "fixed", "value": 50.0},
+            channel=0,
+        )
+    )
+    labeler = widget.pipeline.add_step(
+        Step.for_function(
+            "segmentation",
+            "label_components",
+            available={"mask"},
+            taken_names=["threshold_mask_1"],
+        )
+    )
+    widget.run_processing()
+
+    measure = widget.analysis_pipeline.add_step(
+        Step.for_function(
+            "measurements",
+            "extract_measurements_by_channel",
+            available=set(widget.last_context) | {"channel_axis"},
+            taken_names=widget.step_names(),
+        )
+    )
+    measure.input_keys["labels"] = labeler.name
+    widget.run_single_step(measure)
+    return widget
+
+
+class TestNamedSegmentations:
+    """Item 1: every step's result carries a unique, editable name, so a
+    later step can say which segmentation it means."""
+
+    def test_a_step_added_from_the_gui_gets_a_default_name(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.processing_stack
+        stack.category_combo.setCurrentText("segmentation")
+        stack.function_combo.setCurrentText("watershed_split")
+        _click_button(qtbot, stack, "Add Step")
+        assert widget.pipeline.steps[0].name == "watershed_split_1"
+
+    def test_two_of_the_same_step_get_different_names(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.processing_stack
+        stack.category_combo.setCurrentText("segmentation")
+        stack.function_combo.setCurrentText("watershed_split")
+        _click_button(qtbot, stack, "Add Step")
+        _click_button(qtbot, stack, "Add Step")
+        names = [step.name for step in widget.pipeline.steps]
+        assert names == ["watershed_split_1", "watershed_split_2"]
+
+    def test_names_are_unique_across_both_panes(self, qtbot):
+        """The two panes share one run context, so a name used in the
+        processing pane must not be reused in the analysis pane."""
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(Step.for_function("measurements", "extract_measurements"))
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText("measurements")
+        stack.function_combo.setCurrentText("extract_measurements")
+        _click_button(qtbot, stack, "Add Step")
+        assert widget.analysis_pipeline.steps[0].name == "extract_measurements_2"
+
+    def test_the_name_is_shown_on_the_card(self, qtbot):
+        from vtea_core.workflow import Step
+
+        from vtea_napari.widgets.step_card import StepCardWidget
+
+        step = Step.for_function("segmentation", "watershed_split")
+        card = StepCardWidget(1, step)
+        qtbot.addWidget(card)
+        assert card.name_label.text() == "watershed_split_1"
+
+    def test_renaming_keeps_names_unique(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        first = widget.pipeline.add_step(Step.for_function("segmentation", "watershed_split"))
+        second = widget.pipeline.add_step(
+            Step.for_function("segmentation", "label_components")
+        )
+        widget.processing_stack.rename_step(second, first.name)
+        assert second.name != first.name
+
+    def test_a_blank_name_falls_back_to_a_default(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        step = widget.pipeline.add_step(Step.for_function("segmentation", "watershed_split"))
+        widget.processing_stack.rename_step(step, "")
+        assert step.name == "watershed_split_1"
+
+    def test_renaming_repoints_steps_that_referred_to_the_old_name(self, qtbot):
+        """A rename that silently broke a downstream measurement step would
+        be worse than not allowing renames at all."""
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        segmentation = widget.pipeline.add_step(
+            Step.for_function("segmentation", "label_components")
+        )
+        measure = widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements")
+        )
+        measure.input_keys["labels"] = segmentation.name
+
+        widget.processing_stack.rename_step(segmentation, "nuclei")
+        assert measure.input_keys["labels"] == "nuclei"
+
+    def test_each_card_previews_its_own_result_not_the_last_one(self, qtbot):
+        """Both segmentations write "labels"; without per-name lookup every
+        card would show whichever ran last."""
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        from vtea_napari.widgets.step_card import StepCardWidget
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        first = widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        second = widget.pipeline.add_step(
+            Step.for_function("segmentation", "filter_by_size", params={"min_size": 2})
+        )
+        widget.last_context = {
+            first.name: np.ones((4, 4), dtype=np.int32),
+            second.name: np.zeros((4, 4), dtype=np.int32),
+            "labels": np.zeros((4, 4), dtype=np.int32),
+        }
+        widget.refresh_steps()
+        cards = widget.processing_stack.findChildren(StepCardWidget)
+        assert len(cards) == 2
+        # The first card previews the non-empty first segmentation; the
+        # second previews the emptied one.
+        assert cards[0].thumbnail_label.pixmap() is not None
+
+
+class TestMeasurementsPickASegmentation:
+    """Item 2: a measurement step measures a *named* segmentation, across
+    every channel unless one is chosen."""
+
+    def _widget_with_two_segmentations(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "filter_by_size", params={"min_size": 2}, taken_names=["label_components_1"]
+            )
+        )
+        return widget
+
+    def test_input_candidates_list_every_named_producer(self, qtbot):
+        widget = self._widget_with_two_segmentations(qtbot)
+        assert widget.input_candidates("labels") == [
+            "labels",
+            "label_components_1",
+            "filter_by_size_1",
+        ]
+
+    def test_the_edit_dialog_offers_them(self, qtbot):
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        widget = self._widget_with_two_segmentations(qtbot)
+        from vtea_core.workflow import Step
+
+        measure = Step.for_function("measurements", "extract_measurements_by_channel")
+        dialog = EditStepDialog(measure, input_candidates=widget.input_candidates)
+        qtbot.addWidget(dialog)
+        combo = dialog.input_combos["labels"]
+        choices = [combo.itemData(i) for i in range(combo.count())]
+        assert "label_components_1" in choices
+
+    def test_choosing_one_rewires_the_step(self, qtbot):
+        from vtea_core.workflow import Step
+
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        widget = self._widget_with_two_segmentations(qtbot)
+        measure = Step.for_function("measurements", "extract_measurements_by_channel")
+        dialog = EditStepDialog(measure, input_candidates=widget.input_candidates)
+        qtbot.addWidget(dialog)
+        dialog.input_combos["labels"].setCurrentIndex(
+            dialog.input_combos["labels"].findData("label_components_1")
+        )
+        assert dialog.updated_input_keys()["labels"] == "label_components_1"
+
+    def test_the_measurements_category_defaults_to_the_multichannel_step(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText("measurements")
+        assert stack.function_combo.currentText() == "extract_measurements_by_channel"
+
+    def test_a_measurement_step_starts_on_all_channels(self, qtbot):
+        """Even when an earlier segmentation picked one - measuring every
+        channel is the point of the multi-channel step."""
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(
+            Step.for_function("segmentation", "threshold_mask", channel=2)
+        )
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText("measurements")
+        stack.function_combo.setCurrentText("extract_measurements_by_channel")
+        _click_button(qtbot, stack, "Add Step")
+        assert widget.analysis_pipeline.steps[0].channel is None
+
+    def test_running_it_produces_channel_tagged_features(self, qtbot):
+        """Items 2 and 4 together: one table, one row per object, feature
+        names carrying the channel they were measured on."""
+        widget = _measured_multichannel(qtbot)
+
+        frame = widget.last_context["measurements"]
+        assert len(frame) == 2
+        assert {"mean_ch0", "mean_ch1", "mean_ch2"} <= set(frame.columns)
+        assert frame.loc[0, "mean_ch1"] == 200.0
+        # Geometry is not repeated per channel.
+        assert list(frame.columns).count("count") == 1
+
+    def test_the_channel_tagged_features_reach_the_plot_axes(self, qtbot):
+        """Item 3: those names are what the X/Y menus offer."""
+        widget = _measured_multichannel(qtbot)
+        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        assert {"mean_ch0", "mean_ch1", "mean_ch2"} <= axes
+
+    def test_the_channel_axis_is_seeded_for_the_step_to_read(self, qtbot):
+        """Nothing in a protocol produces "channel_axis"; the widget has to
+        put it in the context or the step measures one channel only."""
+        widget = _measured_multichannel(qtbot)
+        assert widget.last_context["channel_axis"] == 1
+
+
+class TestAnalysisResultsBecomeFeatures:
+    """Item 5: PCA/t-SNE/clustering outputs join the same table under
+    unique names, so they are plottable from the X/Y menus."""
+
+    def test_a_clustering_run_from_its_card_adds_a_named_column(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "clustering", "kmeans", params={"n_clusters": 2}, taken_names=widget.step_names()
+            )
+        )
+        widget.run_single_step(cluster)
+
+        assert cluster.name == "kmeans_1"
+        assert "kmeans_1" in widget.results_table().columns
+        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        assert "kmeans_1" in axes
+
+    def test_a_reduction_adds_one_column_per_component(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        reduce_step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "reduction", "pca", params={"n_components": 1}, taken_names=widget.step_names()
+            )
+        )
+        widget.run_single_step(reduce_step)
+        assert f"{reduce_step.name}_1" in widget.results_table().columns
+
+    def test_two_clusterings_do_not_overwrite_each_other(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        for _ in range(2):
+            widget.analysis_pipeline.add_step(
+                Step.for_function(
+                    "clustering",
+                    "kmeans",
+                    params={"n_clusters": 2},
+                    taken_names=widget.step_names(),
+                )
+            )
+        for step in list(widget.analysis_pipeline.steps):
+            if step.category == "clustering":
+                widget.run_single_step(step)
+
+        columns = widget.results_table().columns
+        assert "kmeans_1" in columns
+        assert "kmeans_2" in columns
+
+    def test_data_is_built_from_the_table_so_the_step_can_run_at_all(self, qtbot):
+        """Nothing in a protocol produces a "data" key; without the widget
+        deriving it, every clustering/reduction step fails with
+        "needs context key(s) ['data']"."""
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "clustering", "kmeans", params={"n_clusters": 2}, taken_names=widget.step_names()
+            )
+        )
+        widget.run_single_step(cluster)
+        assert "needs context key" not in widget.status_label.text()
+        assert cluster.name in widget.last_context
+
+    def test_identifiers_and_centroids_are_left_out_of_the_features(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        context = {}
+        widget._seed_feature_matrix(context)
+        frame = widget.results_table()
+        expected = sum(
+            1
+            for column in frame.columns
+            if column != "object_id" and not column.startswith("centroid-")
+        )
+        assert context["data"].shape[1] == expected

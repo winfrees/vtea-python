@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (92 tests, including real
+Phase 4 done. Implemented and tested (167 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -31,12 +31,38 @@ widget and run it):
   (`threshold_mask -> mask`, feeding `label_components(mask)`), so a
   pipeline built entirely by clicking runs without anyone hand-editing
   `input_keys`.
+- **Named results** — every step gets a unique default name from the
+  function that produced it (`watershed_split_1`, `watershed_split_2`),
+  editable in its Edit dialog and shown on its card. `output_key` stays
+  semantic and shared - which is what makes a chain wire itself up - and
+  each result is *additionally* published under the step's name, so a
+  protocol with two segmentations can say which one a later step means.
+  The Edit dialog lists the named producers of each data input, so a
+  measurement step picks a segmentation by name instead of taking whichever
+  ran last; renaming a step re-points everything that referred to it.
+- **One flat "data" table** — a measurement step
+  (`extract_measurements_by_channel`, the default for the measurements
+  category) measures its chosen segmentation against *every* channel and
+  collapses the channel dimension into the column names: `mean_ch0`,
+  `mean_ch2`, ... Geometry columns (`object_id`, `count`, `centroid-*`)
+  describe the object rather than its brightness and appear once. Per-object
+  analysis results join the same table under the producing step's name
+  (`kmeans_1`, `pca_1_1`/`pca_1_2`), so measured and derived features are
+  plottable against each other from the plot's X/Y menus. The clustering and
+  reduction steps' `data` input is derived from that table
+  (`vtea_core.measurements.feature_matrix`, which drops identifiers and
+  centroids) and rebuilt between steps - nothing in a protocol produces a
+  `data` key, so without this those steps could not be run from the GUI at
+  all.
 - **Channel selection** — "Channel axis" on the widget says which axis of
   the loaded image holds channels (a property of the data, listed with each
   axis's size, defaulting to none); each step's Edit dialog then picks which
   channel *that step* runs on, shown on its card. Only inputs still
   carrying the channel axis are sliced, so a step consuming an earlier
-  step's output never has a spatial axis sliced by mistake.
+  step's output never has a spatial axis sliced by mistake. A channel-aware
+  step is the exception: it is handed the whole multi-channel array and its
+  channel choice as an argument, since it has to see every channel at once
+  to label its output columns by channel.
 - **`ParameterForm`** — builds the Edit-step form from a registered
   function's actual signature, split into data arguments (arrays/dataframes,
   excluded - resolved from the pipeline's run context) and editable

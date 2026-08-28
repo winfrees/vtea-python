@@ -34,6 +34,17 @@ def summarize_channel(step: Step) -> str:
     return "all channels" if step.channel is None else f"channel {step.channel}"
 
 
+def summarize_inputs(step: Step) -> str:
+    """Inputs this step has been pointed at a named result rather than the
+    shared default - e.g. `labels <- watershed_split_2`. Empty when every
+    input is on its default, which is the common case and would otherwise
+    add a line of noise to every card."""
+    redirected = [
+        f"{argument} ← {key}" for argument, key in step.input_keys.items() if argument != key
+    ]
+    return ", ".join(redirected)
+
+
 class StepCardWidget(QFrame):
     """Emits edit_requested/delete_requested; the parent widget owns the Pipeline."""
 
@@ -56,12 +67,22 @@ class StepCardWidget(QFrame):
         outer.addWidget(position_label)
 
         text_column = QVBoxLayout()
-        headline = QLabel(f"{step.category}.{step.function_name}")
-        headline.setStyleSheet("font-weight: bold;")
-        text_column.addWidget(headline)
+        # The name leads: it's how other steps refer to this one's result, so
+        # it's the thing to read off the card when wiring a measurement step
+        # to one of several segmentations.
+        self.name_label = QLabel(step.name or f"{step.category}.{step.function_name}")
+        self.name_label.setStyleSheet("font-weight: bold;")
+        text_column.addWidget(self.name_label)
+        if step.name:
+            function_label = QLabel(f"{step.category}.{step.function_name}")
+            function_label.setStyleSheet("color: gray;")
+            text_column.addWidget(function_label)
         comment_text = step.comment if step.comment else summarize_params(step)
         text_column.addWidget(QLabel(comment_text))
-        self.channel_label = QLabel(summarize_channel(step))
+        sources = summarize_inputs(step)
+        self.channel_label = QLabel(
+            f"{summarize_channel(step)} · {sources}" if sources else summarize_channel(step)
+        )
         self.channel_label.setStyleSheet("color: gray;")
         text_column.addWidget(self.channel_label)
         outer.addLayout(text_column)

@@ -34,10 +34,14 @@ from vtea_core.workflow.registry import get_step_function
 @dataclass(frozen=True)
 class StepIO:
     """`inputs`: parameter names resolved from the run context.
-    `output`: context key this step's return value is stored under."""
+    `output`: context key this step's return value is stored under.
+    `channel_aware`: the function deals with the channel axis itself, so
+    Step.run hands it the whole multi-channel array and passes the step's
+    channel choice along as an argument instead of slicing first."""
 
     inputs: tuple[str, ...]
     output: str
+    channel_aware: bool = False
 
 
 # Preprocessing writes back to "volume" on purpose, so a blur/background
@@ -55,6 +59,9 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("segmentation", "labels_from_points"): StepIO(("points", "shape"), "labels"),
     ("segmentation", "cellpose_segmentation"): StepIO(("volume", "model"), "labels"),
     ("measurements", "extract_measurements"): StepIO(("labels", "intensity"), "measurements"),
+    ("measurements", "extract_measurements_by_channel"): StepIO(
+        ("labels", "intensity", "channel_axis"), "measurements", channel_aware=True
+    ),
     ("clustering", "kmeans"): StepIO(("data",), "clusters"),
     ("clustering", "gaussian_mixture"): StepIO(("data",), "clusters"),
     ("clustering", "hierarchical"): StepIO(("data",), "clusters"),
