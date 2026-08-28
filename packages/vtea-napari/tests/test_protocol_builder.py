@@ -650,3 +650,221 @@ class TestPaneSizing:
         total = sum(sizes)
         assert total > 0
         assert min(sizes) / total > 0.3, f"panes split unevenly: {sizes}"
+
+
+class TestSourceAndAxisPickers:
+    def _viewer_with_layers(self, qtbot):
+        import napari
+        import numpy as np
+
+        viewer = napari.Viewer(show=False)
+        qtbot.addWidget(viewer.window._qt_window)
+        viewer.add_labels(np.zeros((6, 4, 16, 16), dtype="int32"), name="stack-a")
+        viewer.add_labels(np.zeros((3, 8, 8), dtype="int32"), name="stack-b")
+        return viewer
+
+    def test_image_picker_lists_loaded_layers(self, qtbot):
+        viewer = self._viewer_with_layers(qtbot)
+        try:
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            names = {widget.layer_combo.itemText(i) for i in range(widget.layer_combo.count())}
+            assert {"stack-a", "stack-b"} <= names
+        finally:
+            viewer.close()
+
+    def test_picking_a_layer_selects_what_gets_processed(self, qtbot):
+        viewer = self._viewer_with_layers(qtbot)
+        try:
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.layer_combo.setCurrentIndex(widget.layer_combo.findData("stack-b"))
+            assert widget.active_image().shape == (3, 8, 8)
+            widget.layer_combo.setCurrentIndex(widget.layer_combo.findData("stack-a"))
+            assert widget.active_image().shape == (6, 4, 16, 16)
+        finally:
+            viewer.close()
+
+    def test_axis_pickers_follow_the_selected_layer(self, qtbot):
+        viewer = self._viewer_with_layers(qtbot)
+        try:
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.layer_combo.setCurrentIndex(widget.layer_combo.findData("stack-a"))
+            z_axes = {widget.z_axis_combo.itemText(i) for i in range(widget.z_axis_combo.count())}
+            assert "axis 0 (size 6)" in z_axes
+            assert "axis 1 (size 4)" in z_axes
+
+            widget.layer_combo.setCurrentIndex(widget.layer_combo.findData("stack-b"))
+            z_axes = {widget.z_axis_combo.itemText(i) for i in range(widget.z_axis_combo.count())}
+            assert "axis 0 (size 3)" in z_axes
+            assert "axis 1 (size 4)" not in z_axes
+        finally:
+            viewer.close()
+
+    def test_new_layers_appear_in_the_picker(self, qtbot):
+        import numpy as np
+
+        viewer = self._viewer_with_layers(qtbot)
+        try:
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            viewer.add_labels(np.zeros((2, 4, 4), dtype="int32"), name="added-later")
+            names = {widget.layer_combo.itemText(i) for i in range(widget.layer_combo.count())}
+            assert "added-later" in names
+        finally:
+            viewer.close()
+
+    def test_z_axis_selection_is_remembered(self, qtbot):
+        viewer = self._viewer_with_layers(qtbot)
+        try:
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.z_axis_combo.setCurrentIndex(widget.z_axis_combo.findData(0))
+            assert widget.z_axis == 0
+        finally:
+            viewer.close()
+
+
+class TestResultsFollowTheSourceAxes:
+    """A channel-selected result loses the channel axis, and napari
+    right-aligns arrays of differing ndim - so without padding, the result's
+    z would land on the source's channel axis and the slider would show the
+    wrong section."""
+
+    def test_channel_sliced_result_is_padded_back_to_source_ndim(self, qtbot):
+        import napari
+        import numpy as np
+
+        viewer = napari.Viewer(show=False)
+        qtbot.addWidget(viewer.window._qt_window)
+        try:
+            source = np.zeros((6, 4, 16, 16), dtype="int32")  # (Z, C, Y, X)
+            viewer.add_labels(source, name="src")
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.channel_axis_combo.setCurrentIndex(widget.channel_axis_combo.findData(1))
+
+            aligned = widget.align_to_source(np.zeros((6, 16, 16), dtype="int32"))
+
+            assert aligned.shape == (6, 1, 16, 16)
+            assert aligned.ndim == source.ndim
+        finally:
+            viewer.close()
+
+    def test_unsliced_result_is_left_alone(self, qtbot):
+        import napari
+        import numpy as np
+
+        viewer = napari.Viewer(show=False)
+        qtbot.addWidget(viewer.window._qt_window)
+        try:
+            viewer.add_labels(np.zeros((6, 4, 16, 16), dtype="int32"), name="src")
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.channel_axis_combo.setCurrentIndex(widget.channel_axis_combo.findData(1))
+
+            same = np.zeros((6, 4, 16, 16), dtype="int32")
+            assert widget.align_to_source(same).shape == same.shape
+        finally:
+            viewer.close()
+
+    def test_shown_result_keeps_the_full_z_stack_and_aligns_with_the_source(self, qtbot):
+        import napari
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = napari.Viewer(show=False)
+        qtbot.addWidget(viewer.window._qt_window)
+        try:
+            volume = np.zeros((6, 4, 16, 16), dtype="float32")
+            volume[:, 2, 2:6, 2:6] = 100.0
+            viewer.add_labels(volume.astype("int32"), name="src")
+            widget = ProtocolBuilderWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.channel_axis_combo.setCurrentIndex(widget.channel_axis_combo.findData(1))
+            widget.z_axis_combo.setCurrentIndex(widget.z_axis_combo.findData(0))
+
+            step = widget.pipeline.add_step(
+                Step.for_function(
+                    "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+                )
+            )
+            step.channel = 2
+            widget.run_pipeline({"volume": volume, "intensity": volume})
+            widget.show_step_result(step)
+
+            layer = [ly for ly in viewer.layers if "threshold_mask" in ly.name][0]
+            # Full depth retained, and same ndim as the source so napari's
+            # z slider drives both together.
+            assert layer.data.shape == (6, 1, 16, 16)
+            assert layer.extent.world[1][0] == 5  # z extent, not a channel extent
+
+            # 3D view should display (z, y, x), not (channel, y, x).
+            assert tuple(viewer.dims.order)[-3:] == (0, 2, 3)
+        finally:
+            viewer.close()
+
+
+class TestLayerTypeFollowsStepCategory:
+    """Uses ViewerModel rather than napari.Viewer: it has the same
+    add_image/add_labels/layers/dims API but builds no vispy visuals, and
+    creating an Image visual needs a real GL context that CI and this
+    container don't have."""
+
+    def _viewer(self):
+        from napari.components import ViewerModel
+
+        return ViewerModel()
+
+    def test_image_processing_result_is_an_image_not_labels(self, qtbot):
+        """gaussian_blur on integer data returns integers, but it is not a
+        label image - adding it as Labels renders it as random colours,
+        which is what prompted this."""
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = self._viewer()
+        volume = (np.random.default_rng(0).random((8, 8)) * 1000).astype("uint16")
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+
+        step = widget.pipeline.add_step(
+            Step.for_function("imageprocessing", "gaussian_blur", params={"sigma": 1.0})
+        )
+        widget.run_pipeline({"volume": volume, "intensity": volume})
+        # The premise: the result really is an integer array.
+        assert np.issubdtype(widget.last_context["volume"].dtype, np.integer)
+
+        widget.show_step_result(step)
+        layer = [ly for ly in viewer.layers if "gaussian_blur" in ly.name][0]
+        assert type(layer).__name__ == "Image"
+
+    def test_segmentation_result_is_still_labels(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = self._viewer()
+        volume = np.zeros((10, 10))
+        volume[1:4, 1:4] = 100.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        labels_step = widget.pipeline.add_step(
+            Step.for_function("segmentation", "label_components")
+        )
+        widget.run_pipeline({"volume": volume, "intensity": volume})
+        widget.show_step_result(labels_step)
+
+        layer = [ly for ly in viewer.layers if "label_components" in ly.name][0]
+        assert type(layer).__name__ == "Labels"

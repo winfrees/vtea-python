@@ -124,21 +124,52 @@ class ProtocolBuilderWidget(QWidget):
         self.analysis_pipeline = analysis_pipeline if analysis_pipeline is not None else Pipeline()
         self.viewer = napari_viewer
         self.last_context: dict = {}
+        # Which axis is depth; used to present results as full z-stacks.
+        self.z_axis: int | None = None
 
         root = QVBoxLayout(self)
 
+        # Source, then how to read its axes, then run - left to right in the
+        # order you have to decide them.
         top_row = QHBoxLayout()
-        if self.viewer is not None:
-            run_button = QPushButton("Run pipeline")
-            run_button.clicked.connect(self._run_pipeline_from_active_layer)
-            top_row.addWidget(run_button)
+
+        top_row.addWidget(QLabel("Image:"))
+        self.layer_combo = QComboBox()
+        self.layer_combo.setToolTip("Which loaded layer the pipeline runs on")
+        self.layer_combo.currentIndexChanged.connect(self._on_source_layer_changed)
+        top_row.addWidget(self.layer_combo, 1)
+
         top_row.addWidget(QLabel("Channel axis:"))
         self.channel_axis_combo = QComboBox()
         self.channel_axis_combo.currentIndexChanged.connect(self._on_channel_axis_changed)
         top_row.addWidget(self.channel_axis_combo)
-        top_row.addStretch()
+
+        top_row.addWidget(QLabel("Z axis:"))
+        self.z_axis_combo = QComboBox()
+        self.z_axis_combo.setToolTip(
+            "Which axis is depth. Used to show results as full z-stacks that "
+            "follow napari's slider and render in 3D."
+        )
+        self.z_axis_combo.currentIndexChanged.connect(self._on_z_axis_changed)
+        top_row.addWidget(self.z_axis_combo)
+
+        if self.viewer is not None:
+            run_button = QPushButton("Run pipeline")
+            run_button.setStyleSheet(
+                "QPushButton { background-color: #f0a500; color: #202020; font-weight: bold; "
+                "border: 1px solid #c78500; border-radius: 3px; padding: 4px 10px; }"
+                "QPushButton:hover { background-color: #ffc233; }"
+                "QPushButton:pressed { background-color: #d99000; }"
+            )
+            run_button.clicked.connect(self._run_pipeline_from_active_layer)
+            top_row.addWidget(run_button)
         root.addLayout(top_row)
-        self._refresh_channel_axis_choices()
+
+        if self.viewer is not None:
+            # Keep the picker in step with what's loaded.
+            self.viewer.layers.events.inserted.connect(lambda _e: self.refresh_sources())
+            self.viewer.layers.events.removed.connect(lambda _e: self.refresh_sources())
+        self.refresh_sources()
 
         self.processing_stack = StepStackWidget(
             self.PROCESSING_CATEGORIES,
@@ -183,14 +214,46 @@ class ProtocolBuilderWidget(QWidget):
 
     # -- data -------------------------------------------------------------
 
-    def active_image(self) -> np.ndarray | None:
-        """The selected layer's data, or None when there's nothing to run on."""
+    def source_layer(self):
+        """The layer chosen in the Image picker, falling back to the
+        selected layer so the widget still works before anything is picked."""
         if self.viewer is None:
             return None
-        layer = self.viewer.layers.selection.active
+        name = self.layer_combo.currentData()
+        if name is not None:
+            for layer in self.viewer.layers:
+                if layer.name == name:
+                    return layer
+        return self.viewer.layers.selection.active
+
+    def active_image(self) -> np.ndarray | None:
+        """The chosen layer's data, or None when there's nothing to run on."""
+        layer = self.source_layer()
         if layer is None:
             return None
         return np.asarray(layer.data)
+
+    def refresh_sources(self) -> None:
+        """Repopulate the Image picker and the axis pickers from the viewer."""
+        if self.viewer is not None:
+            previous = self.layer_combo.currentData()
+            self.layer_combo.blockSignals(True)
+            self.layer_combo.clear()
+            for layer in self.viewer.layers:
+                # Only things with pixels are candidates to process.
+                if hasattr(layer, "data") and getattr(layer.data, "ndim", 0) >= 2:
+                    self.layer_combo.addItem(layer.name, layer.name)
+            position = self.layer_combo.findData(previous)
+            self.layer_combo.setCurrentIndex(max(position, 0))
+            self.layer_combo.blockSignals(False)
+        self._refresh_channel_axis_choices()
+        self._refresh_z_axis_choices()
+
+    def _on_source_layer_changed(self, _index: int) -> None:
+        # A different image can have a different shape, so the axis choices
+        # have to be rebuilt against it.
+        self._refresh_channel_axis_choices()
+        self._refresh_z_axis_choices()
 
     def n_channels(self) -> int | None:
         """How many channels the active image has along the chosen channel
@@ -236,6 +299,39 @@ class ProtocolBuilderWidget(QWidget):
 
     # -- results ----------------------------------------------------------
 
+    def align_to_source(self, result: np.ndarray) -> np.ndarray:
+        """Give a result the source image's dimensionality again.
+
+        A channel-selecting step drops the channel axis, so its result has
+        one dimension fewer than the source. napari right-aligns arrays of
+        differing ndim, which silently maps that result's leading axis onto
+        the *channel* axis of the world instead of z - so scrolling z showed
+        the wrong thing. Re-inserting the channel axis as a singleton makes
+        the result line up axis-for-axis with the image it came from, and
+        keeps the full z-stack intact.
+        """
+        image = self.active_image()
+        channel_axis = self.pipeline.channel_axis
+        if image is None or channel_axis is None:
+            return result
+        if result.ndim == image.ndim - 1 and channel_axis <= result.ndim:
+            return np.expand_dims(result, channel_axis)
+        return result
+
+    def _order_dims_for_z(self) -> None:
+        """Put (z, y, x) in napari's displayed block so 3D view renders the
+        whole stack and the sliders are the remaining axes."""
+        if self.viewer is None or self.z_axis is None:
+            return
+        ndim = self.viewer.dims.ndim
+        if self.z_axis >= ndim:
+            return
+        spatial = [self.z_axis, ndim - 2, ndim - 1]
+        # Anything that isn't z/y/x becomes a slider, ahead of them.
+        order = [axis for axis in range(ndim) if axis not in spatial] + spatial
+        if len(set(order)) == ndim:
+            self.viewer.dims.order = tuple(order)
+
     def show_step_result(self, step: Step) -> None:
         """Add one step's result to the viewer as a layer."""
         if self.viewer is None:
@@ -244,18 +340,26 @@ class ProtocolBuilderWidget(QWidget):
         if not isinstance(result, np.ndarray) or result.ndim < 2:
             self.status_label.setText(f"{step.output_key}: not an image, nothing to show")
             return
+
+        result = self.align_to_source(result)
         name = f"{step.function_name} ({step.output_key})"
         for existing in list(self.viewer.layers):
             if existing.name == name:
                 self.viewer.layers.remove(existing)
-        # Integer arrays are object labels; booleans are masks, which napari
-        # also renders best as labels. Anything else is intensity.
-        if result.dtype == bool:
+
+        # Layer type follows what the step *is*, not what dtype it happens
+        # to return: a blurred uint16 image is integer but is not a label
+        # image, and adding it as Labels renders it as random colours.
+        if step.category == "imageprocessing":
+            self.viewer.add_image(result, name=name)
+        elif result.dtype == bool:
             self.viewer.add_labels(result.astype(np.uint8), name=name)
         elif np.issubdtype(result.dtype, np.integer):
             self.viewer.add_labels(result.astype(np.int32), name=name)
         else:
             self.viewer.add_image(result, name=name)
+
+        self._order_dims_for_z()
         self.status_label.setText(f"Added layer '{name}'")
 
     def results_table(self) -> pd.DataFrame | None:
@@ -300,3 +404,20 @@ class ProtocolBuilderWidget(QWidget):
         self.pipeline.channel_axis = self.channel_axis_combo.currentData()
         self.analysis_pipeline.channel_axis = self.pipeline.channel_axis
         self.refresh_steps()
+
+    def _refresh_z_axis_choices(self) -> None:
+        image = self.active_image()
+        self.z_axis_combo.blockSignals(True)
+        previous = self.z_axis_combo.currentData()
+        self.z_axis_combo.clear()
+        self.z_axis_combo.addItem("None (2D)", None)
+        if image is not None:
+            for axis, size in enumerate(image.shape):
+                self.z_axis_combo.addItem(f"axis {axis} (size {size})", axis)
+        position = self.z_axis_combo.findData(previous if previous is not None else self.z_axis)
+        self.z_axis_combo.setCurrentIndex(max(position, 0))
+        self.z_axis_combo.blockSignals(False)
+        self.z_axis = self.z_axis_combo.currentData()
+
+    def _on_z_axis_changed(self, _index: int) -> None:
+        self.z_axis = self.z_axis_combo.currentData()
