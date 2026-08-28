@@ -39,7 +39,7 @@ class StepStackWidget(QWidget):
     `categories` of the step registry."""
 
     steps_changed = Signal()
-    show_result_requested = Signal(object)  # vtea_core.workflow.Step
+    run_step_requested = Signal(object)  # vtea_core.workflow.Step
 
     def __init__(
         self,
@@ -50,6 +50,9 @@ class StepStackWidget(QWidget):
         seed_keys: set[str] | None = None,
         n_channels_provider: Callable[[], int | None] | None = None,
         results_provider: Callable[[], dict] | None = None,
+        default_channel_provider: Callable[[], int | None] | None = None,
+        action_text: str = "",
+        action_style: str = "",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -58,14 +61,27 @@ class StepStackWidget(QWidget):
         self.seed_keys = set(seed_keys or {"volume", "intensity"})
         self._n_channels_provider = n_channels_provider or (lambda: None)
         self._results_provider = results_provider or dict
+        self._default_channel_provider = default_channel_provider or (lambda: None)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
 
-        if title:
-            heading = QLabel(title)
-            heading.setStyleSheet("font-weight: bold;")
-            root.addWidget(heading)
+        self.action_button: QPushButton | None = None
+        if title or action_text:
+            title_row = QHBoxLayout()
+            if title:
+                heading = QLabel(title)
+                heading.setStyleSheet("font-weight: bold;")
+                title_row.addWidget(heading)
+            if action_text:
+                # The pane's own run button sits with its heading, so it is
+                # obvious which set of steps it applies to.
+                self.action_button = QPushButton(action_text)
+                if action_style:
+                    self.action_button.setStyleSheet(action_style)
+                title_row.addWidget(self.action_button)
+            title_row.addStretch()
+            root.addLayout(title_row)
 
         add_row = QHBoxLayout()
         self.category_combo = QComboBox()
@@ -104,7 +120,17 @@ class StepStackWidget(QWidget):
         if not category or not function_name:
             return
         available = self.pipeline.available_keys(self.seed_keys)
-        self.pipeline.add_step(Step.for_function(category, function_name, available=available))
+        # Inherit the channel already in use: picking channel 2 for
+        # segmentation and leaving a later step on "all channels" fed
+        # mismatched shapes into it and aborted the run.
+        self.pipeline.add_step(
+            Step.for_function(
+                category,
+                function_name,
+                available=available,
+                channel=self._default_channel_provider(),
+            )
+        )
         self.refresh_steps()
         self.steps_changed.emit()
 
@@ -121,7 +147,7 @@ class StepStackWidget(QWidget):
             card = StepCardWidget(position, step, thumbnail=result)
             card.edit_requested.connect(lambda s=step: self._edit_step(s))
             card.delete_requested.connect(lambda s=step: self._delete_step(s))
-            card.show_requested.connect(lambda s=step: self.show_result_requested.emit(s))
+            card.run_requested.connect(lambda s=step: self.run_step_requested.emit(s))
             self._steps_layout.insertWidget(self._steps_layout.count() - 1, card)
 
     def _edit_step(self, step: Step) -> None:

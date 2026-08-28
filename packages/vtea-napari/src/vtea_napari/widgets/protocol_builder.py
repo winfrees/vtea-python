@@ -22,12 +22,13 @@ import numpy as np
 import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -39,6 +40,18 @@ from vtea_napari.widgets.plot import ScatterPlotWidget
 from vtea_napari.widgets.step_stack import StepStackWidget
 
 ALL_CHANNELS = "All channels"
+
+# The dock was taking more screen than its contents warranted; scale text
+# to 75% of the application font and tighten the surrounding padding.
+COMPACT_FONT_SCALE = 0.75
+
+RUN_BUTTON_STYLE = (
+    "QPushButton { background-color: #f0a500; color: #202020; font-weight: bold; "
+    "border: 1px solid #c78500; border-radius: 3px; padding: 2px 8px; }"
+    "QPushButton:hover { background-color: #ffc233; }"
+    "QPushButton:pressed { background-color: #d99000; }"
+)
+
 
 
 class EditStepDialog(QDialog):
@@ -153,16 +166,7 @@ class ProtocolBuilderWidget(QWidget):
         self.z_axis_combo.currentIndexChanged.connect(self._on_z_axis_changed)
         top_row.addWidget(self.z_axis_combo)
 
-        if self.viewer is not None:
-            run_button = QPushButton("Run pipeline")
-            run_button.setStyleSheet(
-                "QPushButton { background-color: #f0a500; color: #202020; font-weight: bold; "
-                "border: 1px solid #c78500; border-radius: 3px; padding: 4px 10px; }"
-                "QPushButton:hover { background-color: #ffc233; }"
-                "QPushButton:pressed { background-color: #d99000; }"
-            )
-            run_button.clicked.connect(self._run_pipeline_from_active_layer)
-            top_row.addWidget(run_button)
+        top_row.addStretch()
         root.addLayout(top_row)
 
         if self.viewer is not None:
@@ -178,8 +182,13 @@ class ProtocolBuilderWidget(QWidget):
             seed_keys={"volume", "intensity"},
             n_channels_provider=lambda: self.n_channels(),
             results_provider=lambda: self.last_context,
+            default_channel_provider=lambda: self.default_channel(),
+            action_text="Run Processing" if napari_viewer is not None else "",
+            action_style=RUN_BUTTON_STYLE,
         )
-        self.processing_stack.show_result_requested.connect(self.show_step_result)
+        if self.processing_stack.action_button is not None:
+            self.processing_stack.action_button.clicked.connect(self.run_processing)
+        self.processing_stack.run_step_requested.connect(self.run_single_step)
 
         self.analysis_stack = StepStackWidget(
             self.ANALYSIS_CATEGORIES,
@@ -189,8 +198,9 @@ class ProtocolBuilderWidget(QWidget):
             seed_keys={"volume", "intensity", "labels", "mask"},
             n_channels_provider=lambda: self.n_channels(),
             results_provider=lambda: self.last_context,
+            default_channel_provider=lambda: self.default_channel(),
         )
-        self.analysis_stack.show_result_requested.connect(self.show_step_result)
+        self.analysis_stack.run_step_requested.connect(self.run_single_step)
 
         analysis_pane = QWidget()
         analysis_layout = QVBoxLayout(analysis_pane)
@@ -211,6 +221,29 @@ class ProtocolBuilderWidget(QWidget):
 
         self.status_label = QLabel("")
         root.addWidget(self.status_label)
+
+        self._apply_compact_style(root)
+
+    def _apply_compact_style(self, root: QVBoxLayout) -> None:
+        """Shrink text ~25% and tighten the padding around everything.
+
+        The dock was claiming a lot of screen for the amount it shows. Scaled
+        off the application font rather than a hard-coded point size, so it
+        stays proportional on a high-DPI display or when the user has already
+        changed napari's font size.
+        """
+        base = QApplication.font().pointSizeF()
+        if base > 0:
+            self.setStyleSheet(
+                f"QWidget {{ font-size: {base * COMPACT_FONT_SCALE:.1f}pt; }}"
+                f"{RUN_BUTTON_STYLE}"
+            )
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(3)
+        for layout in self.findChildren(QHBoxLayout) + self.findChildren(QVBoxLayout):
+            layout.setSpacing(3)
+        for card_layout in self.findChildren(QFormLayout):
+            card_layout.setVerticalSpacing(2)
 
     # -- data -------------------------------------------------------------
 
@@ -276,6 +309,98 @@ class ProtocolBuilderWidget(QWidget):
         self.refresh_steps()
         self._refresh_plot()
         return result
+
+    def default_channel(self) -> int | None:
+        """The channel a newly added step should start on: whichever one the
+        protocol is already using. Leaving a later step on "all channels"
+        while an earlier one selected channel 2 fed a 4D intensity array and
+        a 3D label array into the same function, which aborted the run."""
+        for pipeline in (self.analysis_pipeline, self.pipeline):
+            for step in reversed(pipeline.steps):
+                if step.channel is not None:
+                    return step.channel
+        return None
+
+    def seed_context(self) -> dict:
+        """Starting context for a run: the chosen image under both the key
+        processing consumes and the untouched one measurements read."""
+        image = self.active_image()
+        if image is None:
+            return {}
+        return {"volume": image, "intensity": image}
+
+    def run_processing(self) -> dict:
+        """Run only the processing pipeline. Analysis steps are run
+        individually from their own cards - they are not a chain."""
+        context = dict(self.last_context) or {}
+        seed = self.seed_context()
+        if not seed:
+            self.status_label.setText("Select an image layer to run on.")
+            return context
+        context.update(seed)
+        try:
+            self.last_context = self.pipeline.run(context)
+        except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
+            self.status_label.setText(f"{type(exc).__name__}: {exc}")
+            return self.last_context
+        self.refresh_steps()
+        self._refresh_plot()
+        self.status_label.setText("Processing finished.")
+        return self.last_context
+
+    def run_single_step(self, step: Step) -> None:
+        """Run one step against everything computed so far and show what it
+        produced.
+
+        This is what lets the analysis steps be a graph rather than a chain:
+        measurements can feed clustering, reduction and gating
+        independently, and a clustering result can be folded back into the
+        measurement table as another feature.
+        """
+        context = dict(self.last_context)
+        for key, value in self.seed_context().items():
+            context.setdefault(key, value)
+
+        try:
+            result = step.run(
+                context,
+                channel_axis=self.pipeline.channel_axis,
+                full_ndim=self._seed_ndim(context),
+            )
+        except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
+            self.status_label.setText(f"{step.function_name}: {type(exc).__name__}: {exc}")
+            return
+
+        context[step.output_key] = result
+        self.last_context = context
+        self._merge_into_measurements(step.output_key, result)
+        self.refresh_steps()
+        self._refresh_plot()
+
+        if isinstance(result, np.ndarray) and result.ndim >= 2:
+            self.show_step_result(step)
+        else:
+            self.status_label.setText(f"Ran {step.function_name} -> '{step.output_key}'")
+
+    def _seed_ndim(self, context: dict) -> int | None:
+        arrays = [value for value in context.values() if isinstance(value, np.ndarray)]
+        return max((value.ndim for value in arrays), default=None)
+
+    def _merge_into_measurements(self, key: str, result) -> None:
+        """Fold a per-object result into the measurement table so it becomes
+        a feature - a cluster id or a reduced dimension is then available to
+        later steps and as a plot axis, which is the feedback the analysis
+        steps are meant to support."""
+        frame = self.last_context.get("measurements")
+        if key == "measurements" or not isinstance(frame, pd.DataFrame) or frame.empty:
+            return
+        if not isinstance(result, np.ndarray):
+            return
+        if result.ndim == 1 and len(result) == len(frame):
+            frame[key] = result
+        elif result.ndim == 2 and result.shape[0] == len(frame) and result.shape[1] <= 8:
+            for column in range(result.shape[1]):
+                frame[f"{key}{column + 1}"] = result[:, column]
 
     def _run_pipeline_from_active_layer(self) -> None:
         image = self.active_image()

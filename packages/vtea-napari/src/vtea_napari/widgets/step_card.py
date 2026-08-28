@@ -39,7 +39,7 @@ class StepCardWidget(QFrame):
 
     edit_requested = Signal()
     delete_requested = Signal()
-    show_requested = Signal()
+    run_requested = Signal()
 
     def __init__(self, position: int, step: Step, parent=None, thumbnail: np.ndarray | None = None):
         super().__init__(parent)
@@ -68,13 +68,14 @@ class StepCardWidget(QFrame):
 
         outer.addStretch()
 
-        # Enabled only once this step has actually produced something - a
-        # "Show" that silently does nothing is worse than a greyed-out one.
-        self.show_button = QPushButton("Show")
-        self.show_button.setToolTip("Add this step's result to the napari viewer as a layer")
-        self.show_button.setEnabled(thumbnail is not None)
-        self.show_button.clicked.connect(self.show_requested.emit)
-        outer.addWidget(self.show_button)
+        # Run this one step on its own, against whatever the pipeline has
+        # produced so far, and display the result. Analysis steps are not a
+        # chain - measurements feeds clustering, clustering feeds back in as
+        # a feature - so each needs to be runnable independently.
+        self.run_button = QPushButton("Run")
+        self.run_button.setToolTip("Run just this step and show its result")
+        self.run_button.clicked.connect(self.run_requested.emit)
+        outer.addWidget(self.run_button)
 
         edit_button = QPushButton("Edit")
         edit_button.clicked.connect(self.edit_requested.emit)

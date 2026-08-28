@@ -242,7 +242,8 @@ class TestRunPipelineThumbnails:
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
         buttons = [b.text() for b in widget.findChildren(QPushButton)]
-        assert "Run pipeline" not in buttons
+        assert "Run Processing" not in buttons
+        assert widget.processing_stack.action_button is None
 
     def test_run_button_pulls_volume_from_active_layer(self, qtbot):
         import napari
@@ -277,7 +278,7 @@ class TestRunPipelineThumbnails:
             )
             widget.refresh_steps()
 
-            _click_button(qtbot, widget, "Run pipeline")
+            _click_button(qtbot, widget.processing_stack, "Run Processing")
 
             assert widget.last_context["mask"].sum() == 4
         finally:
@@ -470,17 +471,24 @@ class TestShowStepResult:
         qtbot.addWidget(viewer.window._qt_window)
         return viewer
 
-    def test_show_button_is_disabled_until_the_step_has_run(self, qtbot):
+    def test_every_card_has_its_own_run_button(self, qtbot):
+        """Analysis steps form a graph rather than a chain, so each step has
+        to be runnable on its own."""
         from vtea_core.workflow import Step
         from vtea_napari.widgets.step_card import StepCardWidget
 
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
         widget.pipeline.add_step(Step.for_function("segmentation", "threshold_mask"))
+        widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements")
+        )
         widget.refresh_steps()
 
-        card = widget.processing_stack.findChildren(StepCardWidget)[0]
-        assert not card.show_button.isEnabled()
+        for stack in (widget.processing_stack, widget.analysis_stack):
+            card = stack.findChildren(StepCardWidget)[0]
+            assert card.run_button.text() == "Run"
+            assert card.run_button.isEnabled()
 
     def test_show_adds_a_labels_layer_for_an_integer_result(self, qtbot):
         import numpy as np
@@ -868,3 +876,224 @@ class TestLayerTypeFollowsStepCategory:
 
         layer = [ly for ly in viewer.layers if "label_components" in ly.name][0]
         assert type(layer).__name__ == "Labels"
+
+
+def _model_viewer():
+    """ViewerModel has the same layers/dims/add_* API as napari.Viewer but
+    builds no vispy visuals, which need a GL context this container lacks."""
+    from napari.components import ViewerModel
+
+    return ViewerModel()
+
+
+class TestRunProcessingButton:
+    def test_lives_with_the_processing_heading_and_is_named_for_it(self, qtbot):
+        viewer = _model_viewer()
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+
+        button = widget.processing_stack.action_button
+        assert button is not None
+        assert button.text() == "Run Processing"
+        # It belongs to the processing pane, not the analysis one.
+        assert widget.analysis_stack.action_button is None
+
+    def test_runs_only_the_processing_steps(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        volume = np.zeros((10, 10))
+        volume[1:4, 1:4] = 100.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements")
+        )
+
+        widget.run_processing()
+
+        assert widget.last_context["labels"].max() == 1
+        # The analysis step is run from its own card, not by this button.
+        assert "measurements" not in widget.last_context
+
+
+class TestPerStepRun:
+    def _prepared(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        volume = np.zeros((12, 12))
+        volume[1:4, 1:4] = 100.0
+        volume[7:10, 7:10] = 200.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.run_processing()
+        return widget
+
+    def test_running_one_analysis_step_does_not_need_the_others(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._prepared(qtbot)
+        measure = widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements")
+        )
+        widget.run_single_step(measure)
+        assert len(widget.last_context["measurements"]) == 2
+
+    def test_measurements_can_feed_several_steps_independently(self, qtbot):
+        """One-to-many: clustering and reduction both consume measurements,
+        neither depends on the other."""
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        widget = self._prepared(qtbot)
+        measure = widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements")
+        )
+        widget.run_single_step(measure)
+
+        features = widget.last_context["measurements"][["mean", "count"]].to_numpy()
+        widget.last_context["data"] = features
+
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        reduce_step = widget.analysis_pipeline.add_step(
+            Step.for_function("reduction", "pca", params={"n_components": 2})
+        )
+        widget.run_single_step(cluster)
+        widget.run_single_step(reduce_step)
+
+        assert len(widget.last_context["clusters"]) == 2
+        assert np.asarray(widget.last_context["reduced"]).shape[0] == 2
+
+    def test_cluster_result_feeds_back_as_a_measurement_feature(self, qtbot):
+        """A clustering result becomes a column of the measurement table, so
+        it can be used as a plot axis or by a later step."""
+        from vtea_core.workflow import Step
+
+        widget = self._prepared(qtbot)
+        measure = widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements")
+        )
+        widget.run_single_step(measure)
+        widget.last_context["data"] = widget.last_context["measurements"][
+            ["mean", "count"]
+        ].to_numpy()
+
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        widget.run_single_step(cluster)
+
+        assert "clusters" in widget.last_context["measurements"].columns
+        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        assert "clusters" in axes
+
+    def test_a_failing_step_reports_instead_of_raising(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._prepared(qtbot)
+        # kmeans has no "data" in the context yet.
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        widget.run_single_step(cluster)
+        assert "kmeans" in widget.status_label.text()
+
+
+class TestPlotIsFedByMeasurements:
+    def test_measured_features_become_plot_axes_on_channel_sliced_data(self, qtbot):
+        """The reported symptom: nothing populated the x/y axes. The cause
+        was extract_measurements raising, because the segmentation step was
+        channel-sliced to 3D while intensity stayed 4D - so the run aborted
+        before producing any measurements."""
+        import numpy as np
+
+        viewer = _model_viewer()
+        volume = np.zeros((6, 4, 16, 16), dtype="float32")
+        volume[:, 2, 2:6, 2:6] = 100.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.channel_axis_combo.setCurrentIndex(widget.channel_axis_combo.findData(1))
+
+        widget.processing_stack.category_combo.setCurrentText("segmentation")
+        widget.processing_stack.function_combo.setCurrentText("threshold_mask")
+        widget.processing_stack._add_step_from_selection()
+        threshold = widget.pipeline.steps[0]
+        threshold.params = {"method": "fixed", "value": 50.0}
+        threshold.channel = 2
+
+        widget.processing_stack.function_combo.setCurrentText("label_components")
+        widget.processing_stack._add_step_from_selection()
+        widget.analysis_stack.category_combo.setCurrentText("measurements")
+        widget.analysis_stack.function_combo.setCurrentText("extract_measurements")
+        widget.analysis_stack._add_step_from_selection()
+
+        widget.run_processing()
+        widget.run_single_step(widget.analysis_pipeline.steps[0])
+
+        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        assert {"mean", "count", "sum", "stddev"} <= axes
+
+    def test_new_steps_inherit_the_channel_already_in_use(self, qtbot):
+        import numpy as np
+
+        viewer = _model_viewer()
+        viewer.add_image(np.zeros((6, 4, 16, 16), dtype="float32"), name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.channel_axis_combo.setCurrentIndex(widget.channel_axis_combo.findData(1))
+
+        widget.processing_stack.category_combo.setCurrentText("segmentation")
+        widget.processing_stack.function_combo.setCurrentText("threshold_mask")
+        widget.processing_stack._add_step_from_selection()
+        widget.pipeline.steps[0].channel = 2
+
+        widget.analysis_stack.category_combo.setCurrentText("measurements")
+        widget.analysis_stack.function_combo.setCurrentText("extract_measurements")
+        widget.analysis_stack._add_step_from_selection()
+
+        assert widget.analysis_pipeline.steps[0].channel == 2
+
+
+class TestCompactStyling:
+    def test_text_is_scaled_down(self, qtbot):
+        from qtpy.QtWidgets import QApplication
+
+        from vtea_napari.widgets.protocol_builder import COMPACT_FONT_SCALE
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+
+        expected = QApplication.font().pointSizeF() * COMPACT_FONT_SCALE
+        assert f"{expected:.1f}pt" in widget.styleSheet()
+        assert COMPACT_FONT_SCALE == 0.75
+
+    def test_layout_padding_is_tightened(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        margins = widget.layout().contentsMargins()
+        assert margins.top() <= 4 and margins.left() <= 4
+        assert widget.layout().spacing() <= 3
