@@ -23,6 +23,12 @@ _COLUMNS = ["Visible", "Color", "Name", "X axis", "Y axis", "Gated", "Total", "%
 _VISIBLE_COL, _COLOR_COL, _NAME_COL = 0, 1, 2
 
 
+def _measurable(gate, frame: pd.DataFrame) -> bool:
+    """Whether this gate's axes exist in `frame`, so its membership can be
+    computed at all."""
+    return gate.x_axis in frame.columns and gate.y_axis in frame.columns
+
+
 class GateTableWidget(QTableWidget):
     """Emits gate_selected/gate_visibility_changed/gate_renamed; the parent
     widget owns the GateSet and applies the change, then calls refresh()."""
@@ -61,13 +67,25 @@ class GateTableWidget(QTableWidget):
 
             self.setItem(row, _NAME_COL, QTableWidgetItem(gate.name))
 
-            summary = gate_set.summary(gate.id, frame)
+            # A gate can outlive the table it was drawn on - reopened from
+            # JSON before anything is measured, or against a run whose
+            # measurement step produced different features. Show it with
+            # blank counts rather than failing to draw the list at all.
+            if _measurable(gate, frame):
+                summary = gate_set.summary(gate.id, frame)
+                counts = (
+                    str(summary["n_gated"]),
+                    str(summary["n_total"]),
+                    f"{summary['percent']:.1f}",
+                )
+            else:
+                counts = ("-", "-", "-")
             for column, text in (
                 (3, gate.x_axis),
                 (4, gate.y_axis),
-                (5, str(summary["n_gated"])),
-                (6, str(summary["n_total"])),
-                (7, f"{summary['percent']:.1f}"),
+                (5, counts[0]),
+                (6, counts[1]),
+                (7, counts[2]),
             ):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)

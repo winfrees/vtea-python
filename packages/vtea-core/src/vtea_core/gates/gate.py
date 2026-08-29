@@ -27,6 +27,7 @@ already-array-based equivalent.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -103,3 +104,29 @@ class GateSet:
         n_gated = int(mask.sum())
         percent = (100.0 * n_gated / n_total) if n_total else 0.0
         return {"n_gated": n_gated, "n_total": n_total, "percent": percent}
+
+    def statistics(
+        self, gate_id: str, frame: pd.DataFrame, columns: Iterable[str] | None = None
+    ) -> dict:
+        """summary(), plus the mean of each named column over the gated
+        objects only - "how many cells did I select, and how bright are
+        they?", the question a gate is drawn to answer.
+
+        `columns` defaults to the gate's own two axes, which is what the gate
+        manager shows for the plot currently on screen. A column missing from
+        `frame`, or an empty gate, gives a NaN mean rather than raising: an
+        empty selection is a normal thing to draw, not an error.
+        """
+        stats = self.summary(gate_id, frame)
+        gate = self._gates[gate_id]
+        if columns is None:
+            columns = (gate.x_axis, gate.y_axis)
+        mask = self.mask(gate_id, frame)
+        means: dict[str, float] = {}
+        for column in columns:
+            if column not in frame.columns or not mask.any():
+                means[column] = float("nan")
+                continue
+            means[column] = float(frame.loc[mask, column].mean())
+        stats["means"] = means
+        return stats

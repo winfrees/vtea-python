@@ -31,10 +31,14 @@ Phases 0-4 are done. Implemented and tested:
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`, `auto_k_kmeans`
 - **reduction**: `pca`, `pca_explained_variance`, `isomap`,
   `laplacian_eigenmap`, `tsne`
-- **gates**: `polygon_gate`, `rectangle_gate` (boolean-array primitives);
+- **gates**: `polygon_gate`, `rectangle_gate`, `rectangle_vertices`
+  (boolean-array primitives);
   `Gate`/`GateSet` (new) - named, stateful gates with real hierarchy
-  (a subgate's membership is intersected with its parent's), backing
-  `vtea-napari`'s Object Explorer widget
+  (a subgate's membership is intersected with its parent's) and per-gate
+  statistics (`GateSet.statistics` - the gated cell count plus the mean of
+  each plotted feature over those cells); `save_gates`/`load_gates`, plain
+  versioned JSON so the polygons behind a figure can be reopened and
+  archived with it
 - **imageprocessing**: `gaussian_blur`, `median_filter`, `enhance_contrast`,
   `subtract_background`
 - **classification**: `class_map` (no extra dependencies);

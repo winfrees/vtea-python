@@ -278,7 +278,8 @@ class TestRunPipelineThumbnails:
             )
             widget.refresh_steps()
 
-            _click_button(qtbot, widget.processing_stack, "Run Processing")
+            # Each card runs its own step; there is no pane-level Run button.
+            _click_button(qtbot, widget.processing_stack, "Run")
 
             assert widget.last_context["mask"].sum() == 4
         finally:
@@ -644,27 +645,107 @@ class TestAnalysisPaneAndPlot:
 
 
 class TestPaneSizing:
-    def test_both_panes_share_the_height(self, qtbot):
-        """The steps list used to be squeezed to about one visible card."""
+    def test_the_three_panes_share_the_height(self, qtbot):
+        """The steps list used to be squeezed to about one visible card, and
+        the plot had no pane of its own to resize with."""
         from vtea_napari.widgets.step_stack import MINIMUM_STACK_HEIGHT
 
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
 
-        assert widget.splitter.count() == 2
+        # Processing, analysis, results.
+        assert widget.splitter.count() == 3
         assert widget.processing_stack.scroll.minimumHeight() >= MINIMUM_STACK_HEIGHT
         assert not widget.splitter.childrenCollapsible()
 
-        # The real requirement: at a realistic dock height, neither pane is
-        # squeezed to a sliver - each should get a substantial share.
+        # The real requirement: at a realistic dock height, no pane is
+        # squeezed to a sliver - each should get roughly a third.
         widget.resize(500, 900)
         widget.show()
         qtbot.waitExposed(widget)
         sizes = widget.splitter.sizes()
-        assert len(sizes) == 2
+        assert len(sizes) == 3
         total = sum(sizes)
         assert total > 0
-        assert min(sizes) / total > 0.3, f"panes split unevenly: {sizes}"
+        assert min(sizes) / total > 0.2, f"panes split unevenly: {sizes}"
+
+    def test_the_plot_takes_two_thirds_of_the_results_row(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        widget.resize(600, 900)
+        widget.show()
+        qtbot.waitExposed(widget)
+
+        plot_width, gate_width = widget.results_splitter.sizes()
+        assert plot_width > gate_width
+        share = plot_width / (plot_width + gate_width)
+        assert 0.55 < share < 0.8, f"plot took {share:.0%} of the results row"
+
+    def test_the_plot_canvas_grows_with_its_pane(self, qtbot):
+        """The reported symptom: the y axis did not resize. A canvas with
+        the default Preferred size policy keeps its figsize instead."""
+        from qtpy.QtWidgets import QSizePolicy
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        assert widget.plot.canvas.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
+
+        widget.resize(600, 700)
+        widget.show()
+        qtbot.waitExposed(widget)
+        short = widget.plot.canvas.height()
+        widget.resize(600, 1400)
+        qtbot.waitUntil(lambda: widget.plot.canvas.height() > short, timeout=2000)
+
+    def test_the_dock_is_capped_at_thirty_percent_of_the_screen(self, qtbot):
+        from qtpy.QtWidgets import QApplication
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry().width()
+        assert widget.maximumWidth() <= int(available * 0.30) + 1
+
+
+class TestLogView:
+    def test_long_messages_wrap_instead_of_widening_the_dock(self, qtbot):
+        from qtpy.QtWidgets import QPlainTextEdit
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        assert widget.status_label.lineWrapMode() == QPlainTextEdit.LineWrapMode.WidgetWidth
+
+    def test_it_keeps_earlier_messages(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        widget.status_label.setText("first")
+        widget.status_label.setText("second")
+        assert "first" in widget.status_label.text()
+        assert "second" in widget.status_label.text()
+
+    def test_it_is_capped_at_a_tenth_of_the_dock(self, qtbot):
+        from vtea_napari.widgets.log_view import MINIMUM_HEIGHT
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        widget.resize(500, 1000)
+        widget.show()
+        qtbot.waitExposed(widget)
+        assert widget.status_label.maximumHeight() <= max(100, MINIMUM_HEIGHT)
+
+    def test_it_scrolls_rather_than_growing(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        widget.resize(500, 1000)
+        widget.show()
+        qtbot.waitExposed(widget)
+        capped = widget.status_label.maximumHeight()
+        for index in range(40):
+            widget.status_label.setText(f"message {index}")
+        assert widget.status_label.maximumHeight() == capped
+        assert widget.status_label.verticalScrollBar().maximum() > 0
 
 
 class TestSourceAndAxisPickers:
@@ -894,18 +975,19 @@ def _model_viewer():
 
 
 class TestRunProcessingButton:
-    def test_lives_with_the_processing_heading_and_is_named_for_it(self, qtbot):
+    def test_neither_pane_has_a_run_button_of_its_own(self, qtbot):
+        """Per-step Run buttons replaced it: they are finer-grained and
+        unambiguous about what will run."""
         viewer = _model_viewer()
         widget = ProtocolBuilderWidget(napari_viewer=viewer)
         qtbot.addWidget(widget)
 
-        button = widget.processing_stack.action_button
-        assert button is not None
-        assert button.text() == "Run Processing"
-        # It belongs to the processing pane, not the analysis one.
+        assert widget.processing_stack.action_button is None
         assert widget.analysis_stack.action_button is None
+        for button in widget.findChildren(QPushButton):
+            assert button.text() != "Run Processing"
 
-    def test_runs_only_the_processing_steps(self, qtbot):
+    def test_the_method_still_runs_the_processing_steps(self, qtbot):
         import numpy as np
 
         from vtea_core.workflow import Step
@@ -1452,3 +1534,57 @@ class TestAnalysisResultsBecomeFeatures:
             if column != "object_id" and not column.startswith("centroid-")
         )
         assert context["data"].shape[1] == expected
+
+
+class TestGateManagerPane:
+    """The results row: plot on the left, gates on the right, both driven by
+    the same measurement table."""
+
+    def test_it_sits_beside_the_plot(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        assert widget.results_splitter.count() == 2
+        assert widget.results_splitter.widget(0) is widget.plot
+        assert widget.results_splitter.widget(1) is widget.gate_manager
+
+    def test_it_is_fed_the_measurement_table(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        assert widget.gate_manager.frame is not None
+        assert len(widget.gate_manager.frame) == len(widget.results_table())
+
+    def test_a_gate_drawn_on_the_plot_counts_measured_cells(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        frame = widget.results_table()
+        x, y = widget.plot.x_column, widget.plot.y_column
+        # A rectangle spanning the whole data range selects everything.
+        vertices = _spanning_rectangle(frame, x, y)
+
+        gate = widget.gate_manager.add_gate_from_vertices(vertices)
+        widget.gate_manager._on_gate_selected(gate.id)
+
+        assert f"{len(frame)} of {len(frame)} cells" in widget.gate_manager.stats_label.text()
+
+    def test_gates_survive_a_re_run_and_are_recounted(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        frame = widget.results_table()
+        vertices = _spanning_rectangle(frame, widget.plot.x_column, widget.plot.y_column)
+        gate = widget.gate_manager.add_gate_from_vertices(vertices)
+
+        measure = widget.analysis_pipeline.steps[0]
+        widget.run_single_step(measure)
+
+        assert gate.id in widget.gate_manager.gate_set
+        assert widget.gate_manager.frame is not None
+
+
+def _spanning_rectangle(frame, x_column, y_column):
+    from vtea_core.gates import rectangle_vertices
+
+    return rectangle_vertices(
+        frame[x_column].min() - 1,
+        frame[y_column].min() - 1,
+        frame[x_column].max() + 1,
+        frame[y_column].max() + 1,
+    )

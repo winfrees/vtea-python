@@ -32,3 +32,21 @@ def rectangle_gate(
     x = np.asarray(x)
     y = np.asarray(y)
     return (x >= x_min) & (x <= x_max) & (y >= y_min) & (y <= y_max)
+
+
+def rectangle_vertices(x0: float, y0: float, x1: float, y1: float) -> np.ndarray:
+    """The four corners of the rectangle spanned by two opposite corners,
+    counter-clockwise, as a polygon.
+
+    A rectangle drawn by dragging on the plot is stored as a 4-vertex
+    polygon rather than its own gate type: Gate already carries vertices,
+    and every downstream consumer (membership, overlay drawing, JSON) then
+    treats the two kinds identically. The corners are ordered rather than
+    taken as given so a rectangle dragged right-to-left or bottom-to-top
+    still encloses its interior.
+    """
+    left, right = sorted((float(x0), float(x1)))
+    bottom, top = sorted((float(y0), float(y1)))
+    return np.array(
+        [[left, bottom], [right, bottom], [right, top], [left, top]], dtype=float
+    )

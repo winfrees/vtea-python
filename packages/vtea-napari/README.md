@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (167 tests, including real
+Phase 4 done. Implemented and tested (204 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -23,8 +23,11 @@ widget and run it):
   edit parameters through a form, delete steps - the same operations
   `vtea.protocol`'s Java UI exposed. The resulting `vtea_core.workflow.Pipeline`
   runs the same whether triggered from this widget or a script.
-  `run_pipeline()` (and the "Run pipeline" button, shown when opened as a
-  plugin with a napari viewer) also drives step-card thumbnails.
+  Every step card has its own Run button - there is no pane-level Run, since
+  the analysis steps are a graph rather than a chain - and each run drives
+  that card's thumbnail. The dock is three vertically-split panes
+  (processing, analysis, results) capped at 30% of the screen width, with the
+  results pane splitting 2:1 between the plot and the gate manager.
   Steps added from the menu wire themselves up via `Step.for_function()` /
   `vtea_core.workflow.wiring`: each step's data arguments are resolved from
   the run context by name and its result stored under a semantic key
@@ -83,10 +86,25 @@ widget and run it):
   simplified vs. the Java original (one gate type, no dead `GateManager`
   port, real hierarchy where Java had none).
 - **`ScatterPlotWidget`** — the matplotlib-backed plot: click to add a gate
-  vertex, double-click to close it, right-click to cancel; axis pickers;
+  vertex, double-click to close it, right-click to cancel; in rectangle mode
+  two clicks (opposite corners) make the gate, still stored as a 4-vertex
+  polygon so everything downstream handles one kind of gate. Axis pickers;
   "Color by"/"LUT" comboboxes for point coloring by a third feature
   (replaces `vtea.lut`'s point-coloring, not ImageJ's per-channel image
   LUTs, which napari's `Image` layer controls already give you for free).
+- **`GateManagerWidget`** — the gate pane beside the builder's plot:
+  Rectangle/Polygon drawing modes, the gate list, Delete/Clear, Save/Open as
+  plain JSON (`vtea_core.gates.io` — a drawn polygon is the one part of an
+  analysis that can't be recomputed, so it has to be saveable alongside the
+  figure), and a statistics box giving the selected gate's cell count and
+  the mean of each plotted axis over the gated cells only. A gate whose axes
+  aren't in the current table — reopened from JSON, or from a run that
+  measured different features — is listed with blank counts rather than
+  taking the pane down.
+- **`LogView`** — the message strip at the bottom. A QLabel doesn't wrap, so
+  a long traceback stretched the whole dock sideways; this wraps, keeps
+  history, and caps itself at 10% of the dock's height with its own
+  scrollbar.
 - **`GateTableWidget`** — the gate list (replaces `TableWindow`, vtea's
   actual "Gate Management" UI - not the dead `GateManager.java`/
   `microGateManager.java` classes despite the similar names).

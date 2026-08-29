@@ -37,6 +37,8 @@ from qtpy.QtWidgets import (
 from vtea_core.measurements import feature_matrix
 from vtea_core.workflow import Pipeline, Step
 
+from vtea_napari.widgets.gate_manager import GateManagerWidget
+from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.param_form import ParameterForm
 from vtea_napari.widgets.plot import ScatterPlotWidget
 from vtea_napari.widgets.step_stack import StepStackWidget
@@ -57,6 +59,14 @@ RUN_BUTTON_STYLE = (
 # A 2D per-object result wider than this is a crop stack or a distance
 # matrix, not a handful of features to plot against each other.
 MAX_DERIVED_FEATURES = 8
+
+# The results row splits 2:1 between the plot and the gate manager.
+PLOT_WIDTH_SHARE = 2
+GATE_WIDTH_SHARE = 1
+
+# A dock this wide already shows every control; past that it is just taking
+# screen away from the image canvas, which is the thing being analysed.
+MAX_WIDTH_SCREEN_FRACTION = 0.30
 
 
 def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
@@ -252,6 +262,8 @@ class ProtocolBuilderWidget(QWidget):
             self.viewer.layers.events.removed.connect(lambda _e: self.refresh_sources())
         self.refresh_sources()
 
+        # No pane-level Run button: every step card has its own, which is
+        # both finer-grained and unambiguous about what will run.
         self.processing_stack = StepStackWidget(
             self.PROCESSING_CATEGORIES,
             self.pipeline,
@@ -262,11 +274,7 @@ class ProtocolBuilderWidget(QWidget):
             default_channel_provider=lambda: self.default_channel(),
             taken_names_provider=lambda: self.step_names(),
             input_candidates_provider=self.input_candidates,
-            action_text="Run Processing" if napari_viewer is not None else "",
-            action_style=RUN_BUTTON_STYLE,
         )
-        if self.processing_stack.action_button is not None:
-            self.processing_stack.action_button.clicked.connect(self.run_processing)
         self.processing_stack.run_step_requested.connect(self.run_single_step)
         self.processing_stack.step_renamed.connect(self.repoint_inputs)
 
@@ -287,27 +295,34 @@ class ProtocolBuilderWidget(QWidget):
         self.analysis_stack.run_step_requested.connect(self.run_single_step)
         self.analysis_stack.step_renamed.connect(self.repoint_inputs)
 
-        analysis_pane = QWidget()
-        analysis_layout = QVBoxLayout(analysis_pane)
-        analysis_layout.setContentsMargins(0, 0, 0, 0)
-        analysis_layout.addWidget(self.analysis_stack)
+        # Results row: the plot and the gates drawn on it, side by side.
         self.plot = ScatterPlotWidget()
-        analysis_layout.addWidget(self.plot, 1)
+        self.gate_manager = GateManagerWidget(self.plot)
+        self.results_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.results_splitter.addWidget(self.plot)
+        self.results_splitter.addWidget(self.gate_manager)
+        self.results_splitter.setChildrenCollapsible(False)
+        # 2/3 plot, 1/3 gate manager - re-draggable from there.
+        self.results_splitter.setStretchFactor(0, PLOT_WIDTH_SHARE)
+        self.results_splitter.setStretchFactor(1, GATE_WIDTH_SHARE)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.addWidget(self.processing_stack)
-        self.splitter.addWidget(analysis_pane)
+        self.splitter.addWidget(self.analysis_stack)
+        self.splitter.addWidget(self.results_splitter)
         self.splitter.setChildrenCollapsible(False)
-        # Equal stretch: each pane takes half the dock's height rather than
-        # the steps list being squeezed to a single visible card.
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 1)
+        # Equal stretch: processing, analysis and results each get a third of
+        # the dock's height, and the results row is a real splitter pane so
+        # the plot resizes with it instead of keeping its figure size.
+        for index in range(self.splitter.count()):
+            self.splitter.setStretchFactor(index, 1)
         root.addWidget(self.splitter, 1)
 
-        self.status_label = QLabel("")
+        self.status_label = LogView()
         root.addWidget(self.status_label)
 
         self._apply_compact_style(root)
+        self._apply_width_budget()
 
     def _apply_compact_style(self, root: QVBoxLayout) -> None:
         """Shrink text ~25% and tighten the padding around everything.
@@ -329,6 +344,21 @@ class ProtocolBuilderWidget(QWidget):
             layout.setSpacing(3)
         for card_layout in self.findChildren(QFormLayout):
             card_layout.setVerticalSpacing(2)
+
+    def _apply_width_budget(self) -> None:
+        """Cap the dock at a fraction of the screen. Everything inside wraps
+        or scrolls, so a long message can no longer push the dock wider than
+        the image it is meant to sit next to."""
+        screen = QApplication.primaryScreen()
+        if screen is None:  # no display (headless tests, offscreen platform)
+            return
+        available = screen.availableGeometry().width()
+        if available > 0:
+            self.setMaximumWidth(int(available * MAX_WIDTH_SCREEN_FRACTION))
+
+    def resizeEvent(self, event):  # Qt's spelling
+        super().resizeEvent(event)
+        self.status_label.apply_height_budget(self.height())
 
     # -- data -------------------------------------------------------------
 
@@ -681,6 +711,9 @@ class ProtocolBuilderWidget(QWidget):
         # moved the points shouldn't jump the plot back to the first two
         # columns.
         self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
+        # Gates are drawn against this table, so their counts and means have
+        # to be recomputed from the new one.
+        self.gate_manager.set_frame(frame)
 
     # -- channel axis -----------------------------------------------------
 

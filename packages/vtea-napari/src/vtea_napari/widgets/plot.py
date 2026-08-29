@@ -22,7 +22,8 @@ import pandas as pd
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from vtea_core.gates import rectangle_vertices
 
 _NO_COLOR_BY = "(none)"
 
@@ -30,10 +31,22 @@ _NO_COLOR_BY = "(none)"
 # a plain matplotlib colormap name list instead of separate LUT classes.
 _COLORMAPS = ["viridis", "plasma", "inferno", "magma", "cividis", "turbo", "gray"]
 
+# Below this the axes are all margin and no data. The canvas is otherwise
+# free to grow with its pane.
+_MINIMUM_CANVAS_HEIGHT = 160
+
+
+POLYGON_MODE = "polygon"
+RECTANGLE_MODE = "rectangle"
+
 
 class ScatterPlotWidget(QWidget):
     """A matplotlib scatter plot; click to add a gate vertex, double-click to
     close the polygon and emit it, right-click to cancel the in-progress gate.
+
+    In rectangle mode two clicks - opposite corners - make the gate instead.
+    It is still emitted as a 4-vertex polygon, so everything downstream
+    (membership, overlays, JSON) handles one kind of gate.
     """
 
     gate_drawn = Signal(object)  # np.ndarray, shape (N, 2), in data coordinates
@@ -46,6 +59,7 @@ class ScatterPlotWidget(QWidget):
         self.y_column: str | None = None
         self.color_column: str | None = None
         self.colormap = _COLORMAPS[0]
+        self.gate_mode = POLYGON_MODE
         self._pending_vertices: list[tuple[float, float]] = []
         self._gate_overlays: list = []  # vtea_core.gates.Gate instances
 
@@ -71,10 +85,18 @@ class ScatterPlotWidget(QWidget):
         axis_row.addWidget(self.colormap_combo)
         root.addLayout(axis_row)
 
-        self.figure = Figure(figsize=(5, 4))
+        # constrained layout keeps the axis labels inside the canvas as the
+        # pane is resized; without it the y label is the first thing clipped
+        # when the plot is made short, which looked like the y axis simply
+        # not resizing.
+        self.figure = Figure(figsize=(5, 4), layout="constrained")
         self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvasQTAgg(self.figure)
-        root.addWidget(self.canvas)
+        # A QWidget's default size policy is Preferred, which lets the canvas
+        # keep its figsize rather than growing with the splitter pane.
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.canvas.setMinimumHeight(_MINIMUM_CANVAS_HEIGHT)
+        root.addWidget(self.canvas, 1)
 
         self.canvas.mpl_connect("button_press_event", self._on_click)
 
@@ -105,6 +127,16 @@ class ScatterPlotWidget(QWidget):
 
         self.x_column = self.x_combo.currentText() or None
         self.y_column = self.y_combo.currentText() or None
+        self._pending_vertices = []
+        self._redraw()
+
+    def set_gate_mode(self, mode: str) -> None:
+        """Switch between polygon and rectangle drawing, discarding whatever
+        was half-drawn - a click meant as a polygon vertex should not become
+        a rectangle corner."""
+        if mode not in (POLYGON_MODE, RECTANGLE_MODE):
+            raise ValueError(f"unknown gate mode {mode!r}")
+        self.gate_mode = mode
         self._pending_vertices = []
         self._redraw()
 
@@ -169,6 +201,20 @@ class ScatterPlotWidget(QWidget):
             self._redraw()
             return
         if event.button != 1:
+            return
+        if self.gate_mode == RECTANGLE_MODE:
+            if event.dblclick:
+                # The second half of a double-click lands on the same spot as
+                # the first, which would close a zero-area rectangle.
+                return
+            self._pending_vertices.append((event.xdata, event.ydata))
+            if len(self._pending_vertices) == 2:
+                (x0, y0), (x1, y1) = self._pending_vertices
+                self._pending_vertices = []
+                self._redraw()
+                self.gate_drawn.emit(rectangle_vertices(x0, y0, x1, y1))
+            else:
+                self._redraw()
             return
         if event.dblclick:
             if len(self._pending_vertices) >= 3:

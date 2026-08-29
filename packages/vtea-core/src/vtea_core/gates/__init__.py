@@ -5,6 +5,24 @@ combine gates with &, |, ~ directly instead of dedicated AND/OR/NOT classes.
 """
 
 from vtea_core.gates.gate import Gate, GateSet
-from vtea_core.gates.polygon import polygon_gate, rectangle_gate
+from vtea_core.gates.io import (
+    GATES_FORMAT_VERSION,
+    gate_set_from_dict,
+    gate_set_to_dict,
+    load_gates,
+    save_gates,
+)
+from vtea_core.gates.polygon import polygon_gate, rectangle_gate, rectangle_vertices
 
-__all__ = ["Gate", "GateSet", "polygon_gate", "rectangle_gate"]
+__all__ = [
+    "GATES_FORMAT_VERSION",
+    "Gate",
+    "GateSet",
+    "gate_set_from_dict",
+    "gate_set_to_dict",
+    "load_gates",
+    "polygon_gate",
+    "rectangle_gate",
+    "rectangle_vertices",
+    "save_gates",
+]

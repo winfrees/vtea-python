@@ -20,6 +20,9 @@ This is a monorepo with two independently installable packages:
 
 ```
 docs/PORT_PLAN.md      Full porting plan and roadmap
+docs/SAVING_AND_ARCHIVING.md
+                       Design for reloadable sessions and FAIR publication
+                       bundles (planned; gate JSON is the part already built)
 tests/golden/          Golden-dataset parity fixtures (Java vs. Python outputs)
 packages/vtea-core/    Headless analysis library
 packages/vtea-napari/  napari plugin GUI
