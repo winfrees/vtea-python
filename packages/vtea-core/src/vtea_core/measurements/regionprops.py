@@ -86,6 +86,21 @@ def is_feature_column(name: str) -> bool:
     return name not in NON_FEATURE_COLUMNS and not name.startswith(NON_FEATURE_PREFIXES)
 
 
+def parse_feature_name(name: str) -> tuple[str, int | None]:
+    """Split a measured feature name back into (measurement, channel).
+
+    `extract_measurements_by_channel` writes the channel into the column
+    name so features from different channels coexist in one table; this is
+    the inverse, so a catalog entry can record "mean intensity, channel 2"
+    rather than the opaque string `mean_ch2`. A name with no channel suffix
+    - `count`, or a single-channel `mean` - comes back with None.
+    """
+    base, separator, suffix = name.rpartition("_ch")
+    if separator and base and suffix.isdigit():
+        return base, int(suffix)
+    return name, None
+
+
 def feature_matrix(
     frame: pd.DataFrame, columns: list[str] | None = None
 ) -> tuple[np.ndarray, list[str]]:

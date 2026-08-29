@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 from qtpy.QtCore import QObject, Signal
 from vtea_core.gates import GateSet
+from vtea_core.measurements import FeatureCatalog
 from vtea_core.workflow import Pipeline
 
 
@@ -50,6 +51,10 @@ class AnalysisSession(QObject):
         self.analysis_pipeline = Pipeline()
         self.context: dict[str, Any] = {}
         self.gate_set = GateSet()
+        # What each column of the measurement table is and how it was
+        # produced. Lives here so both panes can read it, and so it is
+        # already assembled when a session is saved.
+        self.feature_catalog = FeatureCatalog()
         # How to read the source image's axes, set by the builder's pickers
         # and needed by the explorer to crop gallery thumbnails correctly.
         self.source_layer_name: str | None = None

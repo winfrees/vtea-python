@@ -40,10 +40,11 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vtea_core.measurements import feature_matrix
+from vtea_core.measurements import FeatureCatalog, feature_matrix
 from vtea_core.workflow import Pipeline, Step
 
 from vtea_napari.session import AnalysisSession, session_for
+from vtea_napari.widgets.feature_select import FeatureSelectWidget
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.param_form import ParameterForm
 from vtea_napari.widgets.step_stack import StepStackWidget
@@ -106,10 +107,13 @@ class EditStepDialog(QDialog):
         parent=None,
         n_channels: int | None = None,
         input_candidates=None,
+        available_features=(),
+        feature_catalog=None,
     ):
         super().__init__(parent)
         self.setWindowTitle(f"Edit {step.category}.{step.function_name}")
         self.step = step
+        self.feature_select: FeatureSelectWidget | None = None
 
         layout = QVBoxLayout(self)
 
@@ -171,6 +175,18 @@ class EditStepDialog(QDialog):
             channel_row.addWidget(self.channel_combo)
             channel_row.addStretch()
             layout.addLayout(channel_row)
+        elif step.feature_input is not None:
+            # Which of the measured features this step is built from. The
+            # most consequential choice for a clustering or reduction, and
+            # the one that has to be recorded for the result to mean
+            # anything later.
+            source = QLabel("Features (from the measured data table):")
+            source.setStyleSheet("color: gray;")
+            layout.addWidget(source)
+            self.feature_select = FeatureSelectWidget(
+                available_features, step.features, feature_catalog
+            )
+            layout.addWidget(self.feature_select, 1)
         else:
             source = QLabel("Reads the measured feature table, not the image.")
             source.setStyleSheet("color: gray;")
@@ -194,6 +210,13 @@ class EditStepDialog(QDialog):
 
     def updated_name(self) -> str:
         return self.name_edit.text().strip()
+
+    def updated_features(self) -> list[str]:
+        """The chosen features, or [] for "all of them" - including when the
+        step has no feature input at all."""
+        if self.feature_select is None:
+            return list(self.step.features)
+        return self.feature_select.selected_or_all()
 
     def updated_input_keys(self) -> dict[str, str]:
         keys = dict(self.step.input_keys)
@@ -309,6 +332,8 @@ class ProtocolBuilderWidget(QWidget):
             default_channel_provider=lambda: self.default_channel(),
             taken_names_provider=lambda: self.step_names(),
             input_candidates_provider=self.input_candidates,
+            available_features_provider=self.available_features,
+            feature_catalog_provider=self.feature_catalog,
         )
         self.processing_stack.run_step_requested.connect(self.run_single_step)
         self.processing_stack.step_renamed.connect(self.repoint_inputs)
@@ -326,6 +351,8 @@ class ProtocolBuilderWidget(QWidget):
             default_channel_provider=lambda: self.default_channel(),
             taken_names_provider=lambda: self.step_names(),
             input_candidates_provider=self.input_candidates,
+            available_features_provider=self.available_features,
+            feature_catalog_provider=self.feature_catalog,
         )
         self.analysis_stack.run_step_requested.connect(self.run_single_step)
         self.analysis_stack.step_renamed.connect(self.repoint_inputs)
@@ -586,19 +613,64 @@ class ProtocolBuilderWidget(QWidget):
         return max((value.ndim for value in arrays), default=None)
 
     def _seed_feature_matrix(self, context: dict) -> None:
-        """Put the measurement table's numeric features into the context as
-        `data`, which is what clustering and reduction steps consume.
+        """Put the measurement table into the context as `data`, which is
+        what clustering and reduction steps consume.
 
         Nothing in a protocol produces a `data` key, so without this every
         clustering/reduction step fails with "needs context key(s) ['data']"
-        the moment it's run.
+        the moment it's run. The *table* is seeded rather than a ready-made
+        matrix so each step can narrow it to its own chosen features - see
+        Step.selected_features.
         """
         frame = self.results_table()
-        if frame is None:
-            return
-        matrix, columns = feature_matrix(frame)
-        if columns:
-            context["data"] = matrix
+        if frame is not None:
+            context["data"] = frame
+
+    def available_features(self) -> list[str]:
+        """Every numeric feature a clustering or reduction step could be
+        built from."""
+        frame = self.results_table()
+        return [] if frame is None else feature_matrix(frame)[1]
+
+    def feature_catalog(self) -> FeatureCatalog:
+        return self.session.feature_catalog
+
+    def _record_features(self, step: Step, columns, source_features=()) -> None:
+        """Record where a step's columns came from.
+
+        This is the difference between a table of numbers and a table anyone
+        can interpret later: what was measured, on which channel and
+        segmentation, by which step and with what parameters - and, for a
+        clustering or reduction, exactly which features were fed to it.
+        """
+        catalog = self.session.feature_catalog
+        function = f"{step.category}.{step.function_name}"
+        segmentation = step.input_keys.get("labels", "")
+        if step.output_key == "measurements":
+            catalog.record_measured(
+                columns,
+                produced_by=step.result_key,
+                function=function,
+                params=step.params,
+                segmentation=segmentation,
+            )
+        else:
+            catalog.record_derived(
+                columns,
+                produced_by=step.result_key,
+                function=function,
+                params=step.params,
+                source_features=source_features,
+                segmentation=self._segmentation_behind_the_table(),
+            )
+
+    def _segmentation_behind_the_table(self):
+        """Which segmentation the rows of the current table are objects of -
+        recorded on a derived feature, whose own step never names it."""
+        for step in self.analysis_pipeline.steps:
+            if step.output_key == "measurements":
+                return step.input_keys.get("labels", "")
+        return ""
 
     def _merge_into_measurements(self, step: Step, result) -> None:
         """Fold a per-object result into the measurement table so it becomes
@@ -611,10 +683,22 @@ class ProtocolBuilderWidget(QWidget):
         `clusters` column.
         """
         frame = self.last_context.get("measurements")
-        if step.output_key == "measurements" or not isinstance(frame, pd.DataFrame) or frame.empty:
+        if step.output_key == "measurements":
+            if isinstance(result, pd.DataFrame):
+                self.session.feature_catalog.drop_missing(result.columns)
+                self._record_features(step, list(result.columns))
             return
-        for column, values in feature_columns(step.result_key, result, len(frame)).items():
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return
+        # Read the inputs off the table *before* adding this step's own
+        # columns to it, or a step with no explicit selection would record
+        # itself as one of its own inputs.
+        sources = step.selected_features(frame) if step.feature_input else []
+        columns = feature_columns(step.result_key, result, len(frame))
+        for column, values in columns.items():
             frame[column] = values
+        if columns:
+            self._record_features(step, list(columns), sources)
 
     def _run_pipeline_from_active_layer(self) -> None:
         image = self.active_image()

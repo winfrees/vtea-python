@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (234 tests, including real
+Phase 4 done. Implemented and tested (273 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -52,11 +52,10 @@ widget and run it):
   analysis results join the same table under the producing step's name
   (`kmeans_1`, `pca_1_1`/`pca_1_2`), so measured and derived features are
   plottable against each other from the plot's X/Y menus. The clustering and
-  reduction steps' `data` input is derived from that table
-  (`vtea_core.measurements.feature_matrix`, which drops identifiers and
-  centroids) and rebuilt between steps - nothing in a protocol produces a
-  `data` key, so without this those steps could not be run from the GUI at
-  all.
+  reduction steps' `data` input is the table itself - nothing in a protocol
+  produces a `data` key, so without the widget seeding it those steps could
+  not be run from the GUI at all - and each step narrows it to its own
+  chosen features.
 - **Channel selection** — "Channel axis" on the widget says which axis of
   the loaded image holds channels (a property of the data, listed with each
   axis's size, defaulting to none); each step's Edit dialog then picks which
@@ -69,7 +68,23 @@ widget and run it):
   table* rather than the image - clustering, reduction, gating - has no
   channel at all (every channel is already a column there), so it gets no
   channel picker, inherits no channel when added, and is never sliced; its
-  card says "feature table" instead.
+  card names the features it uses instead.
+- **`FeatureSelectWidget`** — which of the measured features a clustering or
+  reduction step is built from. A protocol measuring seven properties across
+  four channels already has 28 features before the derived ones, so a flat
+  checklist alone is the wrong shape of control: this pairs it with a filter
+  box and All/None/Invert scoped to *what the filter is showing*, which makes
+  "use every `_ch2` feature" one gesture rather than twelve. Each row's
+  tooltip carries that feature's provenance from the `FeatureCatalog`. An
+  all-checked list is stored as an empty selection, so a protocol doesn't pin
+  a list that should grow when a later measurement step adds features.
+- **Feature provenance** — every column of the data table is catalogued as
+  the step producing it runs: what was measured, on which channel and which
+  named segmentation, by which step with what parameters, and - for a
+  clustering or reduction - exactly which features were fed to it. The
+  catalog lives on the shared session, renders as the publication data
+  dictionary, and is dropped and rebuilt on a re-measurement so a stale entry
+  can't outlive the column it described.
 - **`ParameterForm`** — builds the Edit-step form from a registered
   function's actual signature, split into data arguments (arrays/dataframes,
   excluded - resolved from the pipeline's run context) and editable

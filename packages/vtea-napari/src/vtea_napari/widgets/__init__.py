@@ -7,6 +7,7 @@ mapping).
 """
 
 from vtea_napari.widgets.explorer import ExplorerWidget
+from vtea_napari.widgets.feature_select import FeatureSelectWidget
 from vtea_napari.widgets.gallery import GalleryWidget
 from vtea_napari.widgets.gate_manager import GateManagerWidget
 from vtea_napari.widgets.gate_table import GateTableWidget
@@ -18,6 +19,7 @@ from vtea_napari.widgets.step_card import StepCardWidget
 __all__ = [
     "EditStepDialog",
     "ExplorerWidget",
+    "FeatureSelectWidget",
     "GalleryWidget",
     "GateManagerWidget",
     "GateTableWidget",

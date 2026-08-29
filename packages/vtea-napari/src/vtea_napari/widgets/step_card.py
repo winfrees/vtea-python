@@ -36,6 +36,10 @@ def summarize_channel(step: Step) -> str:
     clustering, reduction, gating - says so instead: it has no channel, and
     labelling it "all channels" would suggest it reads the image.
     """
+    if step.feature_input is not None:
+        if not step.features:
+            return "all features"
+        return f"{len(step.features)} feature(s)"
     if not step.channel_applies:
         return "feature table"
     return "all channels" if step.channel is None else f"channel {step.channel}"

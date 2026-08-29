@@ -70,6 +70,11 @@ class Step:
     comment: str = ""
     channel: int | None = None
     name: str = ""
+    # Which measured features this step's feature-table input is built from.
+    # Empty means every numeric feature. Recorded on the step rather than
+    # applied by the caller so a protocol carries its own answer to "which
+    # of the forty measured features did this clustering actually use?".
+    features: list[str] = field(default_factory=list)
 
     @classmethod
     def for_function(
@@ -122,6 +127,29 @@ class Step:
         return self.channel_mode == CHANNEL_ARGUMENT
 
     @property
+    def feature_input(self) -> str | None:
+        """The argument, if any, that takes a feature table rather than a
+        plain array - see vtea_core.workflow.wiring.StepIO."""
+        from vtea_core.workflow.wiring import STEP_IO
+
+        spec = STEP_IO.get((self.category, self.function_name))
+        return None if spec is None else spec.feature_input
+
+    def selected_features(self, frame) -> list[str]:
+        """The columns of `frame` this step will actually be built from.
+
+        An empty `features` means every numeric feature. A selection is
+        filtered against the table rather than trusted: a feature chosen
+        before a re-run that dropped it should quietly fall out, not abort
+        the step with a KeyError on a column that no longer exists.
+        """
+        from vtea_core.measurements import feature_matrix
+
+        if not self.features:
+            return feature_matrix(frame)[1]
+        return [name for name in self.features if name in frame.columns]
+
+    @property
     def channel_applies(self) -> bool:
         """Whether a channel choice means anything for this step.
 
@@ -167,6 +195,7 @@ class Step:
         if not self.channel_applies:
             # A per-object table has no channel axis to slice.
             kwargs = {arg: context[key] for arg, key in self.input_keys.items()}
+            self._build_feature_matrix(kwargs)
         elif self.channel_aware:
             kwargs = {arg: context[key] for arg, key in self.input_keys.items()}
             parameters = inspect.signature(self.function).parameters
@@ -179,6 +208,33 @@ class Step:
             }
         kwargs.update(self.params)
         return self.function(**kwargs)
+
+    def _build_feature_matrix(self, kwargs: dict[str, Any]) -> None:
+        """Turn a feature *table* wired to this step's feature input into the
+        matrix its function expects, keeping only the selected features.
+
+        A plain array is left alone, so a script that hands a clustering step
+        a ready-made matrix keeps working; only a DataFrame is narrowed, and
+        only for a step that declares a feature input.
+        """
+        import pandas as pd
+
+        from vtea_core.measurements import feature_matrix
+
+        argument = self.feature_input
+        if argument is None or argument not in kwargs:
+            return
+        value = kwargs[argument]
+        if not isinstance(value, pd.DataFrame):
+            return
+        columns = self.selected_features(value)
+        if not columns:
+            raise ValueError(
+                f"step '{self.category}.{self.function_name}' has no features to work on - "
+                f"none of {self.features or 'the table columns'} are numeric features of the "
+                f"measurement table (columns: {list(value.columns)})"
+            )
+        kwargs[argument] = feature_matrix(value, columns)[0]
 
     def _select_channel(self, value: Any, channel_axis: int | None, full_ndim: int | None) -> Any:
         if self.channel is None or channel_axis is None:

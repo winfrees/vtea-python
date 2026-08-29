@@ -1,9 +1,10 @@
 # Saving and archiving VTEA work
 
 Design for making a VTEA session reloadable, and for exporting it in a form
-that can be deposited with a paper. Nothing here is built yet except the
-gate JSON (`vtea_core.gates.io`, already shipped); this document is the plan
-for the rest.
+that can be deposited with a paper. Two pieces are already built - the gate
+JSON (`vtea_core.gates.io`) and the feature catalog behind the data
+dictionary (`vtea_core.measurements.FeatureCatalog`); this document is the
+plan for the rest.
 
 ## The problem
 
@@ -55,10 +56,22 @@ recomputed. This is the file people will actually share.
       "params": {},
       "input_keys": {"labels": "watershed_split_1", "intensity": "intensity"},
       "output_key": "measurements",
-      "channel": null
+      "channel": null,
+      "features": []
+    },
+    {
+      "name": "kmeans_1",
+      "category": "clustering",
+      "function": "kmeans",
+      "params": {"n_clusters": 4},
+      "input_keys": {"data": "data"},
+      "output_key": "clusters",
+      "channel": null,
+      "features": ["mean_ch0", "mean_ch2"]
     }
   ],
   "gates": { "...": "the vtea_core.gates.io payload, inlined" },
+  "features": { "...": "the vtea_core.measurements.FeatureCatalog payload" },
   "plot": {"x": "mean_ch0", "y": "kmeans_1", "color_by": "count", "colormap": "viridis"},
   "environment": {
     "vtea_core": "0.1.1",
@@ -74,6 +87,11 @@ Notes on the shape of this:
 - **The `Step` dataclass already is this record.** Every field above exists
   on it; the work is `to_dict`/`from_dict` plus a version check, mirroring
   `vtea_core.gates.io` exactly. Put it in `vtea_core/workflow/io.py`.
+- **`features` is why a clustering is reproducible at all.** An empty list
+  means "every measured feature", which is deliberately not expanded on
+  save: a protocol re-run against an image with four channels rather than
+  three should use the features that image has, not the ones the original
+  had. A non-empty list is the explicit choice, recorded verbatim.
 - **`name` is what makes the file readable and stable.** `input_keys`
   referring to `watershed_split_1` says which segmentation was measured; a
   file that only recorded `"labels"` would be ambiguous the moment a
@@ -150,15 +168,24 @@ Everything is in a format that outlives VTEA:
 column called `mean_ch2` is meaningless to a reader; one row of a dictionary
 makes it self-describing:
 
-| column | measurement | channel | segmentation | produced_by | units |
-| --- | --- | --- | --- | --- | --- |
-| `mean_ch2` | mean intensity | 2 | `watershed_split_1` | `extract_measurements_by_channel_1` | a.u. |
-| `kmeans_1` | cluster assignment | – | `watershed_split_1` | `kmeans_1` | cluster id |
-| `count` | voxel count | – | `watershed_split_1` | `extract_measurements_by_channel_1` | voxels |
+| column | kind | measurement | channel | segmentation | produced_by | params | source_features | units |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `mean_ch2` | intensity | mean | 2 | `watershed_split_1` | `extract_measurements_by_channel_1` | | | a.u. |
+| `count` | geometry | count | | `watershed_split_1` | `extract_measurements_by_channel_1` | | | voxels |
+| `kmeans_1` | derived | cluster assignment | | `watershed_split_1` | `kmeans_1` | `n_clusters=4` | `mean_ch0, mean_ch2` | |
 
-Every one of those cells is already known at export time: the channel suffix
-comes from the measurement step, the segmentation from `input_keys["labels"]`,
-and `produced_by` from the step name. It can be generated, not typed.
+**This part is built** (`vtea_core.measurements.FeatureCatalog`). Every cell
+is recorded as the step that produces the column runs, rather than guessed at
+afterwards from the column name: the channel comes from the measurement
+step's naming, the segmentation from its `input_keys["labels"]`,
+`produced_by` from the step name, and `source_features` from the feature
+selection the clustering or reduction step was given. `catalog.to_dataframe()`
+is the dictionary above; `catalog.to_dict()` is its JSON form, ready to write
+into the bundle. What remains is the writing.
+
+`source_features` is the row that earns the table: without it, "these cells
+were clustered" is an assertion, and with it a reader can see that the
+clustering used two intensity features and not the object sizes.
 
 ## How this maps to FAIR
 
@@ -193,9 +220,9 @@ have delivered something.
    This alone removes the "close napari and lose everything" problem.
 3. **`environment` capture** — `importlib.metadata` over a short list of
    packages whose behaviour affects results.
-4. **CSV + data dictionary export** — `vtea_core/export/table.py`; the
-   dictionary is generated from the step graph, which is why it comes after
-   named steps (already shipped).
+4. **CSV + data dictionary export** — `vtea_core/export/table.py`. The
+   dictionary itself is already assembled at run time by `FeatureCatalog`,
+   so this step is `to_dataframe().to_csv()` plus the table beside it.
 5. **Figure export** — the plot already has a matplotlib `Figure`;
    `savefig` to SVG and PNG, named for the axes.
 6. **`vtea_core/export/bundle.py`** — the manifest, and the zip writer.

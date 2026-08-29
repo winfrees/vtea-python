@@ -1514,15 +1514,23 @@ class TestAnalysisResultsBecomeFeatures:
 
     def test_identifiers_and_centroids_are_left_out_of_the_features(self, qtbot):
         widget = _measured_multichannel(qtbot)
-        context = {}
-        widget._seed_feature_matrix(context)
         frame = widget.results_table()
-        expected = sum(
-            1
+        expected = [
+            column
             for column in frame.columns
             if column != "object_id" and not column.startswith("centroid-")
-        )
-        assert context["data"].shape[1] == expected
+        ]
+        assert widget.available_features() == expected
+
+    def test_the_whole_table_is_seeded_so_each_step_can_narrow_it(self, qtbot):
+        """`data` is the table, not a pre-built matrix: the step decides
+        which of its columns it is built from."""
+        import pandas as pd
+
+        widget = _measured_multichannel(qtbot)
+        context = {}
+        widget._seed_feature_matrix(context)
+        assert isinstance(context["data"], pd.DataFrame)
 
 
 class TestTabularStepsShowNoChannel:
@@ -1540,12 +1548,11 @@ class TestTabularStepsShowNoChannel:
         )
         qtbot.addWidget(dialog)
         # Only the "All channels" placeholder; no per-channel entries, and
-        # no visible row offering them.
+        # no visible row offering them. What it shows instead is the feature
+        # picker, since that is the choice this step actually has.
         assert dialog.channel_combo.count() == 1
         assert dialog.updated_channel() is None
-        assert any(
-            "feature table" in label.text() for label in dialog.findChildren(QLabel)
-        )
+        assert dialog.feature_select is not None
 
     def test_an_image_step_still_shows_it(self, qtbot):
         from vtea_core.workflow import Step
@@ -1573,7 +1580,9 @@ class TestTabularStepsShowNoChannel:
 
         assert widget.analysis_pipeline.steps[0].channel is None
 
-    def test_the_card_says_it_reads_the_feature_table(self, qtbot):
+    def test_the_card_says_which_features_it_uses(self, qtbot):
+        """Not a channel - what a clustering or reduction step is built
+        from is a set of features, and the card should say how many."""
         from vtea_core.workflow import Step
 
         from vtea_napari.widgets.step_card import StepCardWidget, summarize_channel
@@ -1581,8 +1590,19 @@ class TestTabularStepsShowNoChannel:
         step = Step.for_function("reduction", "pca")
         card = StepCardWidget(1, step)
         qtbot.addWidget(card)
-        assert summarize_channel(step) == "feature table"
-        assert "feature table" in card.channel_label.text()
+        assert summarize_channel(step) == "all features"
+        assert "all features" in card.channel_label.text()
+
+        step.features = ["mean_ch0", "mean_ch1", "count"]
+        assert summarize_channel(step) == "3 feature(s)"
+
+    def test_a_classification_step_still_says_feature_table(self, qtbot):
+        """It has no channel and no feature selection either."""
+        from vtea_core.workflow import Step
+
+        from vtea_napari.widgets.step_card import summarize_channel
+
+        assert summarize_channel(Step.for_function("gates", "polygon_gate")) == "feature table"
 
     def test_a_clustering_step_runs_on_the_feature_table_from_every_channel(self, qtbot):
         """The end of the chain: features measured on three channels feed
@@ -1602,3 +1622,209 @@ class TestTabularStepsShowNoChannel:
         # It clustered on features from all three channels, not one.
         columns = widget.results_table().columns
         assert {"mean_ch0", "mean_ch1", "mean_ch2"} <= set(columns)
+
+
+class TestFeatureSelectionThroughTheGui:
+    """A clustering step is built from the features chosen for it, and that
+    choice is recorded on the step so the protocol carries it."""
+
+    def _clustering(self, widget, **kwargs):
+        from vtea_core.workflow import Step
+
+        return widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "clustering",
+                "kmeans",
+                params={"n_clusters": 2},
+                taken_names=widget.step_names(),
+                **kwargs,
+            )
+        )
+
+    def test_the_builder_offers_every_measured_feature(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        features = widget.available_features()
+        assert {"mean_ch0", "mean_ch1", "mean_ch2", "count"} <= set(features)
+        # Identifiers and centroids are not features to cluster on.
+        assert "object_id" not in features
+        assert not any(name.startswith("centroid-") for name in features)
+
+    def test_the_edit_dialog_lists_them(self, qtbot):
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        widget = _measured_multichannel(qtbot)
+        step = self._clustering(widget)
+        dialog = EditStepDialog(
+            step,
+            available_features=widget.available_features(),
+            feature_catalog=widget.feature_catalog(),
+        )
+        qtbot.addWidget(dialog)
+        assert dialog.feature_select is not None
+        assert set(dialog.feature_select.selected()) == set(widget.available_features())
+
+    def test_a_selection_made_in_the_dialog_lands_on_the_step(self, qtbot, monkeypatch):
+        from qtpy.QtWidgets import QDialog
+
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        widget = _measured_multichannel(qtbot)
+        step = self._clustering(widget)
+        widget.refresh_steps()
+
+        def fake_exec(self):
+            self.feature_select.select_none()
+            self.feature_select.filter_edit.setText("mean_ch")
+            self.feature_select.select_all()
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(EditStepDialog, "exec", fake_exec)
+        widget.analysis_stack._edit_step(step)
+
+        # A plain substring filter, so "mean_ch" catches threshold_mean_ch*
+        # too - the point is that one gesture selected a family of features.
+        assert step.features == [
+            name for name in widget.available_features() if "mean_ch" in name
+        ]
+        assert "mean_ch0" in step.features
+        assert "count" not in step.features
+
+    def test_the_step_runs_on_only_those_features(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        step = self._clustering(widget, features=["mean_ch0"])
+        widget.run_single_step(step)
+
+        assert step.name in widget.last_context
+        assert widget.last_context[step.name].shape == (len(widget.results_table()),)
+
+    def test_a_selection_of_everything_is_stored_as_no_selection(self, qtbot, monkeypatch):
+        """So the protocol doesn't pin a list that should grow when a later
+        measurement step adds features."""
+        from qtpy.QtWidgets import QDialog
+
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        widget = _measured_multichannel(qtbot)
+        step = self._clustering(widget, features=["mean_ch0"])
+        widget.refresh_steps()
+
+        monkeypatch.setattr(
+            EditStepDialog,
+            "exec",
+            lambda self: (self.feature_select.select_all(), QDialog.DialogCode.Accepted)[1],
+        )
+        widget.analysis_stack._edit_step(step)
+
+        assert step.features == []
+
+    def test_the_card_shows_how_many_features(self, qtbot):
+        from vtea_napari.widgets.step_card import StepCardWidget
+
+        widget = _measured_multichannel(qtbot)
+        self._clustering(widget, features=["mean_ch0", "mean_ch1"])
+        widget.refresh_steps()
+        cards = widget.analysis_stack.findChildren(StepCardWidget)
+        assert "2 feature(s)" in cards[-1].channel_label.text()
+
+
+class TestFeatureProvenanceIsRecorded:
+    """Every column of the data table records what it is and how it was
+    produced - which is what makes the numbers interpretable later."""
+
+    def test_measured_features_are_catalogued(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        catalog = widget.feature_catalog()
+        assert set(catalog.names()) == set(widget.results_table().columns)
+
+    def test_a_measured_feature_records_its_channel_and_segmentation(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        descriptor = widget.feature_catalog().get("mean_ch2")
+        assert descriptor.measurement == "mean"
+        assert descriptor.channel == 2
+        assert descriptor.segmentation == "label_components_1"
+        assert descriptor.function == "measurements.extract_measurements_by_channel"
+
+    def test_a_clustering_records_the_features_it_was_built_from(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "clustering",
+                "kmeans",
+                params={"n_clusters": 2},
+                features=["mean_ch0", "mean_ch1"],
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(step)
+
+        descriptor = widget.feature_catalog().get(step.name)
+        assert descriptor.kind == "derived"
+        assert descriptor.source_features == ["mean_ch0", "mean_ch1"]
+        assert descriptor.params == {"n_clusters": 2}
+        assert descriptor.function == "clustering.kmeans"
+
+    def test_a_step_with_no_selection_records_the_features_it_actually_used(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "clustering",
+                "kmeans",
+                params={"n_clusters": 2},
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(step)
+
+        sources = widget.feature_catalog().get(step.name).source_features
+        assert set(sources) == set(widget.available_features()) - {step.name}
+        # It must not record itself as one of its own inputs.
+        assert step.name not in sources
+
+    def test_a_reduction_records_one_entry_per_component(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = _measured_multichannel(qtbot)
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "reduction",
+                "pca",
+                params={"n_components": 2},
+                features=["mean_ch0", "mean_ch1", "mean_ch2"],
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(step)
+
+        catalog = widget.feature_catalog()
+        for component in (1, 2):
+            descriptor = catalog.get(f"{step.name}_{component}")
+            assert descriptor.measurement == "reduced dimension"
+            assert descriptor.source_features == ["mean_ch0", "mean_ch1", "mean_ch2"]
+
+    def test_a_re_measurement_forgets_the_old_columns(self, qtbot):
+        """A stale catalog entry is worse than a missing one - it looks
+        authoritative."""
+        widget = _measured_multichannel(qtbot)
+        catalog = widget.feature_catalog()
+        catalog.record_measured(["mean_ch9"], produced_by="from_another_run")
+        assert "mean_ch9" in catalog
+
+        widget.run_single_step(widget.analysis_pipeline.steps[0])
+        assert "mean_ch9" not in widget.feature_catalog()
+
+    def test_the_catalog_renders_as_a_data_dictionary(self, qtbot):
+        widget = _measured_multichannel(qtbot)
+        dictionary = widget.feature_catalog().to_dataframe()
+        assert len(dictionary) == len(widget.results_table().columns)
+        row = dictionary.set_index("column").loc["mean_ch1"]
+        assert row["channel"] == 1
+        assert row["segmentation"] == "label_components_1"
+
+    def test_the_catalog_lives_on_the_shared_session(self, qtbot):
+        """So the explorer sees it, and so it survives a pane closing."""
+        widget = _measured_multichannel(qtbot)
+        assert widget.feature_catalog() is widget.session.feature_catalog

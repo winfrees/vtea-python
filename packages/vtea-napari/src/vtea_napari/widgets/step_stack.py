@@ -61,6 +61,8 @@ class StepStackWidget(QWidget):
         default_channel_provider: Callable[[], int | None] | None = None,
         taken_names_provider: Callable[[], list[str]] | None = None,
         input_candidates_provider: Callable[[str], list[str]] | None = None,
+        available_features_provider: Callable[[], list[str]] | None = None,
+        feature_catalog_provider: Callable[[], object] | None = None,
         action_text: str = "",
         action_style: str = "",
         parent: QWidget | None = None,
@@ -77,6 +79,11 @@ class StepStackWidget(QWidget):
         # supplies the full set rather than each stack knowing only its own.
         self._taken_names_provider = taken_names_provider or self.pipeline.step_names
         self._input_candidates_provider = input_candidates_provider
+        # What a clustering/reduction step can be built from, and what is
+        # known about each of those features - both live on the owner, which
+        # is what has actually run the measurement steps.
+        self._available_features_provider = available_features_provider or list
+        self._feature_catalog_provider = feature_catalog_provider or (lambda: None)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -186,11 +193,14 @@ class StepStackWidget(QWidget):
             parent=self,
             n_channels=self._n_channels_provider(),
             input_candidates=self._input_candidates_provider,
+            available_features=self._available_features_provider(),
+            feature_catalog=self._feature_catalog_provider(),
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             step.params = dialog.updated_params()
             step.channel = dialog.updated_channel()
             step.input_keys = dialog.updated_input_keys()
+            step.features = dialog.updated_features()
             self.rename_step(step, dialog.updated_name())
             self.refresh_steps()
             self.steps_changed.emit()

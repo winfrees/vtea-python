@@ -246,3 +246,90 @@ class TestTabularStepsHaveNoChannel:
         )
         reduced = step.run({"data": data}, channel_axis=0, full_ndim=2)
         assert reduced.shape[0] == 20
+
+
+class TestFeatureSelection:
+    """A clustering step is told which of the measured features to use, and
+    the selection lives on the step so the protocol records it."""
+
+    @staticmethod
+    def make_frame():
+        import pandas as pd
+
+        return pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4],
+                "centroid-0": [1.0, 2.0, 3.0, 4.0],
+                "count": [10.0, 20.0, 30.0, 40.0],
+                "mean_ch0": [1.0, 2.0, 3.0, 4.0],
+                "mean_ch1": [5.0, 6.0, 7.0, 8.0],
+            }
+        )
+
+    def test_no_selection_means_every_numeric_feature(self):
+        step = Step.for_function("clustering", "kmeans")
+        assert step.selected_features(self.make_frame()) == ["count", "mean_ch0", "mean_ch1"]
+
+    def test_identifiers_and_centroids_are_never_included_by_default(self):
+        step = Step.for_function("reduction", "pca")
+        chosen = step.selected_features(self.make_frame())
+        assert "object_id" not in chosen
+        assert "centroid-0" not in chosen
+
+    def test_an_explicit_selection_is_used_as_given(self):
+        step = Step.for_function("clustering", "kmeans", features=["mean_ch1"])
+        assert step.selected_features(self.make_frame()) == ["mean_ch1"]
+
+    def test_an_explicit_selection_may_include_a_centroid(self):
+        """Excluded by default, but a deliberate choice is honoured."""
+        step = Step.for_function("clustering", "kmeans", features=["centroid-0"])
+        assert step.selected_features(self.make_frame()) == ["centroid-0"]
+
+    def test_a_feature_that_no_longer_exists_falls_out_quietly(self):
+        """A re-run with a different measurement step shouldn't abort a
+        clustering with a KeyError on a column that has gone."""
+        step = Step.for_function("clustering", "kmeans", features=["mean_ch0", "mean_ch9"])
+        assert step.selected_features(self.make_frame()) == ["mean_ch0"]
+
+    def test_the_step_narrows_the_table_before_calling_its_function(self):
+        """The function sees an (n_objects, n_selected) matrix, not the
+        whole table."""
+        step = Step.for_function(
+            "clustering", "kmeans", features=["mean_ch0"], params={"n_clusters": 2}
+        )
+        kwargs = {"data": self.make_frame()}
+        step._build_feature_matrix(kwargs)
+        assert kwargs["data"].shape == (4, 1)
+        np.testing.assert_allclose(kwargs["data"][:, 0], [1.0, 2.0, 3.0, 4.0])
+
+    def test_narrowing_uses_every_feature_when_nothing_is_selected(self):
+        step = Step.for_function("clustering", "kmeans")
+        kwargs = {"data": self.make_frame()}
+        step._build_feature_matrix(kwargs)
+        assert kwargs["data"].shape == (4, 3)
+
+    def test_a_ready_made_matrix_is_passed_through_untouched(self):
+        """Scripts that build their own feature matrix keep working."""
+        step = Step.for_function(
+            "clustering", "kmeans", features=["mean_ch0"], params={"n_clusters": 2}
+        )
+        matrix = np.arange(8, dtype=float).reshape(4, 2)
+        assert step.run({"data": matrix}).shape == (4,)
+
+    def test_a_selection_of_nothing_measurable_is_reported_clearly(self):
+        step = Step.for_function(
+            "clustering", "kmeans", features=["not_a_column"], params={"n_clusters": 2}
+        )
+        with pytest.raises(ValueError, match="no features to work on"):
+            step.run({"data": self.make_frame()})
+
+    def test_only_a_feature_input_step_narrows_anything(self):
+        assert Step.for_function("clustering", "kmeans").feature_input == "data"
+        assert Step.for_function("segmentation", "threshold_mask").feature_input is None
+        assert Step.for_function("gates", "polygon_gate").feature_input is None
+
+    def test_the_selection_travels_with_the_step(self):
+        """It is protocol, not a transient GUI choice - which is what makes
+        it recordable."""
+        step = Step.for_function("reduction", "pca", features=["a", "b"])
+        assert step.features == ["a", "b"]

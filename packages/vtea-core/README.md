@@ -27,7 +27,11 @@ Phases 0-4 are done. Implemented and tested:
   against every channel as one flat table, intensity columns suffixed with
   the channel they were measured on: `mean_ch0`, `mean_ch2`, ...),
   `feature_matrix` (that table as the float array clustering and reduction
-  take as `data`), `threshold_mean`
+  take as `data`), `threshold_mean`; `FeatureCatalog`/`FeatureDescriptor`
+  (new) - what each column of the table is and how it was produced (what was
+  measured, on which channel and segmentation, by which step with what
+  parameters, and for a derived feature which features were fed to it),
+  saved as JSON and rendered as the publication data dictionary
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`, `auto_k_kmeans`
 - **reduction**: `pca`, `pca_explained_variance`, `isomap`,
   `laplacian_eigenmap`, `tsne`
@@ -51,7 +55,11 @@ Phases 0-4 are done. Implemented and tested:
   data inputs, its output key, and how it relates to the channel axis
   (`CHANNEL_SLICE` for image steps, `CHANNEL_ARGUMENT` for one that handles
   channels itself, `CHANNEL_NONE` for the clustering/reduction/gating steps
-  that consume the per-object feature table, which has no channel axis)
+  that consume the per-object feature table, which has no channel axis).
+  A step declaring a `feature_input` is handed the measurement *table* and
+  narrows it to its own `Step.features` selection, so "this clustering used
+  these six of the forty measured features" is part of the protocol rather
+  than something the caller did on the way in
 
 There is no separate `deeplearning` module - see PORT_PLAN.md's "Why deep
 learning isn't a separate module". `cellpose_segmentation` lives in

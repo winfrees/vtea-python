@@ -51,11 +51,18 @@ class StepIO:
     """`inputs`: parameter names resolved from the run context.
     `output`: context key this step's return value is stored under.
     `channel_mode`: one of CHANNEL_SLICE / CHANNEL_ARGUMENT / CHANNEL_NONE
-    above."""
+    above.
+    `feature_input`: the name of the input that is a *feature table* rather
+    than a plain array. When a DataFrame is wired to it, Step.run turns it
+    into the (n_objects, n_features) matrix the function expects, using the
+    step's own `features` selection - which is how a clustering step is told
+    to use six of the forty measured features and no others.
+    """
 
     inputs: tuple[str, ...]
     output: str
     channel_mode: str = CHANNEL_SLICE
+    feature_input: str | None = None
 
     @property
     def channel_aware(self) -> bool:
@@ -85,14 +92,30 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     # channel's features as separate columns (mean_ch0, mean_ch2, ...) plus
     # any earlier clustering/reduction output. There is no channel axis left
     # to choose from at that point.
-    ("clustering", "kmeans"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
-    ("clustering", "gaussian_mixture"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
-    ("clustering", "hierarchical"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
-    ("clustering", "auto_k_kmeans"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
-    ("reduction", "pca"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
-    ("reduction", "isomap"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
-    ("reduction", "laplacian_eigenmap"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
-    ("reduction", "tsne"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
+    ("clustering", "kmeans"): StepIO(
+        ("data",), "clusters", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
+    ("clustering", "gaussian_mixture"): StepIO(
+        ("data",), "clusters", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
+    ("clustering", "hierarchical"): StepIO(
+        ("data",), "clusters", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
+    ("clustering", "auto_k_kmeans"): StepIO(
+        ("data",), "clusters", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
+    ("reduction", "pca"): StepIO(
+        ("data",), "reduced", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
+    ("reduction", "isomap"): StepIO(
+        ("data",), "reduced", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
+    ("reduction", "laplacian_eigenmap"): StepIO(
+        ("data",), "reduced", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
+    ("reduction", "tsne"): StepIO(
+        ("data",), "reduced", channel_mode=CHANNEL_NONE, feature_input="data"
+    ),
     ("gates", "polygon_gate"): StepIO(("x", "y", "vertices"), "gate", channel_mode=CHANNEL_NONE),
     ("gates", "rectangle_gate"): StepIO(("x", "y"), "gate", channel_mode=CHANNEL_NONE),
     ("classification", "class_map"): StepIO(
