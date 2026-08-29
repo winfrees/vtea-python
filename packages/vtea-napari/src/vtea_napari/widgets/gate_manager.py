@@ -51,12 +51,19 @@ class GateManagerWidget(QWidget):
     gate_selected = Signal(str)  # gate id
     gates_changed = Signal()
 
-    def __init__(self, plot, parent: QWidget | None = None):
+    def __init__(self, plot, parent: QWidget | None = None, parent_id_provider=None):
         super().__init__(parent)
         self.plot = plot
         self.gate_set = GateSet()
         self.frame: pd.DataFrame | None = None
         self.selected_gate_id: str | None = None
+        # Asked, at the moment a gate is drawn, which gate the new one
+        # should be a subgate of - the Object Explorer's "Gate within
+        # selection" checkbox. A provider rather than a signal because both
+        # this widget and the explorer listen to the plot's gate_drawn, and
+        # depending on which slot Qt happens to call first would be a bug
+        # waiting to happen.
+        self._parent_id_provider = parent_id_provider or (lambda: None)
         self._next_gate_number = 1
 
         root = QVBoxLayout(self)
@@ -132,6 +139,10 @@ class GateManagerWidget(QWidget):
 
     def add_gate_from_vertices(self, vertices: np.ndarray, parent_id: str | None = None) -> Gate | None:
         """Turn a shape drawn on the plot into a named gate on the current axes."""
+        if parent_id is None:
+            parent_id = self._parent_id_provider()
+        if parent_id is not None and parent_id not in self.gate_set:
+            parent_id = None
         if self.plot.x_column is None or self.plot.y_column is None:
             return None
         gate = Gate(

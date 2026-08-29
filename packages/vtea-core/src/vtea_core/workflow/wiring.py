@@ -30,18 +30,36 @@ from dataclasses import dataclass
 
 from vtea_core.workflow.registry import get_step_function
 
+# How a step relates to the image's channel axis.
+#
+# SLICE: its inputs are images that still carry the channel axis, so
+#   Step.channel selects one before the function is called.
+# ARGUMENT: the function handles channels itself and needs to see all of
+#   them at once (to label its output columns by channel, say), so it is
+#   handed the whole array and the channel choice as an argument.
+# NONE: its inputs are per-object tables - a feature matrix, a column of
+#   values - which have no channel axis at all. A channel choice is
+#   meaningless for these, and offering one in the GUI implies the step
+#   works on one channel of the image when it works on the measured data.
+CHANNEL_SLICE = "slice"
+CHANNEL_ARGUMENT = "argument"
+CHANNEL_NONE = "none"
+
 
 @dataclass(frozen=True)
 class StepIO:
     """`inputs`: parameter names resolved from the run context.
     `output`: context key this step's return value is stored under.
-    `channel_aware`: the function deals with the channel axis itself, so
-    Step.run hands it the whole multi-channel array and passes the step's
-    channel choice along as an argument instead of slicing first."""
+    `channel_mode`: one of CHANNEL_SLICE / CHANNEL_ARGUMENT / CHANNEL_NONE
+    above."""
 
     inputs: tuple[str, ...]
     output: str
-    channel_aware: bool = False
+    channel_mode: str = CHANNEL_SLICE
+
+    @property
+    def channel_aware(self) -> bool:
+        return self.channel_mode == CHANNEL_ARGUMENT
 
 
 # Preprocessing writes back to "volume" on purpose, so a blur/background
@@ -60,21 +78,32 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("segmentation", "cellpose_segmentation"): StepIO(("volume", "model"), "labels"),
     ("measurements", "extract_measurements"): StepIO(("labels", "intensity"), "measurements"),
     ("measurements", "extract_measurements_by_channel"): StepIO(
-        ("labels", "intensity", "channel_axis"), "measurements", channel_aware=True
+        ("labels", "intensity", "channel_axis"), "measurements", channel_mode=CHANNEL_ARGUMENT
     ),
-    ("clustering", "kmeans"): StepIO(("data",), "clusters"),
-    ("clustering", "gaussian_mixture"): StepIO(("data",), "clusters"),
-    ("clustering", "hierarchical"): StepIO(("data",), "clusters"),
-    ("clustering", "auto_k_kmeans"): StepIO(("data",), "clusters"),
-    ("reduction", "pca"): StepIO(("data",), "reduced"),
-    ("reduction", "isomap"): StepIO(("data",), "reduced"),
-    ("reduction", "laplacian_eigenmap"): StepIO(("data",), "reduced"),
-    ("reduction", "tsne"): StepIO(("data",), "reduced"),
-    ("gates", "polygon_gate"): StepIO(("x", "y", "vertices"), "gate"),
-    ("gates", "rectangle_gate"): StepIO(("x", "y"), "gate"),
-    ("classification", "class_map"): StepIO(("labels", "object_ids", "class_labels"), "class_map"),
-    ("classification", "train_classifier"): StepIO(("model", "crops", "labels"), "model"),
-    ("classification", "predict"): StepIO(("model", "crops"), "predictions"),
+    # Clustering and reduction consume "data" - the per-object feature
+    # matrix built from the measurement table, which already carries every
+    # channel's features as separate columns (mean_ch0, mean_ch2, ...) plus
+    # any earlier clustering/reduction output. There is no channel axis left
+    # to choose from at that point.
+    ("clustering", "kmeans"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
+    ("clustering", "gaussian_mixture"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
+    ("clustering", "hierarchical"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
+    ("clustering", "auto_k_kmeans"): StepIO(("data",), "clusters", channel_mode=CHANNEL_NONE),
+    ("reduction", "pca"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
+    ("reduction", "isomap"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
+    ("reduction", "laplacian_eigenmap"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
+    ("reduction", "tsne"): StepIO(("data",), "reduced", channel_mode=CHANNEL_NONE),
+    ("gates", "polygon_gate"): StepIO(("x", "y", "vertices"), "gate", channel_mode=CHANNEL_NONE),
+    ("gates", "rectangle_gate"): StepIO(("x", "y"), "gate", channel_mode=CHANNEL_NONE),
+    ("classification", "class_map"): StepIO(
+        ("labels", "object_ids", "class_labels"), "class_map", channel_mode=CHANNEL_NONE
+    ),
+    ("classification", "train_classifier"): StepIO(
+        ("model", "crops", "labels"), "model", channel_mode=CHANNEL_NONE
+    ),
+    ("classification", "predict"): StepIO(
+        ("model", "crops"), "predictions", channel_mode=CHANNEL_NONE
+    ),
 }
 
 # Kept as a name-only view for callers that just need "which parameters are

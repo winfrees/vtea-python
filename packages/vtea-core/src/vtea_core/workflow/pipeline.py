@@ -104,14 +104,36 @@ class Step:
         return self.name or self.output_key
 
     @property
+    def channel_mode(self) -> str:
+        """How this step relates to the image's channel axis - see
+        vtea_core.workflow.wiring's CHANNEL_* constants."""
+        from vtea_core.workflow.wiring import CHANNEL_SLICE, STEP_IO
+
+        spec = STEP_IO.get((self.category, self.function_name))
+        return CHANNEL_SLICE if spec is None else spec.channel_mode
+
+    @property
     def channel_aware(self) -> bool:
         """True when the function handles the channel axis itself (it takes
         `channel_axis`/`channel` arguments) and so must be handed the whole
         multi-channel array rather than a pre-sliced single channel."""
-        from vtea_core.workflow.wiring import STEP_IO
+        from vtea_core.workflow.wiring import CHANNEL_ARGUMENT
 
-        spec = STEP_IO.get((self.category, self.function_name))
-        return bool(spec is not None and spec.channel_aware)
+        return self.channel_mode == CHANNEL_ARGUMENT
+
+    @property
+    def channel_applies(self) -> bool:
+        """Whether a channel choice means anything for this step.
+
+        It doesn't for the steps that consume per-object tables - clustering,
+        reduction, gating - whose input is the measured feature matrix, not
+        an image. Offering them a channel picker says they work on one
+        channel of the image when they work on every feature that has been
+        measured, from every channel.
+        """
+        from vtea_core.workflow.wiring import CHANNEL_NONE
+
+        return self.channel_mode != CHANNEL_NONE
 
     def run(
         self,
@@ -142,7 +164,10 @@ class Step:
                 f"step '{self.category}.{self.function_name}' needs context key(s) {missing}, "
                 f"available: {list(context)}"
             )
-        if self.channel_aware:
+        if not self.channel_applies:
+            # A per-object table has no channel axis to slice.
+            kwargs = {arg: context[key] for arg, key in self.input_keys.items()}
+        elif self.channel_aware:
             kwargs = {arg: context[key] for arg, key in self.input_keys.items()}
             parameters = inspect.signature(self.function).parameters
             if "channel" in parameters and "channel" not in self.params:

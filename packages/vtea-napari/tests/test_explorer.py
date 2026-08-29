@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from qtpy.QtCore import Qt
 
 from vtea_napari.widgets.explorer import ExplorerWidget
 
@@ -119,10 +120,11 @@ class TestGateManagement:
         widget.set_data(make_frame(), labels=make_labels())
         widget.plot.set_data(make_frame(), x_column="x", y_column="y")
         _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
-        gate = next(iter(widget.gate_set))
-        widget._on_gate_selected(gate.id)
 
-        widget._delete_selected_gate()
+        # Select the way a user does - by clicking the gate's row - so the
+        # gate manager knows which gate Delete applies to.
+        widget.table.cellClicked.emit(0, 2)
+        widget.gate_manager.delete_selected_gate()
 
         assert len(widget.gate_set) == 0
         assert widget.table.rowCount() == 0
@@ -251,3 +253,71 @@ def _draw_triangle(plot, p1, p2, p3):
     plot._on_click(_FakeMouseEvent(*p2))
     plot._on_click(_FakeMouseEvent(*p3))
     plot._on_click(_FakeMouseEvent(*p3, dblclick=True))
+
+
+class TestFloatsByDefault:
+    """A scatter plot docked into a narrow side panel is unusable at the
+    size napari gives it, and gating means working between the plot and the
+    image."""
+
+    def test_it_floats_the_dock_it_is_put_in(self, qtbot):
+        from qtpy.QtWidgets import QDockWidget, QMainWindow
+
+        window = QMainWindow()
+        qtbot.addWidget(window)
+        dock = QDockWidget("Object Explorer", window)
+        window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+
+        widget = ExplorerWidget(float_by_default=False)
+        dock.setWidget(widget)
+        assert widget.float_dock() is True
+        assert dock.isFloating()
+
+    def test_no_dock_is_not_an_error(self, qtbot):
+        """Constructed standalone, in a script or a test."""
+        widget = ExplorerWidget(float_by_default=False)
+        qtbot.addWidget(widget)
+        assert widget.float_dock() is False
+
+
+class TestLayout:
+    def test_the_plot_takes_two_thirds_of_the_results_row(self, qtbot):
+        widget = ExplorerWidget(float_by_default=False)
+        qtbot.addWidget(widget)
+        widget.resize(900, 600)
+        widget.show()
+        qtbot.waitExposed(widget)
+
+        plot_width, gate_width = widget.results_splitter.sizes()
+        assert plot_width > gate_width
+        share = plot_width / (plot_width + gate_width)
+        assert 0.55 < share < 0.8, f"plot took {share:.0%} of the results row"
+
+    def test_the_plot_canvas_grows_with_its_pane(self, qtbot):
+        """A canvas with matplotlib's default Preferred size policy keeps
+        its figsize however the pane is resized, which reads as the y axis
+        simply not resizing."""
+        from qtpy.QtWidgets import QSizePolicy
+
+        widget = ExplorerWidget(float_by_default=False)
+        qtbot.addWidget(widget)
+        assert widget.plot.canvas.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
+
+        widget.resize(900, 500)
+        widget.show()
+        qtbot.waitExposed(widget)
+        short = widget.plot.canvas.height()
+        widget.resize(900, 1100)
+        qtbot.waitUntil(lambda: widget.plot.canvas.height() > short, timeout=2000)
+
+    def test_the_gate_manager_sits_beside_the_plot(self, qtbot):
+        widget = ExplorerWidget(float_by_default=False)
+        qtbot.addWidget(widget)
+        assert widget.results_splitter.count() == 2
+        assert widget.results_splitter.widget(0) is widget.plot
+        assert widget.results_splitter.widget(1) is widget.gate_manager
+
+    def test_the_gallery_is_a_second_tab(self, qtbot):
+        widget = ExplorerWidget(float_by_default=False)
+        qtbot.addWidget(widget)
+        assert [widget.tabs.tabText(i) for i in range(widget.tabs.count())] == ["Plot", "Gallery"]

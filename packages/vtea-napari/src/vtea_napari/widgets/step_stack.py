@@ -149,10 +149,11 @@ class StepStackWidget(QWidget):
         )
         # Inherit the channel already in use: picking channel 2 for
         # segmentation and leaving a later step on "all channels" fed
-        # mismatched shapes into it and aborted the run. A channel-aware step
-        # is exempt - it reads every channel by default, which is what a
-        # measurement step should do.
-        if not step.channel_aware:
+        # mismatched shapes into it and aborted the run. Two kinds of step
+        # are exempt: a channel-aware one reads every channel by default,
+        # which is what a measurement step should do, and a step that reads
+        # the feature table rather than the image has no channel at all.
+        if step.channel_applies and not step.channel_aware:
             step.channel = self._default_channel_provider()
         self.pipeline.add_step(step)
         self.refresh_steps()

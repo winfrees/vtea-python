@@ -47,7 +47,11 @@ Phases 0-4 are done. Implemented and tested:
 - **workflow** (new): `Step`/`Pipeline` - the headless engine behind
   `vtea-napari`'s protocol builder widget, and `STEP_REGISTRY`/
   `available_steps`/`get_step_function`, the category -> function registry
-  both the GUI and scripts draw on
+  both the GUI and scripts draw on. `wiring.STEP_IO` declares each step's
+  data inputs, its output key, and how it relates to the channel axis
+  (`CHANNEL_SLICE` for image steps, `CHANNEL_ARGUMENT` for one that handles
+  channels itself, `CHANNEL_NONE` for the clustering/reduction/gating steps
+  that consume the per-object feature table, which has no channel axis)
 
 There is no separate `deeplearning` module - see PORT_PLAN.md's "Why deep
 learning isn't a separate module". `cellpose_segmentation` lives in

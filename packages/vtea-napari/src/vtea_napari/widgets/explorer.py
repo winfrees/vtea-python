@@ -1,167 +1,293 @@
-"""The Object Explorer dock widget: scatter plot + gate table + image
-highlighting, the vtea-python equivalent of vteaexploration.MicroExplorer.
+"""The Object Explorer dock widget: scatter plot + gate manager + gallery +
+image highlighting, the vtea-python equivalent of vteaexploration.MicroExplorer.
 
-Owns a vtea_core.gates.GateSet against a measurement DataFrame (typically a
-napari Labels layer's `.features`, the idiomatic napari place for a
-per-label table - no custom SQL-backed store needed, unlike
-vtea.jdbc.H2DatabaseEngine). Wires ScatterPlotWidget's gate_drawn signal to
-GateSet.add() and GateTableWidget's edits back onto the same GateSet,
-matching what MicroExplorer/XYExplorationPanel/TableWindow did together in
-Java but as three cooperating pieces connected by four Qt signals instead
-of that subsystem's ~25 single-method listener interfaces.
+Reads and writes the shared vtea_napari.session.AnalysisSession rather than
+owning its own copy of the analysis. The protocol builder publishes each run
+into that session; this widget plots it. Neither pane has to be open for the
+other to work, and hiding one (the napari Window menu, or a dock's close
+button) loses nothing - on re-show this widget reads the session back.
+
+It floats by default. A scatter plot docked into a narrow side panel is
+unusable at the size napari gives it, and gating means working between the
+plot and the image, so the natural place for it is over the canvas where it
+can be moved and resized freely.
+
+The plot and gate manager are the same widgets the protocol builder briefly
+carried, moved here where they belong: ScatterPlotWidget (click-to-draw
+polygon or two-click rectangle gates, colour-by/LUT) and GateManagerWidget
+(the gate list, JSON save/open, per-gate statistics). What MicroExplorer/
+XYExplorationPanel/TableWindow did together in Java is these three
+cooperating pieces connected by Qt signals instead of that subsystem's ~25
+single-method listener interfaces.
 
 "Subgating" (vtea's SubGateListener, which opened a whole new MicroExplorer
 window over a pre-filtered dataset) is real gate hierarchy here instead:
-check "Gate within selection", select a gate, then draw - new gates get
-that gate as their parent_id and GateSet already restricts a child's
-membership to its parent's (see vtea_core.gates.gate).
+check "Gate within selection", select a gate, then draw - new gates get that
+gate as their parent_id and GateSet already restricts a child's membership
+to its parent's (see vtea_core.gates.gate).
 
 Selecting a gate highlights its members as a napari Labels layer (only the
 gated object ids kept, background elsewhere) - the closest napari-native
-analog of vtea's colorized ImagePlus overlay repaint.
+analog of vtea's colorized ImagePlus overlay repaint - and fills the gallery
+with a crop around each gated object.
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
-from vtea_core.gates import Gate, GateSet
+from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from vtea_napari.widgets.gate_table import GateTableWidget
+from vtea_napari.session import AnalysisSession, session_for
+from vtea_napari.widgets.gallery import GalleryWidget
+from vtea_napari.widgets.gate_manager import GateManagerWidget
+from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.plot import ScatterPlotWidget
 
-_GATE_COUNTER_START = 1
+# The plot is the point of this pane; the gate manager beside it is
+# controls. Same 2:1 split the protocol builder used before this moved here.
+PLOT_WIDTH_SHARE = 2
+GATE_WIDTH_SHARE = 1
+
+# Big enough that the axes and the gate table are both usable when it first
+# appears floating over the canvas.
+DEFAULT_FLOATING_SIZE = (900, 560)
+
+HIGHLIGHT_LAYER_NAME = "Gate highlight"
 
 
 class ExplorerWidget(QWidget):
     """A napari dock widget: `napari_viewer` is auto-injected by napari's
     plugin engine when opened from the Plugins menu; pass None to use
-    standalone (no image-highlighting) from a script or in tests."""
+    standalone (no image-highlighting) from a script or in tests.
+
+    `session` is the shared analysis state; when omitted it is looked up
+    from the viewer, which is what makes this widget and the protocol
+    builder two views of one analysis.
+    """
 
     gate_membership_changed = Signal(str, object)  # gate id, boolean mask (np.ndarray)
 
-    def __init__(self, napari_viewer=None, parent: QWidget | None = None):
+    def __init__(
+        self,
+        napari_viewer=None,
+        parent: QWidget | None = None,
+        session: AnalysisSession | None = None,
+        float_by_default: bool = True,
+    ):
         super().__init__(parent)
         self.viewer = napari_viewer
-        self.gate_set = GateSet()
-        self.frame: pd.DataFrame | None = None
-        self.labels: np.ndarray | None = None
-        self._selected_gate_id: str | None = None
-        self._next_gate_number = _GATE_COUNTER_START
+        self.session = session if session is not None else session_for(napari_viewer)
         self._highlight_layer = None
 
         root = QVBoxLayout(self)
 
+        header = QHBoxLayout()
+        self.subgate_checkbox = QCheckBox("Gate within selection")
+        self.subgate_checkbox.setToolTip(
+            "New gates become subgates of the selected one: their membership is "
+            "restricted to their parent's."
+        )
+        header.addWidget(self.subgate_checkbox)
+        header.addStretch()
+        refresh_button = QPushButton("Refresh")
+        refresh_button.setToolTip("Re-read the latest results from the protocol builder")
+        refresh_button.clicked.connect(self.reload_from_session)
+        header.addWidget(refresh_button)
         if self.viewer is not None:
-            load_row = QHBoxLayout()
             load_button = QPushButton("Load from active Labels layer")
+            load_button.setToolTip("Use a Labels layer's own .features table instead")
             load_button.clicked.connect(self._load_from_active_layer)
-            load_row.addWidget(load_button)
-            root.addLayout(load_row)
+            header.addWidget(load_button)
+        root.addLayout(header)
 
         self.plot = ScatterPlotWidget()
-        self.plot.gate_drawn.connect(self._on_gate_drawn)
-        self.plot.axes_changed.connect(lambda *_: self.plot.set_gate_overlays(list(self.gate_set)))
-        root.addWidget(self.plot)
+        self.gate_manager = GateManagerWidget(self.plot, parent_id_provider=self._parent_gate_id)
+        # One GateSet, owned by the session, so gates outlive this widget.
+        self.gate_manager.gate_set = self.session.gate_set
+        self.gate_manager.gate_selected.connect(self._on_gate_selected)
+        self.gate_manager.gates_changed.connect(self._on_gates_changed)
 
-        subgate_row = QHBoxLayout()
-        self.subgate_checkbox = QCheckBox("Gate within selection")
-        subgate_row.addWidget(self.subgate_checkbox)
-        subgate_row.addStretch()
-        root.addLayout(subgate_row)
+        self.results_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.results_splitter.addWidget(self.plot)
+        self.results_splitter.addWidget(self.gate_manager)
+        self.results_splitter.setChildrenCollapsible(False)
+        self.results_splitter.setStretchFactor(0, PLOT_WIDTH_SHARE)
+        self.results_splitter.setStretchFactor(1, GATE_WIDTH_SHARE)
 
-        self.table = GateTableWidget()
-        self.table.gate_selected.connect(self._on_gate_selected)
-        self.table.gate_visibility_changed.connect(self._on_gate_visibility_changed)
-        self.table.gate_renamed.connect(self._on_gate_renamed)
-        root.addWidget(self.table)
+        # The gallery is a second view of the same selection, not a third
+        # column: it needs the full width to show a useful number of crops.
+        self.gallery = GalleryWidget()
+        self.gallery.object_selected.connect(self._on_object_selected)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.results_splitter, "Plot")
+        self.tabs.addTab(self.gallery, "Gallery")
+        root.addWidget(self.tabs, 1)
 
-        button_row = QHBoxLayout()
-        delete_button = QPushButton("Delete selected gate")
-        delete_button.clicked.connect(self._delete_selected_gate)
-        button_row.addWidget(delete_button)
-        button_row.addStretch()
-        root.addLayout(button_row)
-
-        self.status_label = QLabel("No data loaded.")
+        self.status_label = LogView()
         root.addWidget(self.status_label)
 
+        # Re-read on every publish from the builder, and once now in case
+        # results already exist (the usual case: this pane is opened after a
+        # run, or reopened after being closed).
+        self.session.data_changed.connect(self.reload_from_session)
+        self.reload_from_session()
+
+        if float_by_default:
+            # The dock doesn't exist yet - napari adds this widget to one
+            # after constructing it - so ask again once the event loop has
+            # run.
+            QTimer.singleShot(0, self.float_dock)
+
+    # -- session ----------------------------------------------------------
+
+    @property
+    def frame(self) -> pd.DataFrame | None:
+        return self.session.results_table()
+
+    @property
+    def labels(self) -> np.ndarray | None:
+        return self.session.labels()
+
+    @property
+    def gate_set(self):
+        return self.gate_manager.gate_set
+
+    @property
+    def table(self):
+        """The gate list. Lives in the gate manager; exposed here because it
+        is part of what this pane *is*."""
+        return self.gate_manager.table
+
+    def reload_from_session(self) -> None:
+        """Pull the current table and gates out of the shared session.
+
+        Called on every publish from the builder and whenever this pane is
+        shown, which is what makes closing and reopening it free.
+        """
+        self.gate_manager.gate_set = self.session.gate_set
+        frame = self.session.results_table()
+        if frame is None:
+            self.gate_manager.set_frame(None)
+            self.status_label.setText("No measurements yet - run a measurement step.")
+            return
+        # Keep the axes on screen across a re-run.
+        self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
+        self.gate_manager.set_frame(frame)
+        self.status_label.setText(f"{len(frame)} objects, {len(frame.columns)} features.")
+
     def set_data(self, frame: pd.DataFrame, labels: np.ndarray | None = None) -> None:
-        """Loads a per-object measurement table (and optionally its source
-        label mask, to enable gate -> image highlighting)."""
-        self.frame = frame
-        self.labels = labels
-        self.gate_set = GateSet()
-        self._selected_gate_id = None
-        self._next_gate_number = _GATE_COUNTER_START
-        self.plot.set_data(frame)
-        self.table.refresh(self.gate_set, frame)
-        self.status_label.setText(f"{len(frame)} objects loaded.")
+        """Load a table directly, bypassing the protocol builder - used by
+        the Labels-layer button, and by scripts driving this widget alone.
+
+        Unlike a re-run, which keeps the gates (they are drawn on features
+        that still exist), this is a different dataset, so the gates go: a
+        polygon over one image's populations means nothing over another's.
+        """
+        context = dict(self.session.context)
+        context["measurements"] = frame
+        if labels is not None:
+            context["labels"] = labels
+        self.gate_manager.clear_gates()
+        self.session.set_gate_set(self.gate_manager.gate_set)
+        self.session.set_context(context, frame)
+
+    def showEvent(self, event):  # Qt's spelling
+        super().showEvent(event)
+        # Hiding a dock (napari's Window menu, or the dock's close button)
+        # doesn't destroy the widget, but the session may have moved on
+        # while it was hidden.
+        self.reload_from_session()
+
+    def float_dock(self) -> bool:
+        """Float the QDockWidget napari put this widget in, and give it a
+        usable size. Returns whether a dock was found to float."""
+        dock = self._dock_widget()
+        if dock is None:
+            return False
+        dock.setFloating(True)
+        dock.resize(*DEFAULT_FLOATING_SIZE)
+        return True
+
+    def _dock_widget(self):
+        from qtpy.QtWidgets import QDockWidget
+
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QDockWidget):
+                return parent
+            parent = parent.parentWidget()
+        return None
 
     def _load_from_active_layer(self) -> None:
         if self.viewer is None:
             return
         layer = self.viewer.layers.selection.active
-        if layer is None or not hasattr(layer, "features") or layer.features is None or layer.features.empty:
+        if (
+            layer is None
+            or not hasattr(layer, "features")
+            or layer.features is None
+            or layer.features.empty
+        ):
             self.status_label.setText("Select a Labels layer with a `.features` table first.")
             return
         self.set_data(layer.features, labels=np.asarray(layer.data))
 
-    def _on_gate_drawn(self, vertices: np.ndarray) -> None:
-        if self.frame is None or self.plot.x_column is None or self.plot.y_column is None:
-            return
-        parent_id = self._selected_gate_id if self.subgate_checkbox.isChecked() else None
-        gate = Gate(
-            name=f"gate{self._next_gate_number}",
-            x_axis=self.plot.x_column,
-            y_axis=self.plot.y_column,
-            vertices=vertices,
-            parent_id=parent_id,
-        )
-        self._next_gate_number += 1
-        self.gate_set.add(gate)
-        self._refresh_views()
+    # -- gates ------------------------------------------------------------
+
+    def _parent_gate_id(self) -> str | None:
+        """Which gate a newly drawn one should be a subgate of - asked by the
+        gate manager at the moment it creates the Gate."""
+        selected = self.gate_manager.selected_gate_id
+        return selected if (self.subgate_checkbox.isChecked() and selected) else None
+
+    def _on_gates_changed(self) -> None:
+        self.session.set_gate_set(self.gate_manager.gate_set)
 
     def _on_gate_selected(self, gate_id: str) -> None:
-        self._selected_gate_id = gate_id
-        gate = self.gate_set.get(gate_id)
-        self.plot.set_data(self.frame, x_column=gate.x_axis, y_column=gate.y_axis)
-        self.plot.set_gate_overlays(list(self.gate_set))
-        self._highlight_gate(gate_id)
-
-    def _on_gate_visibility_changed(self, gate_id: str, visible: bool) -> None:
-        self.gate_set.get(gate_id).visible = visible
-        self.plot.set_gate_overlays(list(self.gate_set))
-
-    def _on_gate_renamed(self, gate_id: str, name: str) -> None:
-        self.gate_set.get(gate_id).name = name
-        self.table.refresh(self.gate_set, self.frame)
-
-    def _delete_selected_gate(self) -> None:
-        if self._selected_gate_id is None or self._selected_gate_id not in self.gate_set:
+        if self.frame is None or gate_id not in self.gate_set:
             return
-        self.gate_set.remove(self._selected_gate_id)
-        self._selected_gate_id = None
-        self._refresh_views()
-
-    def _refresh_views(self) -> None:
-        self.table.refresh(self.gate_set, self.frame)
-        self.plot.set_gate_overlays(list(self.gate_set))
-
-    def _highlight_gate(self, gate_id: str) -> None:
+        gate = self.gate_set.get(gate_id)
+        if gate.x_axis not in self.frame.columns or gate.y_axis not in self.frame.columns:
+            return
         mask = self.gate_set.mask(gate_id, self.frame)
         self.gate_membership_changed.emit(gate_id, mask)
-        if self.viewer is None or self.labels is None:
-            return
         gated_ids = self.frame.loc[mask, "object_id"].to_numpy()
-        highlighted = np.where(np.isin(self.labels, gated_ids), self.labels, 0)
-        gate_name = self.gate_set.get(gate_id).name
-        layer_name = "Gate highlight"
+        self._highlight(gated_ids)
+        self._fill_gallery(gated_ids)
+        self.status_label.setText(f"{gate.name}: {len(gated_ids)} of {len(self.frame)} objects.")
+
+    def _highlight(self, gated_ids: np.ndarray) -> None:
+        labels = self.labels
+        if self.viewer is None or labels is None:
+            return
+        highlighted = np.where(np.isin(labels, gated_ids), labels, 0)
         if self._highlight_layer is not None and self._highlight_layer in self.viewer.layers:
             self._highlight_layer.data = highlighted
-            self._highlight_layer.name = layer_name
         else:
-            self._highlight_layer = self.viewer.add_labels(highlighted, name=layer_name)
-        self.status_label.setText(f"{gate_name}: {len(gated_ids)} of {len(self.frame)} objects.")
+            self._highlight_layer = self.viewer.add_labels(
+                highlighted, name=HIGHLIGHT_LAYER_NAME
+            )
+
+    def _fill_gallery(self, gated_ids: np.ndarray) -> None:
+        intensity = self.session.intensity()
+        if intensity is None or self.frame is None:
+            return
+        # The gallery crops in (row, col), so a channel axis has to go first.
+        channel_axis = self.session.channel_axis
+        if channel_axis is not None and intensity.ndim > 2 and channel_axis < intensity.ndim:
+            intensity = np.take(intensity, 0, axis=channel_axis)
+        self.gallery.show_objects(intensity, self.frame, gated_ids)
+
+    def _on_object_selected(self, object_id: int) -> None:
+        self.status_label.setText(f"Object {object_id} selected.")
+        self._highlight(np.array([object_id]))

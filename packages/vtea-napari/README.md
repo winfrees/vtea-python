@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (204 tests, including real
+Phase 4 done. Implemented and tested (234 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -25,9 +25,9 @@ widget and run it):
   runs the same whether triggered from this widget or a script.
   Every step card has its own Run button - there is no pane-level Run, since
   the analysis steps are a graph rather than a chain - and each run drives
-  that card's thumbnail. The dock is three vertically-split panes
-  (processing, analysis, results) capped at 30% of the screen width, with the
-  results pane splitting 2:1 between the plot and the gate manager.
+  that card's thumbnail. Two vertically-split panes (processing, analysis)
+  capped at 30% of the screen width; plotting and gating are in the Object
+  Explorer, which this pane publishes its results to.
   Steps added from the menu wire themselves up via `Step.for_function()` /
   `vtea_core.workflow.wiring`: each step's data arguments are resolved from
   the run context by name and its result stored under a semantic key
@@ -65,7 +65,11 @@ widget and run it):
   step's output never has a spatial axis sliced by mistake. A channel-aware
   step is the exception: it is handed the whole multi-channel array and its
   channel choice as an argument, since it has to see every channel at once
-  to label its output columns by channel.
+  to label its output columns by channel. A step that reads the *feature
+  table* rather than the image - clustering, reduction, gating - has no
+  channel at all (every channel is already a column there), so it gets no
+  channel picker, inherits no channel when added, and is never sliced; its
+  card says "feature table" instead.
 - **`ParameterForm`** — builds the Edit-step form from a registered
   function's actual signature, split into data arguments (arrays/dataframes,
   excluded - resolved from the pipeline's run context) and editable
@@ -76,15 +80,26 @@ widget and run it):
   `param_form.py`'s docstring).
 - **`StepCardWidget`** — one step's card, with an optional thumbnail preview
   of that step's last-run output.
+- **`AnalysisSession`** (`session.py`) — the state the two dock widgets
+  share: the protocol, the run context, the feature table, and the gates.
+  It is keyed by the napari viewer and owned by neither widget, so results
+  computed while the explorer was closed are waiting when it opens, gates
+  drawn in the explorer survive it being hidden, and a plugin widget napari
+  destroys and rebuilds comes back with its steps. It is also the seam a
+  saved session will be written from (see
+  [`/docs/SAVING_AND_ARCHIVING.md`](../../docs/SAVING_AND_ARCHIVING.md)).
 - **`ExplorerWidget`** — the `MicroExplorer` equivalent, registered as the
-  "Object Explorer" napari dock widget. Owns a `vtea_core.gates.GateSet`
-  against a measurement table (typically a napari `Labels` layer's
-  `.features`); draw polygon gates on the scatter plot, manage them in a
-  table (visibility/color/name/axes/counts), subgate within a selection for
-  real gate hierarchy, and highlight a gate's members as a napari `Labels`
-  overlay. See PORT_PLAN.md's "Object Explorer" section for what was
-  simplified vs. the Java original (one gate type, no dead `GateManager`
-  port, real hierarchy where Java had none).
+  "Object Explorer" napari dock widget, and **floating by default**: a
+  scatter plot docked into napari's side panel is unusable at the width it
+  gets there, and gating means working between the plot and the image. It
+  reads the shared session rather than owning its own copy of the analysis.
+  Holds the scatter plot and gate manager side by side (2:1) on a "Plot"
+  tab and the per-object crop grid on a "Gallery" tab; subgate within a
+  selection for real gate hierarchy; selecting a gate highlights its members
+  as a napari `Labels` overlay and fills the gallery. See PORT_PLAN.md's
+  "Object Explorer" section for what was simplified vs. the Java original
+  (one gate type, no dead `GateManager` port, real hierarchy where Java had
+  none).
 - **`ScatterPlotWidget`** — the matplotlib-backed plot: click to add a gate
   vertex, double-click to close it, right-click to cancel; in rectangle mode
   two clicks (opposite corners) make the gate, still stored as a 4-vertex
@@ -92,7 +107,7 @@ widget and run it):
   "Color by"/"LUT" comboboxes for point coloring by a third feature
   (replaces `vtea.lut`'s point-coloring, not ImageJ's per-channel image
   LUTs, which napari's `Image` layer controls already give you for free).
-- **`GateManagerWidget`** — the gate pane beside the builder's plot:
+- **`GateManagerWidget`** — the gate pane beside the explorer's plot:
   Rectangle/Polygon drawing modes, the gate list, Delete/Clear, Save/Open as
   plain JSON (`vtea_core.gates.io` — a drawn polygon is the one part of an
   analysis that can't be recomputed, so it has to be saveable alongside the

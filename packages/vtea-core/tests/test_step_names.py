@@ -190,3 +190,59 @@ class TestChannelAwareSteps:
         # Still tagged - a pre-sliced array would have produced a bare "mean".
         assert "mean_ch1" in table.columns
         assert table.loc[0, "mean_ch1"] == pytest.approx(20.0)
+
+
+class TestTabularStepsHaveNoChannel:
+    """Clustering and reduction consume "data" - the per-object feature
+    matrix - not the image. Every channel is already a separate column there
+    (mean_ch0, mean_ch2, ...), so there is no channel axis left to pick
+    from, and pretending otherwise both misleads and risks slicing a table."""
+
+    def test_clustering_and_reduction_are_not_channel_scoped(self):
+        for category, function in (
+            ("clustering", "kmeans"),
+            ("clustering", "gaussian_mixture"),
+            ("reduction", "pca"),
+            ("reduction", "tsne"),
+        ):
+            step = Step.for_function(category, function)
+            assert step.channel_applies is False, f"{category}.{function}"
+
+    def test_gates_and_classification_are_not_either(self):
+        for category, function in (
+            ("gates", "polygon_gate"),
+            ("classification", "class_map"),
+        ):
+            assert Step.for_function(category, function).channel_applies is False
+
+    def test_image_steps_still_are(self):
+        for category, function in (
+            ("imageprocessing", "gaussian_blur"),
+            ("segmentation", "threshold_mask"),
+            ("measurements", "extract_measurements"),
+        ):
+            assert Step.for_function(category, function).channel_applies is True
+
+    def test_an_unregistered_step_defaults_to_channel_slicing(self):
+        step = Step("segmentation", "some_custom_function")
+        assert step.channel_applies is True
+
+    def test_the_feature_matrix_is_passed_through_untouched(self):
+        """Even with a channel set - a stale one from an earlier edit, say -
+        the table must reach the function whole."""
+        data = np.arange(40, dtype=float).reshape(20, 2)
+        step = Step.for_function(
+            "clustering", "kmeans", available={"data"}, params={"n_clusters": 2}, channel=1
+        )
+        clusters = step.run({"data": data}, channel_axis=0, full_ndim=2)
+        assert clusters.shape == (20,)
+
+    def test_a_channel_choice_never_slices_a_table(self):
+        """A table whose ndim happens to match the source image's used to be
+        one `full_ndim` check away from having a column sliced off."""
+        data = np.arange(40, dtype=float).reshape(20, 2)
+        step = Step.for_function(
+            "reduction", "pca", available={"data"}, params={"n_components": 1}, channel=0
+        )
+        reduced = step.run({"data": data}, channel_axis=0, full_ndim=2)
+        assert reduced.shape[0] == 20

@@ -10,10 +10,15 @@ steps from a category menu - not a node-graph editor, see PORT_PLAN.md's
 button on each card - the same operations the Java UI exposed, execution
 handled by the shared Pipeline engine either here or from a script/notebook.
 
-run_pipeline() also threads each step's last-run output back onto its card
-as a thumbnail (StepCardWidget.set_thumbnail) - the Java UI had per-step
-previews and this first pass initially didn't; skip it when there's no
-`napari_viewer` (headless/script use) rather than requiring one.
+Each step's last-run output is threaded back onto its card as a thumbnail
+(StepCardWidget.set_thumbnail) - the Java UI had per-step previews and this
+first pass initially didn't; skip it when there's no `napari_viewer`
+(headless/script use) rather than requiring one.
+
+Results are published to a shared vtea_napari.session.AnalysisSession rather
+than displayed here: the Object Explorer is the pane that plots and gates
+them. That split keeps this dock about building and running a protocol, and
+means closing either pane loses nothing.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -37,10 +43,9 @@ from qtpy.QtWidgets import (
 from vtea_core.measurements import feature_matrix
 from vtea_core.workflow import Pipeline, Step
 
-from vtea_napari.widgets.gate_manager import GateManagerWidget
+from vtea_napari.session import AnalysisSession, session_for
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.param_form import ParameterForm
-from vtea_napari.widgets.plot import ScatterPlotWidget
 from vtea_napari.widgets.step_stack import StepStackWidget
 
 ALL_CHANNELS = "All channels"
@@ -59,10 +64,6 @@ RUN_BUTTON_STYLE = (
 # A 2D per-object result wider than this is a crop stack or a distance
 # matrix, not a handful of features to plot against each other.
 MAX_DERIVED_FEATURES = 8
-
-# The results row splits 2:1 between the plot and the gate manager.
-PLOT_WIDTH_SHARE = 2
-GATE_WIDTH_SHARE = 1
 
 # A dock this wide already shows every control; past that it is just taking
 # screen away from the image canvas, which is the thing being analysed.
@@ -144,25 +145,37 @@ class EditStepDialog(QDialog):
             self.input_combos[argument] = combo
 
         # Channel next: which channel a step runs on is usually the most
-        # consequential choice for a multi-channel acquisition.
-        channel_row = QHBoxLayout()
-        channel_row.addWidget(QLabel("Channel:"))
+        # consequential choice for a multi-channel acquisition - but only
+        # for the steps that read the image. A clustering or reduction step
+        # reads the measured feature table, which has no channel axis (every
+        # channel is already there as its own column), so offering it a
+        # channel picker would say something untrue about what it does.
         self.channel_combo = QComboBox()
         self.channel_combo.addItem(ALL_CHANNELS, None)
-        for index in range(n_channels or 0):
-            self.channel_combo.addItem(f"Channel {index}", index)
-        if step.channel is not None:
-            position = self.channel_combo.findData(step.channel)
-            if position == -1:
-                # The step remembers a channel the current image doesn't
-                # have (different file loaded since). Keep it visible rather
-                # than silently resetting it to "All channels".
-                self.channel_combo.addItem(f"Channel {step.channel} (not in image)", step.channel)
-                position = self.channel_combo.count() - 1
-            self.channel_combo.setCurrentIndex(position)
-        channel_row.addWidget(self.channel_combo)
-        channel_row.addStretch()
-        layout.addLayout(channel_row)
+        if step.channel_applies:
+            for index in range(n_channels or 0):
+                self.channel_combo.addItem(f"Channel {index}", index)
+            if step.channel is not None:
+                position = self.channel_combo.findData(step.channel)
+                if position == -1:
+                    # The step remembers a channel the current image doesn't
+                    # have (different file loaded since). Keep it visible
+                    # rather than silently resetting it to "All channels".
+                    self.channel_combo.addItem(
+                        f"Channel {step.channel} (not in image)", step.channel
+                    )
+                    position = self.channel_combo.count() - 1
+                self.channel_combo.setCurrentIndex(position)
+            channel_row = QHBoxLayout()
+            channel_row.addWidget(QLabel("Channel:"))
+            channel_row.addWidget(self.channel_combo)
+            channel_row.addStretch()
+            layout.addLayout(channel_row)
+        else:
+            source = QLabel("Reads the measured feature table, not the image.")
+            source.setStyleSheet("color: gray;")
+            source.setWordWrap(True)
+            layout.addWidget(source)
 
         self.form = ParameterForm(step.category, step.function_name)
         self.form.set_values(step.params)
@@ -190,7 +203,7 @@ class EditStepDialog(QDialog):
 
 
 class ProtocolBuilderWidget(QWidget):
-    """The napari dock widget: two step stacks plus the results plot.
+    """The napari dock widget: the two step stacks that build a protocol.
 
     Split into a processing pane (image processing, segmentation - the steps
     that turn an image into labels) and an analysis pane (measurements,
@@ -199,8 +212,11 @@ class ProtocolBuilderWidget(QWidget):
     shared context, and sit in a vertical splitter so each gets half the
     height by default and can be re-dragged.
 
-    The analysis pane also plots the result: one point per segmented object,
-    with the axes chosen from whatever measurements were computed.
+    Plotting and gating are *not* here: they live in the Object Explorer,
+    which reads the same AnalysisSession this widget writes its results
+    into. That keeps this pane about building and running a protocol, and
+    lets the explorer float over the image where a scatter plot is actually
+    usable.
 
     `napari_viewer` is auto-injected by napari's plugin engine when opened
     from the Plugins menu; pass None for standalone/script/test use (the
@@ -216,13 +232,23 @@ class ProtocolBuilderWidget(QWidget):
         napari_viewer=None,
         analysis_pipeline: Pipeline | None = None,
         parent=None,
+        session: AnalysisSession | None = None,
     ):
         super().__init__(parent)
-        # `pipeline` stays the processing pipeline so existing callers and
-        # scripts keep working.
-        self.pipeline = pipeline if pipeline is not None else Pipeline()
-        self.analysis_pipeline = analysis_pipeline if analysis_pipeline is not None else Pipeline()
         self.viewer = napari_viewer
+        # Results and the protocol itself go here rather than staying in
+        # this widget, so the Object Explorer sees them and so closing
+        # either pane - or napari rebuilding this one - loses nothing.
+        self.session = session if session is not None else session_for(napari_viewer)
+        # `pipeline` stays the processing pipeline so existing callers and
+        # scripts keep working; an explicitly passed one takes over the
+        # session's, since the caller means to drive that object.
+        if pipeline is not None:
+            self.session.processing_pipeline = pipeline
+        if analysis_pipeline is not None:
+            self.session.analysis_pipeline = analysis_pipeline
+        self.pipeline = self.session.processing_pipeline
+        self.analysis_pipeline = self.session.analysis_pipeline
         self.last_context: dict = {}
         # Which axis is depth; used to present results as full z-stacks.
         self.z_axis: int | None = None
@@ -254,6 +280,15 @@ class ProtocolBuilderWidget(QWidget):
         top_row.addWidget(self.z_axis_combo)
 
         top_row.addStretch()
+
+        # The explorer is where the results are looked at, so it is worth
+        # being able to open it from here rather than hunting the Plugins
+        # menu after every run.
+        self.explorer_button = QPushButton("Object Explorer")
+        self.explorer_button.setToolTip("Open the plot and gate manager for these results")
+        self.explorer_button.clicked.connect(self.open_object_explorer)
+        top_row.addWidget(self.explorer_button)
+
         root.addLayout(top_row)
 
         if self.viewer is not None:
@@ -295,25 +330,12 @@ class ProtocolBuilderWidget(QWidget):
         self.analysis_stack.run_step_requested.connect(self.run_single_step)
         self.analysis_stack.step_renamed.connect(self.repoint_inputs)
 
-        # Results row: the plot and the gates drawn on it, side by side.
-        self.plot = ScatterPlotWidget()
-        self.gate_manager = GateManagerWidget(self.plot)
-        self.results_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.results_splitter.addWidget(self.plot)
-        self.results_splitter.addWidget(self.gate_manager)
-        self.results_splitter.setChildrenCollapsible(False)
-        # 2/3 plot, 1/3 gate manager - re-draggable from there.
-        self.results_splitter.setStretchFactor(0, PLOT_WIDTH_SHARE)
-        self.results_splitter.setStretchFactor(1, GATE_WIDTH_SHARE)
-
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.addWidget(self.processing_stack)
         self.splitter.addWidget(self.analysis_stack)
-        self.splitter.addWidget(self.results_splitter)
         self.splitter.setChildrenCollapsible(False)
-        # Equal stretch: processing, analysis and results each get a third of
-        # the dock's height, and the results row is a real splitter pane so
-        # the plot resizes with it instead of keeping its figure size.
+        # Equal stretch: each pane takes half the dock's height rather than
+        # the steps list being squeezed to a single visible card.
         for index in range(self.splitter.count()):
             self.splitter.setStretchFactor(index, 1)
         root.addWidget(self.splitter, 1)
@@ -470,7 +492,7 @@ class ProtocolBuilderWidget(QWidget):
             self.last_context = working
             self._merge_into_measurements(step, result)
         self.refresh_steps()
-        self._refresh_plot()
+        self._publish_results()
         return self.last_context
 
     def default_channel(self) -> int | None:
@@ -514,7 +536,7 @@ class ProtocolBuilderWidget(QWidget):
             self.status_label.setText(f"{type(exc).__name__}: {exc}")
             return self.last_context
         self.refresh_steps()
-        self._refresh_plot()
+        self._publish_results()
         self.status_label.setText("Processing finished.")
         return self.last_context
 
@@ -552,7 +574,7 @@ class ProtocolBuilderWidget(QWidget):
         self.last_context = context
         self._merge_into_measurements(step, result)
         self.refresh_steps()
-        self._refresh_plot()
+        self._publish_results()
 
         if isinstance(result, np.ndarray) and result.ndim >= 2:
             self.show_step_result(step)
@@ -703,17 +725,40 @@ class ProtocolBuilderWidget(QWidget):
                 frame[column] = values
         return frame
 
-    def _refresh_plot(self) -> None:
-        frame = self.results_table()
-        if frame is None:
-            return
-        # Keep whatever axes are on screen: re-running a step to see how it
-        # moved the points shouldn't jump the plot back to the first two
-        # columns.
-        self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
-        # Gates are drawn against this table, so their counts and means have
-        # to be recomputed from the new one.
-        self.gate_manager.set_frame(frame)
+    def open_object_explorer(self):
+        """Open (or raise) the Object Explorer on the same session.
+
+        Returns the explorer widget, or None with a message when there's no
+        viewer to dock it into.
+        """
+        if self.viewer is None:
+            self.status_label.setText("The Object Explorer needs a napari viewer.")
+            return None
+        from vtea_napari.widgets.explorer import ExplorerWidget
+
+        for widget in QApplication.topLevelWidgets():
+            for existing in widget.findChildren(ExplorerWidget):
+                if existing.session is self.session:
+                    existing.show()
+                    existing.raise_()
+                    return existing
+
+        explorer = ExplorerWidget(napari_viewer=self.viewer, session=self.session)
+        self.viewer.window.add_dock_widget(explorer, name="Object Explorer", area="right")
+        return explorer
+
+    def _publish_results(self) -> None:
+        """Hand the run context and the flat feature table to the shared
+        session, which is what the Object Explorer plots and gates. Doing it
+        here rather than pushing directly at the explorer means the results
+        survive the explorer being closed, and are already waiting when it
+        is opened."""
+        self.session.set_axes(
+            source_layer_name=self.layer_combo.currentData(),
+            channel_axis=self.pipeline.channel_axis,
+            z_axis=self.z_axis,
+        )
+        self.session.set_context(self.last_context, self.results_table())
 
     # -- channel axis -----------------------------------------------------
 

@@ -1,5 +1,5 @@
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QPushButton
+from qtpy.QtWidgets import QLabel, QPushButton
 
 from vtea_napari.widgets.protocol_builder import ProtocolBuilderWidget
 
@@ -10,6 +10,24 @@ def _click_button(qtbot, widget, text):
             qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
             return
     raise AssertionError(f"no button with text {text!r} found")
+
+
+def _explorer_for(widget, qtbot):
+    """The Object Explorer viewing the same analysis as `widget`.
+
+    Plotting and gating live there now; the builder publishes results into
+    the session they share. Floating is off so the test doesn't need a dock.
+    """
+    from vtea_napari.widgets.explorer import ExplorerWidget
+
+    explorer = ExplorerWidget(session=widget.session, float_by_default=False)
+    qtbot.addWidget(explorer)
+    return explorer
+
+
+def _axis_choices(explorer):
+    combo = explorer.plot.x_combo
+    return {combo.itemText(index) for index in range(combo.count())}
 
 
 class TestAddStep:
@@ -613,9 +631,9 @@ class TestAnalysisPaneAndPlot:
         frame = widget.results_table()
         assert frame is not None
         assert len(frame) == 2
-        # Axes offered are the measured values.
-        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
-        assert {"mean", "count", "object_id"} <= axes
+        # Axes offered are the measured values - in the explorer, which is
+        # where the plot lives.
+        assert {"mean", "count", "object_id"} <= _axis_choices(_explorer_for(widget, qtbot))
 
     def test_per_object_analysis_output_becomes_a_plot_column(self, qtbot):
         """Cluster ids and similar per-object results should be selectable as
@@ -641,20 +659,19 @@ class TestAnalysisPaneAndPlot:
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
         assert widget.results_table() is None
-        widget._refresh_plot()  # must not raise
+        widget._publish_results()  # must not raise
 
 
 class TestPaneSizing:
-    def test_the_three_panes_share_the_height(self, qtbot):
-        """The steps list used to be squeezed to about one visible card, and
-        the plot had no pane of its own to resize with."""
+    def test_the_panes_share_the_height(self, qtbot):
+        """The steps list used to be squeezed to about one visible card."""
         from vtea_napari.widgets.step_stack import MINIMUM_STACK_HEIGHT
 
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
 
-        # Processing, analysis, results.
-        assert widget.splitter.count() == 3
+        # Processing and analysis; the plot lives in the Object Explorer.
+        assert widget.splitter.count() == 2
         assert widget.processing_stack.scroll.minimumHeight() >= MINIMUM_STACK_HEIGHT
         assert not widget.splitter.childrenCollapsible()
 
@@ -664,38 +681,10 @@ class TestPaneSizing:
         widget.show()
         qtbot.waitExposed(widget)
         sizes = widget.splitter.sizes()
-        assert len(sizes) == 3
+        assert len(sizes) == 2
         total = sum(sizes)
         assert total > 0
-        assert min(sizes) / total > 0.2, f"panes split unevenly: {sizes}"
-
-    def test_the_plot_takes_two_thirds_of_the_results_row(self, qtbot):
-        widget = ProtocolBuilderWidget()
-        qtbot.addWidget(widget)
-        widget.resize(600, 900)
-        widget.show()
-        qtbot.waitExposed(widget)
-
-        plot_width, gate_width = widget.results_splitter.sizes()
-        assert plot_width > gate_width
-        share = plot_width / (plot_width + gate_width)
-        assert 0.55 < share < 0.8, f"plot took {share:.0%} of the results row"
-
-    def test_the_plot_canvas_grows_with_its_pane(self, qtbot):
-        """The reported symptom: the y axis did not resize. A canvas with
-        the default Preferred size policy keeps its figsize instead."""
-        from qtpy.QtWidgets import QSizePolicy
-
-        widget = ProtocolBuilderWidget()
-        qtbot.addWidget(widget)
-        assert widget.plot.canvas.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
-
-        widget.resize(600, 700)
-        widget.show()
-        qtbot.waitExposed(widget)
-        short = widget.plot.canvas.height()
-        widget.resize(600, 1400)
-        qtbot.waitUntil(lambda: widget.plot.canvas.height() > short, timeout=2000)
+        assert min(sizes) / total > 0.3, f"panes split unevenly: {sizes}"
 
     def test_the_dock_is_capped_at_thirty_percent_of_the_screen(self, qtbot):
         from qtpy.QtWidgets import QApplication
@@ -1098,7 +1087,7 @@ class TestPerStepRun:
         # Named after the step, not its shared "clusters" output key, so a
         # second clustering doesn't overwrite the first one's column.
         assert cluster.name in widget.last_context["measurements"].columns
-        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        axes = _axis_choices(_explorer_for(widget, qtbot))
         assert cluster.name in axes
 
     def test_a_failing_step_reports_instead_of_raising(self, qtbot):
@@ -1145,7 +1134,7 @@ class TestPlotIsFedByMeasurements:
         widget.run_processing()
         widget.run_single_step(widget.analysis_pipeline.steps[0])
 
-        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        axes = _axis_choices(_explorer_for(widget, qtbot))
         assert {"mean", "count", "sum", "stddev"} <= axes
 
     def test_new_steps_inherit_the_channel_already_in_use(self, qtbot):
@@ -1444,7 +1433,7 @@ class TestMeasurementsPickASegmentation:
     def test_the_channel_tagged_features_reach_the_plot_axes(self, qtbot):
         """Item 3: those names are what the X/Y menus offer."""
         widget = _measured_multichannel(qtbot)
-        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        axes = _axis_choices(_explorer_for(widget, qtbot))
         assert {"mean_ch0", "mean_ch1", "mean_ch2"} <= axes
 
     def test_the_channel_axis_is_seeded_for_the_step_to_read(self, qtbot):
@@ -1471,7 +1460,7 @@ class TestAnalysisResultsBecomeFeatures:
 
         assert cluster.name == "kmeans_1"
         assert "kmeans_1" in widget.results_table().columns
-        axes = {widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())}
+        axes = _axis_choices(_explorer_for(widget, qtbot))
         assert "kmeans_1" in axes
 
     def test_a_reduction_adds_one_column_per_component(self, qtbot):
@@ -1536,55 +1525,80 @@ class TestAnalysisResultsBecomeFeatures:
         assert context["data"].shape[1] == expected
 
 
-class TestGateManagerPane:
-    """The results row: plot on the left, gates on the right, both driven by
-    the same measurement table."""
+class TestTabularStepsShowNoChannel:
+    """A clustering or reduction step reads the measured feature table, not
+    the image. Offering it a channel picker says something untrue about what
+    it does - every channel is already a column of that table."""
 
-    def test_it_sits_beside_the_plot(self, qtbot):
+    def test_the_edit_dialog_hides_the_channel_row(self, qtbot):
+        from vtea_core.workflow import Step
+
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        dialog = EditStepDialog(
+            Step.for_function("clustering", "kmeans"), n_channels=3
+        )
+        qtbot.addWidget(dialog)
+        # Only the "All channels" placeholder; no per-channel entries, and
+        # no visible row offering them.
+        assert dialog.channel_combo.count() == 1
+        assert dialog.updated_channel() is None
+        assert any(
+            "feature table" in label.text() for label in dialog.findChildren(QLabel)
+        )
+
+    def test_an_image_step_still_shows_it(self, qtbot):
+        from vtea_core.workflow import Step
+
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        dialog = EditStepDialog(
+            Step.for_function("segmentation", "threshold_mask"), n_channels=3
+        )
+        qtbot.addWidget(dialog)
+        assert dialog.channel_combo.count() == 4  # All channels + 3
+
+    def test_adding_one_does_not_inherit_the_segmentation_channel(self, qtbot):
+        from vtea_core.workflow import Step
+
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
-        assert widget.results_splitter.count() == 2
-        assert widget.results_splitter.widget(0) is widget.plot
-        assert widget.results_splitter.widget(1) is widget.gate_manager
+        widget.pipeline.add_step(
+            Step.for_function("segmentation", "threshold_mask", channel=2)
+        )
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText("clustering")
+        stack.function_combo.setCurrentText("kmeans")
+        _click_button(qtbot, stack, "Add Step")
 
-    def test_it_is_fed_the_measurement_table(self, qtbot):
-        widget = _measured_multichannel(qtbot)
-        assert widget.gate_manager.frame is not None
-        assert len(widget.gate_manager.frame) == len(widget.results_table())
+        assert widget.analysis_pipeline.steps[0].channel is None
 
-    def test_a_gate_drawn_on_the_plot_counts_measured_cells(self, qtbot):
-        widget = _measured_multichannel(qtbot)
-        frame = widget.results_table()
-        x, y = widget.plot.x_column, widget.plot.y_column
-        # A rectangle spanning the whole data range selects everything.
-        vertices = _spanning_rectangle(frame, x, y)
+    def test_the_card_says_it_reads_the_feature_table(self, qtbot):
+        from vtea_core.workflow import Step
 
-        gate = widget.gate_manager.add_gate_from_vertices(vertices)
-        widget.gate_manager._on_gate_selected(gate.id)
+        from vtea_napari.widgets.step_card import StepCardWidget, summarize_channel
 
-        assert f"{len(frame)} of {len(frame)} cells" in widget.gate_manager.stats_label.text()
+        step = Step.for_function("reduction", "pca")
+        card = StepCardWidget(1, step)
+        qtbot.addWidget(card)
+        assert summarize_channel(step) == "feature table"
+        assert "feature table" in card.channel_label.text()
 
-    def test_gates_survive_a_re_run_and_are_recounted(self, qtbot):
+    def test_a_clustering_step_runs_on_the_feature_table_from_every_channel(self, qtbot):
+        """The end of the chain: features measured on three channels feed
+        one clustering, with no channel selection anywhere in between."""
         from vtea_core.workflow import Step
 
         widget = _measured_multichannel(qtbot)
-        frame = widget.results_table()
-        vertices = _spanning_rectangle(frame, widget.plot.x_column, widget.plot.y_column)
-        gate = widget.gate_manager.add_gate_from_vertices(vertices)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "clustering", "kmeans", params={"n_clusters": 2}, taken_names=widget.step_names()
+            )
+        )
+        widget.run_single_step(cluster)
 
-        measure = widget.analysis_pipeline.steps[0]
-        widget.run_single_step(measure)
-
-        assert gate.id in widget.gate_manager.gate_set
-        assert widget.gate_manager.frame is not None
-
-
-def _spanning_rectangle(frame, x_column, y_column):
-    from vtea_core.gates import rectangle_vertices
-
-    return rectangle_vertices(
-        frame[x_column].min() - 1,
-        frame[y_column].min() - 1,
-        frame[x_column].max() + 1,
-        frame[y_column].max() + 1,
-    )
+        assert cluster.channel is None
+        assert cluster.name in widget.last_context
+        # It clustered on features from all three channels, not one.
+        columns = widget.results_table().columns
+        assert {"mean_ch0", "mean_ch1", "mean_ch2"} <= set(columns)

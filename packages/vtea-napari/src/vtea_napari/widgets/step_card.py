@@ -30,7 +30,14 @@ def summarize_params(step: Step) -> str:
 
 def summarize_channel(step: Step) -> str:
     """Which channel this step runs on, shown on the card so a per-step
-    channel choice is visible without opening the Edit dialog."""
+    channel choice is visible without opening the Edit dialog.
+
+    A step that consumes the measured feature table rather than the image -
+    clustering, reduction, gating - says so instead: it has no channel, and
+    labelling it "all channels" would suggest it reads the image.
+    """
+    if not step.channel_applies:
+        return "feature table"
     return "all channels" if step.channel is None else f"channel {step.channel}"
 
 

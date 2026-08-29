@@ -46,15 +46,22 @@ Phase 4 (napari GUI) landed two dock widgets:
   built from a category menu (no drag-drop/wire code exists in the Java
   source at all), which made Option A smaller than originally estimated.
   Built on `vtea_core.workflow` (`Step`/`Pipeline`, the headless engine,
-  shared between the GUI and scripts/notebooks); `run_pipeline()` also
-  drives thumbnail previews on each step's card.
-- **`ExplorerWidget`** ("Object Explorer") - the `MicroExplorer` equivalent:
-  a scatter plot with click-to-draw polygon gating, a gate management
-  table, LUT/colormap point-coloring, and a per-object thumbnail gallery.
-  Backed by a new `vtea_core.gates.Gate`/`GateSet` model with real gate
-  hierarchy, something the Java original never actually had (see
-  `docs/PORT_PLAN.md`'s "Object Explorer" section for the full comparison,
-  including which Java gate-related classes turned out to be dead code).
+  shared between the GUI and scripts/notebooks); each step card runs its own
+  step and drives its own thumbnail preview.
+- **`ExplorerWidget`** ("Object Explorer") - the `MicroExplorer` equivalent,
+  floating over the canvas by default: a scatter plot with click-to-draw
+  polygon and two-click rectangle gating, a gate manager (list, JSON
+  save/open, per-gate count and means), LUT/colormap point-coloring, and a
+  per-object thumbnail gallery. Backed by a new
+  `vtea_core.gates.Gate`/`GateSet` model with real gate hierarchy, something
+  the Java original never actually had (see `docs/PORT_PLAN.md`'s "Object
+  Explorer" section for the full comparison, including which Java
+  gate-related classes turned out to be dead code).
+
+The two panes are views of one analysis, sharing a
+`vtea_napari.session.AnalysisSession` keyed by the napari viewer: the
+builder publishes each run into it, the explorer plots and gates it, and
+hiding or closing either pane loses nothing.
 
 Both are registered as real napari plugin dock widgets, verified by
 actually loading them through `napari.Viewer` in tests, not just
