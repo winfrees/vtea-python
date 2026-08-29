@@ -247,7 +247,13 @@ class ProtocolBuilderWidget(QWidget):
     """
 
     PROCESSING_CATEGORIES = ("imageprocessing", "segmentation")
-    ANALYSIS_CATEGORIES = ("measurements", "clustering", "reduction", "gates", "classification")
+    # "classification" is deliberately absent. Its steps need `crops`,
+    # `model`, `object_ids` and `class_labels` - none of which any step in a
+    # protocol produces - so every one of them could only ever fail with
+    # "needs context key(s) [...]". The functions stay in vtea_core and work
+    # from a script; putting them back in this menu needs a crop-extraction
+    # step and a way to label training objects, neither of which exists yet.
+    ANALYSIS_CATEGORIES = ("measurements", "clustering", "reduction", "gates")
 
     def __init__(
         self,

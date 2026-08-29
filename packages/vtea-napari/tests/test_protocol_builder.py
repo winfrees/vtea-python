@@ -87,8 +87,17 @@ class TestAddStep:
         analysis = self._categories(widget.analysis_stack)
 
         assert processing == {"imageprocessing", "segmentation"}
-        assert analysis == {"measurements", "clustering", "reduction", "gates", "classification"}
+        # No "classification": its steps need crops, a model and training
+        # labels, none of which any protocol step produces, so every one of
+        # them could only ever fail with "needs context key(s) [...]".
+        assert analysis == {"measurements", "clustering", "reduction", "gates"}
         assert processing.isdisjoint(analysis)
+
+    def test_classification_is_not_offered(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        assert "classification" not in self._categories(widget.analysis_stack)
+        assert "classification" not in self._categories(widget.processing_stack)
 
 
 class TestDeleteStep:

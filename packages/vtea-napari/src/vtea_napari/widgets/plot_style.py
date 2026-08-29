@@ -93,6 +93,24 @@ class PlotStylePanel(QGroupBox):
 
         self._refresh_alpha_label()
 
+    def read_from_plot(self) -> None:
+        """Show the plot's current style rather than the defaults - used
+        after a restored view, so the controls agree with what is drawn."""
+        for widget, value in (
+            (self.size_spin, self.plot.point_size),
+            (self.alpha_slider, int(self.plot.alpha * _ALPHA_STEPS)),
+            (self.min_size_spin, self.plot.size_range[0]),
+            (self.max_size_spin, self.plot.size_range[1]),
+        ):
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+        names = {code: name for name, code in MARKERS.items()}
+        self.marker_combo.blockSignals(True)
+        self.marker_combo.setCurrentText(names.get(self.plot.marker, "circle"))
+        self.marker_combo.blockSignals(False)
+        self._refresh_alpha_label()
+
     def _refresh_alpha_label(self) -> None:
         self.alpha_label.setText(f"{self.alpha_slider.value()}%")
 

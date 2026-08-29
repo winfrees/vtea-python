@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (322 tests, including real
+Phase 4 done. Implemented and tested (339 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -56,6 +56,13 @@ widget and run it):
   produces a `data` key, so without the widget seeding it those steps could
   not be run from the GUI at all - and each step narrows it to its own
   chosen features.
+- **Analysis categories** — measurements, clustering, reduction and gates.
+  Not classification: its steps need `crops`, a `model`, `object_ids` and
+  `class_labels`, none of which any protocol step produces, so every one of
+  them could only ever fail with "needs context key(s) [...]". The functions
+  stay in `vtea-core` and work from a script; putting them back in the menu
+  needs a crop-extraction step and a way to label training objects, neither
+  of which exists yet.
 - **Channel selection** — "Channel axis" on the widget says which axis of
   the loaded image holds channels (a property of the data, listed with each
   axis's size, defaulting to none); each step's Edit dialog then picks which
@@ -100,7 +107,10 @@ widget and run it):
   It is keyed by the napari viewer and owned by neither widget, so results
   computed while the explorer was closed are waiting when it opens, gates
   drawn in the explorer survive it being hidden, and a plugin widget napari
-  destroys and rebuilds comes back with its steps. It is also the seam a
+  destroys and rebuilds comes back with its steps. It also carries the
+  explorer's *view* - axes, colour/size encodings, point style - because
+  closing a napari dock destroys the widget, and a pane that reopened on the
+  first two columns with default styling meant rebuilding the view by hand. It is also the seam a
   saved session will be written from (see
   [`/docs/SAVING_AND_ARCHIVING.md`](../../docs/SAVING_AND_ARCHIVING.md)).
 - **`ExplorerWidget`** — the `MicroExplorer` equivalent, registered as the
@@ -110,8 +120,11 @@ widget and run it):
   reads the shared session rather than owning its own copy of the analysis.
   Holds the scatter plot and gate manager side by side (2:1) on a "Plot"
   tab and the per-object crop grid on a "Gallery" tab; subgate within a
-  selection for real gate hierarchy; selecting a gate highlights its members
-  as a napari `Labels` overlay and fills the gallery. See PORT_PLAN.md's
+  selection for real gate hierarchy; each gate's members get their own
+  napari `Labels` overlay painted in *that gate's* colour and shown only
+  while the gate is visible, so two gates can be read against each other on
+  the image without holding a colour mapping in your head, and the Visible
+  checkbox that hides a gate's outline hides its highlight too. See PORT_PLAN.md's
   "Object Explorer" section for what was simplified vs. the Java original
   (one gate type, no dead `GateManager` port, real hierarchy where Java had
   none).

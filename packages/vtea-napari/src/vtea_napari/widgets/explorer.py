@@ -66,6 +66,41 @@ DEFAULT_FLOATING_SIZE = (900, 560)
 HIGHLIGHT_LAYER_NAME = "Gate highlight"
 
 
+def _solid_label_colormap(label_ids, color: str):
+    """Paint every gated object in one colour - the gate's - instead of
+    napari's per-label palette, so a gate reads the same on the image as it
+    does on the plot. None when this napari has no direct-colour support."""
+    try:
+        from napari.utils.colormaps import DirectLabelColormap
+    except ImportError:
+        return None
+    color_dict = {int(label): color for label in np.unique(label_ids) if int(label) != 0}
+    color_dict[None] = "transparent"
+    try:
+        return DirectLabelColormap(color_dict=color_dict)
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_gate_color(layer, colormap) -> bool:
+    """Paint a highlight layer in its gate's colour, if this napari can.
+
+    Applied to an already-added layer rather than passed to `add_labels`, so
+    a failure leaves a working highlight in napari's own label colours
+    instead of a half-added layer. It can fail for reasons that have nothing
+    to do with the data - building the colour texture needs a GL context,
+    which a headless session may not have - and a highlight that is the
+    wrong colour is much better than a pane that falls over.
+    """
+    if colormap is None:
+        return False
+    try:
+        layer.colormap = colormap
+    except Exception:  # noqa: BLE001 - display-only; see the docstring
+        return False
+    return True
+
+
 class ExplorerWidget(QWidget):
     """A napari dock widget: `napari_viewer` is auto-injected by napari's
     plugin engine when opened from the Plugins menu; pass None to use
@@ -88,7 +123,13 @@ class ExplorerWidget(QWidget):
         super().__init__(parent)
         self.viewer = napari_viewer
         self.session = session if session is not None else session_for(napari_viewer)
-        self._highlight_layer = None
+        # True while the pane is loading a table and restoring the saved
+        # view, so the defaults picked on the way through don't overwrite
+        # the view being restored.
+        self._restoring = False
+        # gate id -> (layer, signature); the signature is what the layer
+        # was built from, so it is only rebuilt when that changes.
+        self._highlight_layers: dict[str, tuple] = {}
 
         root = QVBoxLayout(self)
 
@@ -151,6 +192,7 @@ class ExplorerWidget(QWidget):
         # results already exist (the usual case: this pane is opened after a
         # run, or reopened after being closed).
         self.session.data_changed.connect(self.reload_from_session)
+        self.plot.view_changed.connect(self._remember_view)
         self.reload_from_session()
 
         if float_by_default:
@@ -180,21 +222,31 @@ class ExplorerWidget(QWidget):
         return self.gate_manager.table
 
     def reload_from_session(self) -> None:
-        """Pull the current table and gates out of the shared session.
+        """Pull the current table, gates and view out of the shared session.
 
         Called on every publish from the builder and whenever this pane is
-        shown, which is what makes closing and reopening it free.
+        shown, which is what makes closing and reopening it free. The view is
+        restored at the end rather than in the constructor because loading a
+        table picks default axes on the way through, and those defaults would
+        otherwise be remembered over the view being restored.
         """
-        self.gate_manager.gate_set = self.session.gate_set
-        frame = self.session.results_table()
-        if frame is None:
-            self.gate_manager.set_frame(None)
-            self.status_label.setText("No measurements yet - run a measurement step.")
-            return
-        # Keep the axes on screen across a re-run.
-        self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
-        self.gate_manager.set_frame(frame)
-        self.status_label.setText(f"{len(frame)} objects, {len(frame.columns)} features.")
+        self._restoring = True
+        try:
+            self.gate_manager.gate_set = self.session.gate_set
+            frame = self.session.results_table()
+            if frame is None:
+                self.gate_manager.set_frame(None)
+                self.status_label.setText("No measurements yet - run a measurement step.")
+                return
+            # Keep the axes on screen across a re-run.
+            self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
+            self.gate_manager.set_frame(frame)
+            self.refresh_highlights()
+            self.plot.apply_view_state(self.session.view_state)
+            self.style_panel.read_from_plot()
+            self.status_label.setText(f"{len(frame)} objects, {len(frame.columns)} features.")
+        finally:
+            self._restoring = False
 
     def set_data(self, frame: pd.DataFrame, labels: np.ndarray | None = None) -> None:
         """Load a table directly, bypassing the protocol builder - used by
@@ -261,8 +313,14 @@ class ExplorerWidget(QWidget):
         selected = self.gate_manager.selected_gate_id
         return selected if (self.subgate_checkbox.isChecked() and selected) else None
 
+    def _remember_view(self) -> None:
+        if self._restoring:
+            return
+        self.session.remember_view(self.plot.view_state())
+
     def _on_gates_changed(self) -> None:
         self.session.set_gate_set(self.gate_manager.gate_set)
+        self.refresh_highlights()
 
     def _on_gate_selected(self, gate_id: str) -> None:
         if self.frame is None or gate_id not in self.gate_set:
@@ -273,21 +331,61 @@ class ExplorerWidget(QWidget):
         mask = self.gate_set.mask(gate_id, self.frame)
         self.gate_membership_changed.emit(gate_id, mask)
         gated_ids = self.frame.loc[mask, "object_id"].to_numpy()
-        self._highlight(gated_ids)
+        self.refresh_highlights()
         self._fill_gallery(gated_ids)
         self.status_label.setText(f"{gate.name}: {len(gated_ids)} of {len(self.frame)} objects.")
 
-    def _highlight(self, gated_ids: np.ndarray) -> None:
-        labels = self.labels
-        if self.viewer is None or labels is None:
+    def refresh_highlights(self) -> None:
+        """One napari Labels layer per gate, painted in that gate's colour
+        and shown only while the gate is visible.
+
+        A gate's colour is how it is identified on the plot, so the objects
+        it selects should carry the same colour on the image - otherwise
+        reading two gates against each other means holding a mapping in your
+        head. Unchecking a gate's Visible box hides its layer, which is the
+        same gesture that hides its outline.
+
+        A layer is rebuilt rather than re-filled when its membership
+        changes: the gate's colour is applied at creation, and reassigning
+        `.data` afterwards makes napari rebuild the colour texture, which is
+        an operation that can fail for reasons unrelated to the data. Only
+        visibility, which touches nothing else, is updated in place.
+        """
+        if self.viewer is None:
             return
-        highlighted = np.where(np.isin(labels, gated_ids), labels, 0)
-        if self._highlight_layer is not None and self._highlight_layer in self.viewer.layers:
-            self._highlight_layer.data = highlighted
-        else:
-            self._highlight_layer = self.viewer.add_labels(
-                highlighted, name=HIGHLIGHT_LAYER_NAME
+        labels = self.labels
+        frame = self.frame
+        for gate in self.gate_set:
+            usable = (
+                labels is not None
+                and frame is not None
+                and gate.x_axis in frame.columns
+                and gate.y_axis in frame.columns
             )
+            if not usable:
+                self._remove_highlight(gate.id)
+                continue
+            mask = self.gate_set.mask(gate.id, frame)
+            gated_ids = frame.loc[mask, "object_id"].to_numpy()
+            name = f"{HIGHLIGHT_LAYER_NAME}: {gate.name}"
+            signature = (name, gate.color, frozenset(int(i) for i in gated_ids))
+
+            layer, previous = self._highlight_layers.get(gate.id, (None, None))
+            if layer is None or layer not in self.viewer.layers or previous != signature:
+                self._remove_highlight(gate.id)
+                data = np.where(np.isin(labels, gated_ids), labels, 0)
+                layer = self.viewer.add_labels(data, name=name)
+                _apply_gate_color(layer, _solid_label_colormap(gated_ids, gate.color))
+                self._highlight_layers[gate.id] = (layer, signature)
+            layer.visible = gate.visible
+
+        for gate_id in [gid for gid in self._highlight_layers if gid not in self.gate_set]:
+            self._remove_highlight(gate_id)
+
+    def _remove_highlight(self, gate_id: str) -> None:
+        layer, _signature = self._highlight_layers.pop(gate_id, (None, None))
+        if layer is not None and self.viewer is not None and layer in self.viewer.layers:
+            self.viewer.layers.remove(layer)
 
     def _fill_gallery(self, gated_ids: np.ndarray) -> None:
         intensity = self.session.intensity()
@@ -303,4 +401,3 @@ class ExplorerWidget(QWidget):
         """A gallery crop was clicked: outline it there, and show only that
         object on the image."""
         self.status_label.setText(f"Object {object_id} selected.")
-        self._highlight(np.array([object_id]))

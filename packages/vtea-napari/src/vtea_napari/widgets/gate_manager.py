@@ -253,6 +253,9 @@ class GateManagerWidget(QWidget):
     def _on_gate_visibility_changed(self, gate_id: str, visible: bool) -> None:
         self.gate_set.get(gate_id).visible = visible
         self.plot.set_gate_overlays(list(self.gate_set))
+        # Announced too: the same checkbox hides the gate's highlight on the
+        # image, which the explorer owns.
+        self.gates_changed.emit()
 
     def _on_gate_renamed(self, gate_id: str, name: str) -> None:
         self.gate_set.get(gate_id).name = name

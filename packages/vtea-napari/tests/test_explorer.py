@@ -158,7 +158,7 @@ class TestImageHighlighting:
         np.testing.assert_array_equal(received[0][1], expected)
         assert expected.any()  # the drawn triangle does contain at least one point
 
-    def test_selecting_a_gate_adds_a_highlight_layer_in_a_real_viewer(self, qtbot):
+    def test_each_gate_gets_its_own_highlight_layer_in_a_real_viewer(self, qtbot):
         import napari
 
         viewer = napari.Viewer(show=False)
@@ -173,14 +173,19 @@ class TestImageHighlighting:
 
             widget._on_gate_selected(gate.id)
 
-            assert "Gate highlight" in viewer.layers
-            highlighted = viewer.layers["Gate highlight"].data
-            expected_ids = set(make_frame().loc[widget.gate_set.mask(gate.id, widget.frame), "object_id"])
+            name = f"Gate highlight: {gate.name}"
+            assert name in viewer.layers
+            highlighted = viewer.layers[name].data
+            expected_ids = set(
+                make_frame().loc[widget.gate_set.mask(gate.id, widget.frame), "object_id"]
+            )
             assert set(np.unique(highlighted)) - {0} == expected_ids
         finally:
             viewer.close()
 
-    def test_selecting_a_second_gate_reuses_the_same_highlight_layer(self, qtbot):
+    def test_a_second_gate_adds_a_second_layer_rather_than_replacing_the_first(self, qtbot):
+        """Two gates are two populations; showing only the last-selected one
+        would make comparing them impossible."""
         import napari
 
         viewer = napari.Viewer(show=False)
@@ -191,13 +196,36 @@ class TestImageHighlighting:
             widget.set_data(make_frame(), labels=make_labels())
             widget.plot.set_data(make_frame(), x_column="x", y_column="y")
             _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
-            _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+            _draw_triangle(widget.plot, (-100, -100), (100, -100), (0, 100))
             first_gate, second_gate = list(widget.gate_set)
 
             widget._on_gate_selected(first_gate.id)
             widget._on_gate_selected(second_gate.id)
 
-            assert len([layer for layer in viewer.layers if layer.name == "Gate highlight"]) == 1
+            names = {layer.name for layer in viewer.layers}
+            assert f"Gate highlight: {first_gate.name}" in names
+            assert f"Gate highlight: {second_gate.name}" in names
+        finally:
+            viewer.close()
+
+    def test_re_selecting_does_not_stack_up_layers(self, qtbot):
+        import napari
+
+        viewer = napari.Viewer(show=False)
+        qtbot.addWidget(viewer.window._qt_window)
+        try:
+            widget = ExplorerWidget(napari_viewer=viewer)
+            qtbot.addWidget(widget)
+            widget.set_data(make_frame(), labels=make_labels())
+            widget.plot.set_data(make_frame(), x_column="x", y_column="y")
+            _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+            gate = next(iter(widget.gate_set))
+
+            for _ in range(4):
+                widget._on_gate_selected(gate.id)
+
+            name = f"Gate highlight: {gate.name}"
+            assert len([layer for layer in viewer.layers if layer.name == name]) == 1
         finally:
             viewer.close()
 
@@ -324,3 +352,118 @@ class TestLayout:
         widget = ExplorerWidget(float_by_default=False)
         qtbot.addWidget(widget)
         assert [widget.tabs.tabText(i) for i in range(widget.tabs.count())] == ["Plot", "Gallery"]
+
+
+class TestGateColouredHighlights:
+    """A gate's colour identifies it on the plot, so the objects it selects
+    carry the same colour on the image - otherwise reading two gates against
+    each other means holding a mapping in your head."""
+
+    @staticmethod
+    def _prepared(qtbot):
+        from napari.components import ViewerModel
+
+        viewer = ViewerModel()
+        widget = ExplorerWidget(napari_viewer=viewer, float_by_default=False)
+        qtbot.addWidget(widget)
+        widget.set_data(make_frame(), labels=make_labels())
+        widget.plot.set_data(make_frame(), x_column="x", y_column="y")
+        return widget, viewer
+
+    @staticmethod
+    def _highlight_layers(viewer):
+        return [layer for layer in viewer.layers if layer.name.startswith("Gate highlight")]
+
+    def test_one_layer_per_gate_named_after_it(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        _draw_triangle(widget.plot, (-100, -100), (100, -100), (0, 100))
+
+        names = {layer.name for layer in self._highlight_layers(viewer)}
+        assert names == {"Gate highlight: gate1", "Gate highlight: gate2"}
+
+    def test_the_layer_holds_only_that_gate_s_objects(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        gate = next(iter(widget.gate_set))
+
+        mask = widget.gate_set.mask(gate.id, widget.frame)
+        expected = set(widget.frame.loc[mask, "object_id"])
+        data = viewer.layers[f"Gate highlight: {gate.name}"].data
+        assert set(np.unique(data)) - {0} == expected
+
+    def test_the_layer_is_painted_in_the_gate_s_colour(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        gate = next(iter(widget.gate_set))
+        widget.gate_manager.set_gate_color(gate.id, "#ff0000")
+
+        layer = viewer.layers[f"Gate highlight: {gate.name}"]
+        colours = getattr(layer.colormap, "color_dict", None)
+        assert colours is not None, "expected a direct colour mapping"
+        painted = {
+            str(value) for key, value in colours.items() if key not in (None, 0)
+        }
+        assert painted  # every gated object, all in one colour
+        assert len(set(map(str, painted))) == 1
+
+    def test_hiding_a_gate_hides_its_highlight(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        gate = next(iter(widget.gate_set))
+        layer = viewer.layers[f"Gate highlight: {gate.name}"]
+        assert layer.visible
+
+        # The same checkbox that hides the outline on the plot.
+        widget.table.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+
+        assert not layer.visible
+        assert gate.visible is False
+
+    def test_showing_it_again_brings_the_highlight_back(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        gate = next(iter(widget.gate_set))
+        layer = viewer.layers[f"Gate highlight: {gate.name}"]
+
+        widget.table.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+        widget.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+
+        assert layer.visible
+
+    def test_deleting_a_gate_removes_its_highlight(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        widget.table.cellClicked.emit(0, 2)
+        widget.gate_manager.delete_selected_gate()
+
+        assert self._highlight_layers(viewer) == []
+
+    def test_clearing_the_gates_removes_every_highlight(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        _draw_triangle(widget.plot, (-100, -100), (100, -100), (0, 100))
+        widget.gate_manager.clear_gates()
+
+        assert self._highlight_layers(viewer) == []
+
+    def test_recolouring_repaints_rather_than_adding_a_layer(self, qtbot):
+        widget, viewer = self._prepared(qtbot)
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+        gate = next(iter(widget.gate_set))
+        widget.gate_manager.set_gate_color(gate.id, "#ff0000")
+        widget.gate_manager.set_gate_color(gate.id, "#00ff00")
+
+        assert len(self._highlight_layers(viewer)) == 1
+
+    def test_no_labels_means_no_highlight_rather_than_an_error(self, qtbot):
+        from napari.components import ViewerModel
+
+        viewer = ViewerModel()
+        widget = ExplorerWidget(napari_viewer=viewer, float_by_default=False)
+        qtbot.addWidget(widget)
+        widget.set_data(make_frame())  # a table with no label image
+        widget.plot.set_data(make_frame(), x_column="x", y_column="y")
+        _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
+
+        assert self._highlight_layers(viewer) == []

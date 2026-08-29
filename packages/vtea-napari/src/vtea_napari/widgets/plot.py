@@ -109,6 +109,9 @@ class ScatterPlotWidget(QWidget):
 
     gate_drawn = Signal(object)  # np.ndarray, shape (N, 2), in data coordinates
     axes_changed = Signal(str, str)  # x_column, y_column
+    # Any change to how the plot is set up - axes, encodings, point style -
+    # so the owner can keep it somewhere that outlives this widget.
+    view_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -210,6 +213,61 @@ class ScatterPlotWidget(QWidget):
         self._pending_vertices = []
         self._redraw()
 
+    def view_state(self) -> dict:
+        """Everything about how this plot is set up, as plain values.
+
+        Kept on the session so closing the Object Explorer's dock - which
+        destroys the widget - doesn't cost the view.
+        """
+        return {
+            "x_column": self.x_column,
+            "y_column": self.y_column,
+            "color_column": self.color_column,
+            "size_column": self.size_column,
+            "colormap": self.colormap,
+            "point_size": self.point_size,
+            "alpha": self.alpha,
+            "marker": self.marker,
+            "size_range": tuple(self.size_range),
+        }
+
+    def apply_view_state(self, state: dict) -> None:
+        """Restore what `view_state` recorded. Columns that are no longer in
+        the table are skipped rather than forced: the point is to come back
+        to the same view where that still means something."""
+        if not state:
+            return
+        self.point_size = float(state.get("point_size", self.point_size))
+        self.alpha = float(state.get("alpha", self.alpha))
+        self.marker = state.get("marker", self.marker)
+        size_range = state.get("size_range")
+        if size_range:
+            self.size_range = (float(size_range[0]), float(size_range[1]))
+
+        for combo, key, placeholder in (
+            (self.x_combo, "x_column", None),
+            (self.y_combo, "y_column", None),
+            (self.color_combo, "color_column", _NO_COLOR_BY),
+            (self.size_combo, "size_column", NO_SIZE_BY),
+            (self.colormap_combo, "colormap", None),
+        ):
+            wanted = state.get(key)
+            combo.blockSignals(True)
+            if wanted and combo.findText(wanted) != -1:
+                combo.setCurrentText(wanted)
+            elif placeholder is not None and combo.findText(placeholder) != -1:
+                combo.setCurrentText(placeholder)
+            combo.blockSignals(False)
+
+        self.x_column = self.x_combo.currentText() or None
+        self.y_column = self.y_combo.currentText() or None
+        color = self.color_combo.currentText()
+        self.color_column = None if color in ("", _NO_COLOR_BY) else color
+        size = self.size_combo.currentText()
+        self.size_column = None if size in ("", NO_SIZE_BY) else size
+        self.colormap = self.colormap_combo.currentText() or self.colormap
+        self._redraw()
+
     def set_gate_mode(self, mode: str) -> None:
         """Switch between polygon and rectangle drawing, discarding whatever
         was half-drawn - a click meant as a polygon vertex should not become
@@ -231,20 +289,24 @@ class ScatterPlotWidget(QWidget):
         self.y_column = self.y_combo.currentText() or None
         self._pending_vertices = []
         self._redraw()
+        self.view_changed.emit()
         if self.x_column and self.y_column:
             self.axes_changed.emit(self.x_column, self.y_column)
 
     def _on_color_combo_changed(self, text: str) -> None:
         self.color_column = None if text in ("", _NO_COLOR_BY) else text
         self._redraw()
+        self.view_changed.emit()
 
     def _on_size_combo_changed(self, text: str) -> None:
         self.size_column = None if text in ("", NO_SIZE_BY) else text
         self._redraw()
+        self.view_changed.emit()
 
     def _on_colormap_combo_changed(self, text: str) -> None:
         self.colormap = text
         self._redraw()
+        self.view_changed.emit()
 
     def set_point_style(
         self,
@@ -265,6 +327,7 @@ class ScatterPlotWidget(QWidget):
         if size_range is not None:
             self.size_range = (float(size_range[0]), float(size_range[1]))
         self._redraw()
+        self.view_changed.emit()
 
     def _point_sizes(self):
         """(sizes, to_value): the marker area for each point, and how to read

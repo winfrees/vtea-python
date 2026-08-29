@@ -55,6 +55,11 @@ class AnalysisSession(QObject):
         # produced. Lives here so both panes can read it, and so it is
         # already assembled when a session is saved.
         self.feature_catalog = FeatureCatalog()
+        # How the explorer's plot is set up - which axes, which encodings,
+        # how the points are drawn. Closing a napari dock destroys the
+        # widget, so without this the pane reopens on the first two columns
+        # with default styling and the view has to be rebuilt by hand.
+        self.view_state: dict[str, Any] = {}
         # How to read the source image's axes, set by the builder's pickers
         # and needed by the explorer to crop gallery thumbnails correctly.
         self.source_layer_name: str | None = None
@@ -108,6 +113,14 @@ class AnalysisSession(QObject):
     def notify_gates_changed(self) -> None:
         """Announce an in-place edit of the existing GateSet."""
         self.gates_changed.emit()
+
+    # -- view -------------------------------------------------------------
+
+    def remember_view(self, state: dict[str, Any]) -> None:
+        """Keep how the plot is currently set up, so a reopened pane comes
+        back to it. Merged rather than replaced, so a partial update from
+        one control doesn't drop the rest."""
+        self.view_state.update(state)
 
 
 # Keyed weakly so closing a viewer lets its session go. A napari Viewer (and

@@ -295,3 +295,87 @@ class TestHidingTheDock:
         assert gate.id in explorer.gate_set
         assert explorer.frame is not None
         assert explorer.table.rowCount() == 1
+
+
+class TestViewStatePersists:
+    """Closing a napari dock destroys the widget. Without the view on the
+    session, the pane reopens on the first two columns with default styling
+    and the whole view has to be rebuilt by hand."""
+
+    def _explorer(self, session, qtbot):
+        explorer = ExplorerWidget(session=session, float_by_default=False)
+        qtbot.addWidget(explorer)
+        return explorer
+
+    def test_the_axes_come_back(self, qtbot):
+        session = AnalysisSession()
+        _measured_builder(qtbot, session)
+        first = self._explorer(session, qtbot)
+        first.plot.x_combo.setCurrentText("count")
+        first.plot.y_combo.setCurrentText("mean")
+
+        second = self._explorer(session, qtbot)
+
+        assert second.plot.x_column == "count"
+        assert second.plot.y_column == "mean"
+
+    def test_the_colour_and_size_encodings_come_back(self, qtbot):
+        session = AnalysisSession()
+        _measured_builder(qtbot, session)
+        first = self._explorer(session, qtbot)
+        first.plot.color_combo.setCurrentText("count")
+        first.plot.size_combo.setCurrentText("mean")
+        first.plot.colormap_combo.setCurrentText("magma")
+
+        second = self._explorer(session, qtbot)
+
+        assert second.plot.color_column == "count"
+        assert second.plot.size_column == "mean"
+        assert second.plot.colormap == "magma"
+
+    def test_the_point_style_comes_back(self, qtbot):
+        session = AnalysisSession()
+        _measured_builder(qtbot, session)
+        first = self._explorer(session, qtbot)
+        first.style_panel.alpha_slider.setValue(35)
+        first.style_panel.marker_combo.setCurrentText("triangle")
+        first.style_panel.size_spin.setValue(33.0)
+
+        second = self._explorer(session, qtbot)
+
+        assert second.plot.alpha == 0.35
+        assert second.plot.marker == "^"
+        assert second.plot.point_size == 33.0
+
+    def test_the_style_pane_agrees_with_the_restored_plot(self, qtbot):
+        """Controls showing defaults over a restored view would be worse
+        than not restoring at all."""
+        session = AnalysisSession()
+        _measured_builder(qtbot, session)
+        first = self._explorer(session, qtbot)
+        first.style_panel.marker_combo.setCurrentText("diamond")
+        first.style_panel.alpha_slider.setValue(60)
+
+        second = self._explorer(session, qtbot)
+
+        assert second.style_panel.marker_combo.currentText() == "diamond"
+        assert second.style_panel.alpha_slider.value() == 60
+
+    def test_an_axis_that_no_longer_exists_is_not_forced(self, qtbot):
+        session = AnalysisSession()
+        _measured_builder(qtbot, session)
+        first = self._explorer(session, qtbot)
+        first.plot.x_combo.setCurrentText("count")
+        session.remember_view({"y_column": "a_feature_from_another_run"})
+
+        second = self._explorer(session, qtbot)
+
+        assert second.plot.x_column == "count"
+        assert second.plot.y_column in second.frame.columns
+
+    def test_a_fresh_session_starts_with_no_remembered_view(self, qtbot):
+        session = AnalysisSession()
+        assert session.view_state == {}
+        _measured_builder(qtbot, session)
+        explorer = self._explorer(session, qtbot)
+        assert explorer.plot.x_column is not None  # it just picks defaults
