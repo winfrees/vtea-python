@@ -270,3 +270,108 @@ class TestStatistics:
         assert manager.table.rowCount() == 1
         assert manager.table.item(0, 5).text() == "-"
         assert "not in the current data" in manager.stats_label.text()
+
+
+class TestGateColour:
+    """Double-clicking a gate's colour swatch changes it - the swatch is the
+    only thing on the row that isn't already editable in place.
+
+    Every test here stubs the colour dialog: the manager wires the table's
+    request straight to it, so a real modal would just hang a headless run.
+    """
+
+    def test_double_clicking_the_swatch_opens_the_picker(self, qtbot, monkeypatch):
+        manager = make_manager(qtbot)
+        gate = manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+        before = gate.color
+        offered = _stub_color_dialog(monkeypatch, "#ff0000")
+
+        manager.table.cellDoubleClicked.emit(0, 1)  # the Color column
+
+        assert offered["initial"] == before
+        assert manager.gate_set.get(gate.id).color == "#ff0000"
+
+    def test_double_clicking_another_column_does_not(self, qtbot, monkeypatch):
+        manager = make_manager(qtbot)
+        manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+        offered = _stub_color_dialog(monkeypatch, "#ff0000")
+
+        manager.table.cellDoubleClicked.emit(0, 2)  # the Name column
+
+        assert offered == {}
+
+    def test_setting_a_colour_updates_the_gate_and_the_swatch(self, qtbot):
+        from qtpy.QtGui import QColor
+
+        manager = make_manager(qtbot)
+        gate = manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+
+        manager.set_gate_color(gate.id, "#ff0000")
+
+        assert manager.gate_set.get(gate.id).color == "#ff0000"
+        assert manager.table.item(0, 1).background().color() == QColor("#ff0000")
+
+    def test_the_new_colour_reaches_the_plot_overlay(self, qtbot):
+        manager = make_manager(qtbot)
+        gate = manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+        manager.set_gate_color(gate.id, "#00ff00")
+
+        drawn = [line.get_color() for line in manager.plot.ax.get_lines()]
+        assert "#00ff00" in drawn
+
+    def test_a_colour_change_is_announced_so_it_can_be_saved(self, qtbot):
+        manager = make_manager(qtbot)
+        gate = manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+
+        seen = []
+        manager.gates_changed.connect(lambda: seen.append(1))
+        manager.set_gate_color(gate.id, "#123456")
+
+        assert seen
+
+    def test_the_colour_is_saved_and_reopened(self, qtbot, tmp_path):
+        manager = make_manager(qtbot)
+        gate = manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+        manager.set_gate_color(gate.id, "#abcdef")
+        path = tmp_path / "gates.json"
+        manager.save_gates_to(path)
+
+        manager.load_gates_from(path)
+        assert next(iter(manager.gate_set)).color == "#abcdef"
+
+    def test_cancelling_the_dialog_leaves_the_colour_alone(self, qtbot, monkeypatch):
+        manager = make_manager(qtbot)
+        gate = manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+        before = manager.gate_set.get(gate.id).color
+
+        _stub_color_dialog(monkeypatch, None)  # what Cancel returns
+        manager.pick_gate_color(gate.id)
+
+        assert manager.gate_set.get(gate.id).color == before
+
+    def test_recolouring_a_gate_that_has_gone_is_a_no_op(self, qtbot):
+        manager = make_manager(qtbot)
+        gate = manager.add_gate_from_vertices(rectangle_vertices(0, 0, 5, 50))
+        manager.clear_gates()
+        manager.set_gate_color(gate.id, "#ff0000")  # must not raise
+
+
+def _stub_color_dialog(monkeypatch, chosen):
+    """Replace the colour dialog with one that answers immediately.
+
+    Patches the name in the module rather than the method on Qt's class: a
+    sip class doesn't reliably take an attribute patch, and a real modal
+    dialog in a headless test just hangs.
+    """
+    from qtpy.QtGui import QColor
+
+    offered = {}
+
+    class FakeColorDialog:
+        @staticmethod
+        def getColor(initial, _parent=None, _title=""):  # noqa: N802 - Qt's spelling
+            offered["initial"] = initial.name()
+            return QColor(chosen) if chosen else QColor()
+
+    monkeypatch.setattr("vtea_napari.widgets.gate_manager.QColorDialog", FakeColorDialog)
+    return offered

@@ -314,7 +314,10 @@ class TestLayout:
         widget = ExplorerWidget(float_by_default=False)
         qtbot.addWidget(widget)
         assert widget.results_splitter.count() == 2
-        assert widget.results_splitter.widget(0) is widget.plot
+        # The left pane is the plot with its style helper under it.
+        left = widget.results_splitter.widget(0)
+        assert widget.plot.parentWidget() is left
+        assert widget.style_panel.parentWidget() is left
         assert widget.results_splitter.widget(1) is widget.gate_manager
 
     def test_the_gallery_is_a_second_tab(self, qtbot):

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from vtea_napari.widgets.gallery import GalleryWidget
+from vtea_napari.widgets.gallery import SELECTED_STYLE, UNSELECTED_STYLE, GalleryWidget
 from vtea_napari.widgets.thumbnail import array_to_pixmap, max_projection
 
 
@@ -85,3 +85,97 @@ class TestGalleryWidget:
         widget.show_objects(volume, make_frame(), [1, 2], crop_radius=4)
         widget.show_objects(volume, make_frame(), [1], crop_radius=4)
         assert widget._grid.count() == 1
+
+
+class TestSelectionOutline:
+    """The selected crop is outlined in yellow, so which cell you clicked is
+    visible against the crops themselves."""
+
+    @staticmethod
+    def make_gallery(qtbot):
+        gallery = GalleryWidget()
+        qtbot.addWidget(gallery)
+        volume = np.arange(400, dtype=float).reshape(20, 20)
+        frame = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3],
+                "centroid-0": [5.0, 10.0, 15.0],
+                "centroid-1": [5.0, 10.0, 15.0],
+            }
+        )
+        gallery.show_objects(volume, frame, [1, 2, 3], crop_radius=4, thumbnail_size=32)
+        return gallery
+
+    def test_nothing_is_outlined_to_start_with(self, qtbot):
+        gallery = self.make_gallery(qtbot)
+        assert gallery.selected_object_id is None
+        assert all(
+            SELECTED_STYLE not in thumbnail.styleSheet()
+            for thumbnail in gallery._thumbnails
+        )
+
+    def test_selecting_outlines_that_crop_in_yellow(self, qtbot):
+        gallery = self.make_gallery(qtbot)
+        gallery.select(2)
+
+        assert gallery.selected_object_id == 2
+        outlined = [t.object_id for t in gallery._thumbnails if SELECTED_STYLE in t.styleSheet()]
+        assert outlined == [2]
+        assert "#ffd400" in SELECTED_STYLE
+
+    def test_only_one_crop_is_outlined_at_a_time(self, qtbot):
+        gallery = self.make_gallery(qtbot)
+        gallery.select(1)
+        gallery.select(3)
+
+        outlined = [t.object_id for t in gallery._thumbnails if SELECTED_STYLE in t.styleSheet()]
+        assert outlined == [3]
+
+    def test_clicking_a_crop_outlines_it_and_reports_it(self, qtbot):
+        gallery = self.make_gallery(qtbot)
+        reported = []
+        gallery.object_selected.connect(reported.append)
+
+        gallery._thumbnails[1].clicked.emit()
+
+        assert reported == [2]
+        assert gallery.selected_object_id == 2
+
+    def test_the_unselected_border_reserves_the_same_space(self, qtbot):
+        """Otherwise selecting a cell reflows the whole grid."""
+        assert "3px" in SELECTED_STYLE
+        assert "3px" in UNSELECTED_STYLE
+        assert "transparent" in UNSELECTED_STYLE
+
+    def test_the_outline_survives_a_refresh_that_still_shows_it(self, qtbot):
+        gallery = self.make_gallery(qtbot)
+        gallery.select(2)
+
+        volume = np.arange(400, dtype=float).reshape(20, 20)
+        frame = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3],
+                "centroid-0": [5.0, 10.0, 15.0],
+                "centroid-1": [5.0, 10.0, 15.0],
+            }
+        )
+        gallery.show_objects(volume, frame, [1, 2, 3], crop_radius=4, thumbnail_size=32)
+
+        assert gallery.selected_object_id == 2
+
+    def test_a_refresh_that_drops_the_object_clears_the_outline(self, qtbot):
+        gallery = self.make_gallery(qtbot)
+        gallery.select(2)
+
+        volume = np.arange(400, dtype=float).reshape(20, 20)
+        frame = pd.DataFrame(
+            {"object_id": [1], "centroid-0": [5.0], "centroid-1": [5.0]}
+        )
+        gallery.show_objects(volume, frame, [1], crop_radius=4, thumbnail_size=32)
+
+        assert gallery.selected_object_id is None
+
+    def test_selecting_an_object_that_is_not_shown_just_clears(self, qtbot):
+        gallery = self.make_gallery(qtbot)
+        gallery.select(99)
+        assert gallery.selected_object_id is None

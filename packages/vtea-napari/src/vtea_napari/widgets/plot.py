@@ -26,6 +26,7 @@ from qtpy.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSizePolicy, QVBoxLay
 from vtea_core.gates import rectangle_vertices
 
 _NO_COLOR_BY = "(none)"
+NO_SIZE_BY = "(none)"
 
 # Replaces vtea.lut's Fire/Black/RedGray/BlueGray/CustomLUT plugin family -
 # a plain matplotlib colormap name list instead of separate LUT classes.
@@ -35,9 +36,66 @@ _COLORMAPS = ["viridis", "plasma", "inferno", "magma", "cividis", "turbo", "gray
 # free to grow with its pane.
 _MINIMUM_CANVAS_HEIGHT = 160
 
-
 POLYGON_MODE = "polygon"
 RECTANGLE_MODE = "rectangle"
+
+# Marker shapes offered in the style pane, by the name a person would use
+# for them rather than matplotlib's single-character codes.
+MARKERS = {
+    "circle": "o",
+    "square": "s",
+    "triangle": "^",
+    "diamond": "D",
+    "plus": "P",
+    "cross": "X",
+}
+
+DEFAULT_POINT_SIZE = 12.0
+DEFAULT_ALPHA = 1.0
+# The span a size-encoded feature is mapped onto, in the same points² units
+# matplotlib's `s` takes. Wide enough for the difference to read at a
+# glance, floored high enough that the smallest objects stay clickable.
+DEFAULT_SIZE_RANGE = (8.0, 120.0)
+
+# Points sampled for the size legend - enough to read the scale off,
+# few enough not to crowd the axes.
+_SIZE_LEGEND_SAMPLES = 4
+
+
+def scale_sizes(values, min_size: float, max_size: float):
+    """Map a feature's values onto marker areas, plus the inverse.
+
+    Returns `(sizes, to_value)` where `to_value` converts a marker area back
+    to the feature value it stands for - which is what lets the size legend
+    be labelled in the feature's own units instead of in points².
+
+    A constant feature (or one that is all NaN) has no spread to encode, so
+    every point gets the middle of the range and `to_value` reports that
+    constant: a legend claiming a gradient over identical values would be a
+    lie.
+    """
+    values = np.asarray(values, dtype=float)
+    finite = np.isfinite(values)
+    midpoint = (min_size + max_size) / 2.0
+    if not finite.any():
+        return np.full(values.shape, midpoint), (lambda sizes: np.full_like(np.asarray(sizes, dtype=float), np.nan))
+
+    low = float(values[finite].min())
+    high = float(values[finite].max())
+    if high <= low:
+        return (
+            np.full(values.shape, midpoint),
+            lambda sizes: np.full_like(np.asarray(sizes, dtype=float), low),
+        )
+
+    normalized = np.clip((np.nan_to_num(values, nan=low) - low) / (high - low), 0.0, 1.0)
+    sizes = min_size + normalized * (max_size - min_size)
+
+    def to_value(size_values):
+        fraction = (np.asarray(size_values, dtype=float) - min_size) / (max_size - min_size)
+        return low + fraction * (high - low)
+
+    return sizes, to_value
 
 
 class ScatterPlotWidget(QWidget):
@@ -58,10 +116,17 @@ class ScatterPlotWidget(QWidget):
         self.x_column: str | None = None
         self.y_column: str | None = None
         self.color_column: str | None = None
+        self.size_column: str | None = None
         self.colormap = _COLORMAPS[0]
         self.gate_mode = POLYGON_MODE
+        # Point styling, driven by PlotStylePanel.
+        self.point_size = DEFAULT_POINT_SIZE
+        self.alpha = DEFAULT_ALPHA
+        self.marker = MARKERS["circle"]
+        self.size_range = DEFAULT_SIZE_RANGE
         self._pending_vertices: list[tuple[float, float]] = []
         self._gate_overlays: list = []  # vtea_core.gates.Gate instances
+        self._colorbar = None
 
         root = QVBoxLayout(self)
 
@@ -69,11 +134,14 @@ class ScatterPlotWidget(QWidget):
         self.x_combo = QComboBox()
         self.y_combo = QComboBox()
         self.color_combo = QComboBox()
+        self.size_combo = QComboBox()
+        self.size_combo.setToolTip("Scale each point by a measured feature")
         self.colormap_combo = QComboBox()
         self.colormap_combo.addItems(_COLORMAPS)
         self.x_combo.currentTextChanged.connect(self._on_axis_combo_changed)
         self.y_combo.currentTextChanged.connect(self._on_axis_combo_changed)
         self.color_combo.currentTextChanged.connect(self._on_color_combo_changed)
+        self.size_combo.currentTextChanged.connect(self._on_size_combo_changed)
         self.colormap_combo.currentTextChanged.connect(self._on_colormap_combo_changed)
         axis_row.addWidget(QLabel("X:"))
         axis_row.addWidget(self.x_combo)
@@ -81,6 +149,8 @@ class ScatterPlotWidget(QWidget):
         axis_row.addWidget(self.y_combo)
         axis_row.addWidget(QLabel("Color by:"))
         axis_row.addWidget(self.color_combo)
+        axis_row.addWidget(QLabel("Size by:"))
+        axis_row.addWidget(self.size_combo)
         axis_row.addWidget(QLabel("LUT:"))
         axis_row.addWidget(self.colormap_combo)
         root.addLayout(axis_row)
@@ -111,10 +181,20 @@ class ScatterPlotWidget(QWidget):
             combo.clear()
             combo.addItems(numeric_columns)
             combo.blockSignals(False)
-        self.color_combo.blockSignals(True)
-        self.color_combo.clear()
-        self.color_combo.addItems([_NO_COLOR_BY] + numeric_columns)
-        self.color_combo.blockSignals(False)
+        # Keep the colour and size encodings across a re-run: they are as
+        # much part of "the plot I am looking at" as the axes are.
+        for combo, placeholder, current in (
+            (self.color_combo, _NO_COLOR_BY, self.color_column),
+            (self.size_combo, NO_SIZE_BY, self.size_column),
+        ):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems([placeholder] + numeric_columns)
+            if current and current in numeric_columns:
+                combo.setCurrentText(current)
+            combo.blockSignals(False)
+        self.color_column = self.color_column if self.color_column in numeric_columns else None
+        self.size_column = self.size_column if self.size_column in numeric_columns else None
 
         if x_column and x_column in numeric_columns:
             self.x_combo.setCurrentText(x_column)
@@ -158,20 +238,76 @@ class ScatterPlotWidget(QWidget):
         self.color_column = None if text in ("", _NO_COLOR_BY) else text
         self._redraw()
 
+    def _on_size_combo_changed(self, text: str) -> None:
+        self.size_column = None if text in ("", NO_SIZE_BY) else text
+        self._redraw()
+
     def _on_colormap_combo_changed(self, text: str) -> None:
         self.colormap = text
         self._redraw()
 
+    def set_point_style(
+        self,
+        *,
+        point_size: float | None = None,
+        alpha: float | None = None,
+        marker: str | None = None,
+        size_range: tuple[float, float] | None = None,
+    ) -> None:
+        """How the points are drawn - driven by PlotStylePanel. `point_size`
+        is the area every point gets when nothing is encoding size."""
+        if point_size is not None:
+            self.point_size = float(point_size)
+        if alpha is not None:
+            self.alpha = float(alpha)
+        if marker is not None:
+            self.marker = marker
+        if size_range is not None:
+            self.size_range = (float(size_range[0]), float(size_range[1]))
+        self._redraw()
+
+    def _point_sizes(self):
+        """(sizes, to_value): the marker area for each point, and how to read
+        an area back as a feature value for the legend."""
+        if self.size_column is None or self._frame is None:
+            return self.point_size, None
+        return scale_sizes(
+            self._frame[self.size_column].to_numpy(), self.size_range[0], self.size_range[1]
+        )
+
+    def _remove_colorbar(self) -> None:
+        if self._colorbar is not None:
+            try:
+                self._colorbar.remove()
+            except (AttributeError, KeyError, ValueError):
+                # Already gone with a cleared figure; nothing to undo.
+                pass
+            self._colorbar = None
+
     def _redraw(self) -> None:
+        # The colorbar lives in its own axes, so it has to go before the
+        # main axes are cleared or it accumulates one bar per redraw.
+        self._remove_colorbar()
         self.ax.clear()
         if self._frame is not None and self.x_column and self.y_column:
             x = self._frame[self.x_column].to_numpy()
             y = self._frame[self.y_column].to_numpy()
+            sizes, to_value = self._point_sizes()
             if self.color_column:
                 c = self._frame[self.color_column].to_numpy()
-                self.ax.scatter(x, y, c=c, cmap=self.colormap, s=12)
+                scatter = self.ax.scatter(
+                    x, y, c=c, cmap=self.colormap, s=sizes, alpha=self.alpha, marker=self.marker
+                )
+                # The LUT bar: a colour gradient means nothing without the
+                # values it stands for.
+                self._colorbar = self.figure.colorbar(scatter, ax=self.ax)
+                self._colorbar.set_label(self.color_column)
             else:
-                self.ax.scatter(x, y, s=12, c="tab:blue")
+                scatter = self.ax.scatter(
+                    x, y, s=sizes, c="tab:blue", alpha=self.alpha, marker=self.marker
+                )
+            if to_value is not None:
+                self._draw_size_legend(scatter, to_value)
             self.ax.set_xlabel(self.x_column)
             self.ax.set_ylabel(self.y_column)
 
@@ -188,6 +324,35 @@ class ScatterPlotWidget(QWidget):
             )
 
         self.canvas.draw_idle()
+
+    def _draw_size_legend(self, scatter, to_value) -> None:
+        """The size equivalent of the colorbar: a few sample dots labelled
+        with the feature values they stand for.
+
+        Labelled through `to_value` rather than in matplotlib's points²,
+        which would be a number about the drawing rather than about the
+        data.
+        """
+        try:
+            handles, labels = scatter.legend_elements(
+                prop="sizes", num=_SIZE_LEGEND_SAMPLES, func=to_value, alpha=0.6
+            )
+        except (ValueError, TypeError):
+            # A degenerate spread (every point the same size) has no scale
+            # worth showing; the plot is still correct without it.
+            return
+        if not handles:
+            return
+        self.ax.legend(
+            handles,
+            labels,
+            title=self.size_column,
+            loc="best",
+            fontsize="x-small",
+            title_fontsize="x-small",
+            labelspacing=1.0,
+            framealpha=0.7,
+        )
 
     def _on_click(self, event) -> None:
         """`event` is (or duck-types) a matplotlib MouseEvent: .xdata, .ydata,

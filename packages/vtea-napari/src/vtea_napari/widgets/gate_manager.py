@@ -23,7 +23,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from qtpy.QtCore import Signal
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
+    QColorDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -93,6 +95,7 @@ class GateManagerWidget(QWidget):
         self.table.gate_selected.connect(self._on_gate_selected)
         self.table.gate_visibility_changed.connect(self._on_gate_visibility_changed)
         self.table.gate_renamed.connect(self._on_gate_renamed)
+        self.table.gate_color_requested.connect(self.pick_gate_color)
         root.addWidget(self.table, 1)
 
         file_row = QHBoxLayout()
@@ -254,3 +257,22 @@ class GateManagerWidget(QWidget):
     def _on_gate_renamed(self, gate_id: str, name: str) -> None:
         self.gate_set.get(gate_id).name = name
         self.refresh()
+
+    def set_gate_color(self, gate_id: str, color: str) -> None:
+        """Recolour one gate: the swatch, its outline on the plot, and the
+        colour saved with it."""
+        if gate_id not in self.gate_set:
+            return
+        self.gate_set.get(gate_id).color = color
+        self.refresh()
+        self.gates_changed.emit()
+
+    def pick_gate_color(self, gate_id: str) -> None:
+        """Ask for a new colour for one gate (the colour swatch's
+        double-click). Cancelling leaves the gate as it was."""
+        if gate_id not in self.gate_set:
+            return
+        current = QColor(self.gate_set.get(gate_id).color)
+        chosen = QColorDialog.getColor(current, self, "Gate colour")
+        if chosen.isValid():
+            self.set_gate_color(gate_id, chosen.name())

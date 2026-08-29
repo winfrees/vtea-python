@@ -21,9 +21,24 @@ from vtea_napari.widgets.thumbnail import array_to_pixmap, max_projection
 
 _COLUMNS = 6
 
+# Yellow, and thick enough to read against a bright crop: a thin outline in
+# a mid tone disappears into the very cells the gallery is showing.
+SELECTED_STYLE = "border: 3px solid #ffd400;"
+# A transparent border of the same width, so selecting a cell doesn't
+# reflow the grid by growing it.
+UNSELECTED_STYLE = "border: 3px solid transparent;"
+
 
 class _ClickableThumbnail(QLabel):
     clicked = Signal()
+
+    def __init__(self, object_id, parent=None):
+        super().__init__(parent)
+        self.object_id = object_id
+        self.set_selected(False)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setStyleSheet(SELECTED_STYLE if selected else UNSELECTED_STYLE)
 
     def mousePressEvent(self, event):
         self.clicked.emit()
@@ -31,13 +46,15 @@ class _ClickableThumbnail(QLabel):
 
 
 class GalleryWidget(QWidget):
-    """A scrollable grid of per-object crops."""
+    """A scrollable grid of per-object crops, one of which may be selected."""
 
     object_selected = Signal(int)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._grid = QGridLayout()
+        self._thumbnails: list[_ClickableThumbnail] = []
+        self.selected_object_id: int | None = None
         container = QWidget()
         container.setLayout(self._grid)
         scroll = QScrollArea()
@@ -45,6 +62,17 @@ class GalleryWidget(QWidget):
         scroll.setWidget(container)
         layout = QVBoxLayout(self)
         layout.addWidget(scroll)
+
+    def select(self, object_id) -> None:
+        """Outline one object's crop, and clear any previous outline. An id
+        that isn't on screen just clears the selection rather than raising -
+        a gate can be re-drawn under a selection made against the old one."""
+        self.selected_object_id = None
+        for thumbnail in self._thumbnails:
+            is_selected = thumbnail.object_id == object_id
+            thumbnail.set_selected(is_selected)
+            if is_selected:
+                self.selected_object_id = thumbnail.object_id
 
     def show_objects(
         self,
@@ -65,6 +93,7 @@ class GalleryWidget(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        self._thumbnails = []
 
         indexed = frame.set_index("object_id")
         centroid_columns = sorted(c for c in frame.columns if c.startswith("centroid-"))
@@ -79,11 +108,20 @@ class GalleryWidget(QWidget):
                 continue
             pixmap = array_to_pixmap(max_projection(crop), size=thumbnail_size)
 
-            cell = _ClickableThumbnail()
+            cell = _ClickableThumbnail(object_id)
             cell.setPixmap(pixmap)
             cell.setToolTip(f"object {object_id}")
-            cell.clicked.connect(lambda oid=object_id: self.object_selected.emit(oid))
+            cell.clicked.connect(lambda oid=object_id: self._on_thumbnail_clicked(oid))
             self._grid.addWidget(cell, position // _COLUMNS, position % _COLUMNS)
+            self._thumbnails.append(cell)
+
+        # Keep the outline on the same object across a refresh where it is
+        # still shown; drop it silently where it isn't.
+        self.select(self.selected_object_id)
+
+    def _on_thumbnail_clicked(self, object_id) -> None:
+        self.select(object_id)
+        self.object_selected.emit(object_id)
 
 
 def _crop_2d(volume: np.ndarray, row_center: int, col_center: int, radius: int) -> np.ndarray:

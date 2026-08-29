@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (273 tests, including real
+Phase 4 done. Implemented and tested (322 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -121,7 +121,17 @@ widget and run it):
   polygon so everything downstream handles one kind of gate. Axis pickers;
   "Color by"/"LUT" comboboxes for point coloring by a third feature
   (replaces `vtea.lut`'s point-coloring, not ImageJ's per-channel image
-  LUTs, which napari's `Image` layer controls already give you for free).
+  LUTs, which napari's `Image` layer controls already give you for free);
+  and "Size by" to scale each point by a feature. Both encodings get a
+  scale: a labelled colorbar for colour, and a size legend whose sample dots
+  are labelled in the feature's own units rather than in matplotlib's
+  points². Colour and size choices survive a re-run the way the axes do.
+- **`PlotStylePanel`** — the style helper pane under the plot: point size,
+  the size range a feature is mapped onto, opacity, and marker shape. A
+  different kind of choice from the axis pickers - what goes on the axes is
+  part of the analysis, while a few thousand overlapping opaque circles hide
+  the structure underneath them and the fix is turning transparency down,
+  not re-running anything.
 - **`GateManagerWidget`** — the gate pane beside the explorer's plot:
   Rectangle/Polygon drawing modes, the gate list, Delete/Clear, Save/Open as
   plain JSON (`vtea_core.gates.io` — a drawn polygon is the one part of an
@@ -130,7 +140,8 @@ widget and run it):
   the mean of each plotted axis over the gated cells only. A gate whose axes
   aren't in the current table — reopened from JSON, or from a run that
   measured different features — is listed with blank counts rather than
-  taking the pane down.
+  taking the pane down. Double-clicking a gate's colour swatch recolours it,
+  on the plot overlay and in the saved JSON.
 - **`LogView`** — the message strip at the bottom. A QLabel doesn't wrap, so
   a long traceback stretched the whole dock sideways; this wraps, keeps
   history, and caps itself at 10% of the dock's height with its own
@@ -140,6 +151,9 @@ widget and run it):
   `microGateManager.java` classes despite the similar names).
 - **`GalleryWidget`** — per-object thumbnail grid for a gate's members,
   cropped around each object's centroid (replaces `GalleryViewWindow`).
+  Clicking a crop outlines it in yellow and highlights that object alone on
+  the image; the outline survives a refresh that still shows the object and
+  clears silently on one that doesn't.
 
 ## Try it
 

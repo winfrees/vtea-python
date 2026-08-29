@@ -36,12 +36,14 @@ class GateTableWidget(QTableWidget):
     gate_selected = Signal(str)
     gate_visibility_changed = Signal(str, bool)
     gate_renamed = Signal(str, str)
+    gate_color_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(0, len(_COLUMNS), parent)
         self.setHorizontalHeaderLabels(_COLUMNS)
         self._gate_ids: list[str] = []
         self.cellClicked.connect(self._on_cell_clicked)
+        self.cellDoubleClicked.connect(self._on_cell_double_clicked)
         self.itemChanged.connect(self._on_item_changed)
 
     def refresh(self, gate_set: GateSet, frame: pd.DataFrame) -> None:
@@ -63,6 +65,7 @@ class GateTableWidget(QTableWidget):
             color_item = QTableWidgetItem()
             color_item.setBackground(QColor(gate.color))
             color_item.setFlags(color_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            color_item.setToolTip(f"{gate.color} - double-click to change")
             self.setItem(row, _COLOR_COL, color_item)
 
             self.setItem(row, _NAME_COL, QTableWidgetItem(gate.name))
@@ -96,6 +99,13 @@ class GateTableWidget(QTableWidget):
         if column == _VISIBLE_COL:
             return  # handled by _on_item_changed, to react to the actual check-state flip
         self.gate_selected.emit(self._gate_ids[row])
+
+    def _on_cell_double_clicked(self, row: int, column: int) -> None:
+        """Double-clicking the colour swatch asks to change it. The owner
+        runs the colour dialog - this widget stays a view over the GateSet
+        and doesn't put modals on screen itself."""
+        if column == _COLOR_COL:
+            self.gate_color_requested.emit(self._gate_ids[row])
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         gate_id = self._gate_ids[item.row()]

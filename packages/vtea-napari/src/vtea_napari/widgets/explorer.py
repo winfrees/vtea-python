@@ -52,6 +52,7 @@ from vtea_napari.widgets.gallery import GalleryWidget
 from vtea_napari.widgets.gate_manager import GateManagerWidget
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.plot import ScatterPlotWidget
+from vtea_napari.widgets.plot_style import PlotStylePanel
 
 # The plot is the point of this pane; the gate manager beside it is
 # controls. Same 2:1 split the protocol builder used before this moved here.
@@ -117,8 +118,18 @@ class ExplorerWidget(QWidget):
         self.gate_manager.gate_selected.connect(self._on_gate_selected)
         self.gate_manager.gates_changed.connect(self._on_gates_changed)
 
+        # The style pane sits under the plot rather than beside it: it is
+        # about how the points are drawn, and it belongs to the plot the way
+        # the axis pickers above it do.
+        self.style_panel = PlotStylePanel(self.plot)
+        plot_pane = QWidget()
+        plot_layout = QVBoxLayout(plot_pane)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self.plot, 1)
+        plot_layout.addWidget(self.style_panel)
+
         self.results_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.results_splitter.addWidget(self.plot)
+        self.results_splitter.addWidget(plot_pane)
         self.results_splitter.addWidget(self.gate_manager)
         self.results_splitter.setChildrenCollapsible(False)
         self.results_splitter.setStretchFactor(0, PLOT_WIDTH_SHARE)
@@ -289,5 +300,7 @@ class ExplorerWidget(QWidget):
         self.gallery.show_objects(intensity, self.frame, gated_ids)
 
     def _on_object_selected(self, object_id: int) -> None:
+        """A gallery crop was clicked: outline it there, and show only that
+        object on the image."""
         self.status_label.setText(f"Object {object_id} selected.")
         self._highlight(np.array([object_id]))
