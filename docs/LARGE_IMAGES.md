@@ -146,11 +146,21 @@ already lives — `wiring.StepIO`, which already carries `inputs`, `output`,
 @dataclass(frozen=True)
 class StepIO:
     ...                        # everything it has today
-    block_mode: str = ELEMENTWISE
-    halo: HaloSpec | None = None      # fixed voxels, or derived from a param
-    bytes_per_voxel: int = 4          # live intermediates, per input voxel
+    scaling: Scaling = DEFAULT_SCALING
+
+@dataclass(frozen=True)
+class Scaling:
+    mode: str = ELEMENTWISE           # see "Block modes" below
+    halo: HaloSpec = HaloSpec()       # fixed voxels, or derived from a param
+    bytes_per_voxel: int = 8          # live intermediates, per input voxel
     exactness: str = EXACT            # EXACT | EXACT_WITH_HALO | APPROXIMATE
+    variants: Mapping[str, Scaling] = {}   # keyed on a parameter's value
 ```
+
+`variants` earns its place on the two steps whose scaling depends on a
+parameter rather than on the function: `threshold_mask` is elementwise with
+`method="fixed"` and needs a whole-image histogram with `method="otsu"`, and
+those are not the same step to a planner.
 
 `bytes_per_voxel` is what turns a budget into a tile shape:
 
@@ -160,13 +170,19 @@ voxels_per_tile = usable / step.bytes_per_voxel
 ```
 
 For `watershed_split` at ~35 B/voxel (uint16 input, bool mask, float64 EDT,
-int32 markers, int32 labels, plus scipy's internal copies):
+int32 markers, int32 labels, plus scipy's internal copies) over the 2048 ×
+2048 × 2000 volume above, with a 64-voxel halo and 128³ storage chunks -
+these are the planner's actual output, not an illustration:
 
-| Machine | Usable | Voxels | Tile (rounded to chunks) |
-| --- | --- | --- | --- |
-| 8 GB laptop | 4.8 GB | 137 M | 512 × 512 × 512 |
-| 32 GB workstation | 19.2 GB | 549 M | 768 × 768 × 768 |
-| 128 GB server | 76.8 GB | 2.2 G | 1024 × 1024 × 1024 (or 2048² × 512) |
+| Machine | Usable | Tile | Tiles | Read amplification |
+| --- | --- | --- | --- | --- |
+| 8 GB laptop | 4.8 GB | 384³ | 216 | 3.5× |
+| 32 GB workstation | 19.2 GB | 512 × 768 × 768 | 36 | 2.2× |
+| 128 GB server | 76.8 GB | 1024³ | 8 | 1.5× |
+
+The last column is the halo's real cost and the argument for more memory:
+the laptop reads the dataset three and a half times over, the server one and
+a half.
 
 The plan for a *pipeline* is the tightest tile any of its steps needs,
 snapped to a multiple of the store's chunk shape, and enlarged in the axes
@@ -182,7 +198,7 @@ honest.
 
 ## Block modes, and every step
 
-Five modes. The whole protocol classifies into them.
+Six modes. The whole protocol classifies into them.
 
 - **ELEMENTWISE** — output voxel depends on its input voxel. No halo, exact,
   trivially blocked.
@@ -195,6 +211,9 @@ Five modes. The whole protocol classifies into them.
 - **OBJECT_LOCAL** — works per object, within its bounding box. Scheduled by
   object, not by grid; a bbox that fits one object fits in RAM by
   definition.
+- **ACCUMULATE** — reduces voxels to per-object rows. Blocked by
+  accumulating partial sums per object and merging them, with a second pass
+  over the objects a seam cut (see "Measuring an object that spans tiles").
 - **TABLE** — consumes the feature table, not voxels. Scales with object
   count, and is a different problem (see "Analysis at scale").
 
@@ -205,7 +224,7 @@ Five modes. The whole protocol classifies into them.
 | `gaussian_blur` | NEIGHBORHOOD | `ceil(4σ)` | exact w/ halo | scipy truncates at 4σ; halo follows `sigma` |
 | `median_filter` | NEIGHBORHOOD | `radius` | exact w/ halo | |
 | `enhance_contrast` (`normalize`) | GLOBAL_STAT | — | exact | streaming min/max, then rescale per block |
-| `enhance_contrast` (`equalize`) | NEIGHBORHOOD | kernel | **approximate** | CLAHE is tile-local by construction; tiles must align to the CLAHE kernel grid or seams show. Recommend: require `kernel_size` to divide the tile shape, and warn otherwise |
+| `enhance_contrast` (`equalize`) | NEIGHBORHOOD | kernel | **approximate** | CLAHE adapts per kernel window, and skimage derives that window from the image it is handed - so the same data equalizes differently depending on how it was divided. `enhance_contrast` therefore takes an explicit `kernel_size` (added in L0), which should divide the tile shape |
 | `subtract_background` | NEIGHBORHOOD | `radius` | **approximate** | A rolling ball is not strictly local. The exact-enough alternative, and the faster one: estimate the background on a coarse pyramid level, upsample, subtract. Offer both, default to the pyramid estimate above a size threshold |
 
 ### Segmentation
