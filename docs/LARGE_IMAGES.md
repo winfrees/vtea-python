@@ -393,14 +393,21 @@ class SeamPolicy:
 
 | Preset | Tiles | Matching | Result | Cost | Fails by |
 | --- | --- | --- | --- | --- | --- |
-| **1. Overlap matching** *(default)* | overlapping | IoU in the shared region | one complete copy kept, or fragments unioned | halo, plus one comparison pass over the halo regions | needing the halo to exceed the object |
+| **1. Overlap matching** *(the default)* | overlapping | IoU in the shared region | one complete copy kept, or fragments unioned | halo, plus one comparison pass over the halo regions | needing the halo to exceed the object |
 | **2. Centroid matching** | overlapping | nearest centroid within a distance | fragments unioned | halo, plus a kd-tree over a table — no voxel reads | over-merging, and under-merging elongated objects |
 | **3. Edge-touching merge** | abutting | voxels face-adjacent across the seam plane | fragments unioned | none beyond the seam planes | merging cells that merely abut at the seam |
 | **4. No merge** | abutting | none | every fragment is its own object | nothing | inflating the object count by the seam-exposed fraction |
 
-**1 — Overlap matching.** Compare the two tiles' labellings of the region
-they both segmented; IoU above `min_overlap` says two fragments are one
-object. Unambiguous, because it is the same voxels being compared, and it is
+**1 — Overlap matching. This is the default**, and a user who never opens
+the setting gets it. It is the most accurate of the four and the only one
+whose correctness does not depend on a property of the specimen — the other
+three each trade accuracy for time in a way that is right for some tissue
+and wrong for other tissue, which is a judgement a default should not make
+on someone's behalf. It costs a halo, and the plan's position is that
+paying it is the right thing to do until a user says otherwise.
+
+Compare the two tiles' labellings of the region they both segmented; IoU
+above `min_overlap` says two fragments are one object. Unambiguous, because it is the same voxels being compared, and it is
 the only matching that stays correct when objects are packed tightly.
 Two things can then be done with the correspondence, and the choice is the
 `resolution` setting rather than a separate rule:
@@ -419,6 +426,13 @@ by centroid position — the cores partition the volume exactly, so exactly one
 core contains any given centroid. That fast path is worth having for nuclei
 and worth distrusting elsewhere: see "Verifying the halo" for the silent
 double-count it produces when the halo turns out to be too small.
+
+One cost of overlap matching that the read-amplification figure does not
+show: each tile's own labelling of its whole block has to be *kept* until
+its neighbours have been compared with it, because that is what the IoU
+compares. That is the same factor again in scratch - 1.5x to 3.5x the label
+volume, on disk, temporarily. It is the price of the only unambiguous
+matching, and it is the reason the other three exist.
 
 **2 — Centroid matching.** Pair fragments across a seam by centroid
 proximity instead of by voxels. It reads a table rather than an image, so it
@@ -475,6 +489,17 @@ understands. Used *without* that exclusion it inflates the object count and
 skews the size distribution low, so the ledger reports the fragmented
 fraction whether or not anyone asked. It is also the right setting for a
 fast preview, where a seam artefact costs nothing and an hour does.
+
+One interaction to know about, because it is silent and it compounds: **a
+size filter after a no-merge segmentation deletes pieces of real objects.**
+A minimum size is chosen for whole objects; the things being filtered are
+fragments, each smaller than the object it came from. So a threshold that
+would have kept everything removes parts of several, and the resulting
+count can come out *lower* than the correct answer rather than higher - the
+inflation and the filtering pull in opposite directions and neither is
+visible in the output. Pair no-merge with dropping seam-touching objects,
+which removes whole fragments rather than trimming them, or filter by size
+under a merging strategy.
 
 Note what the table also says: **more memory is a merge strategy.** Doubling
 the tile edge roughly halves the number of objects any of this applies to.
@@ -537,8 +562,14 @@ face because the executor knows which is which.
 was sufficient. The check is cheap and should always run:
 
 - After segmenting core-plus-halo, any object whose voxels reach the outer
-  edge of the halo was *not* fully contained. That is a definitive
-  measurement, not an estimate.
+  edge of the halo was *not* fully contained by that tile. That is a
+  definitive measurement, not an estimate.
+- **An object is only in trouble when *every* tile that saw it saw it cut
+  off.** One tile's truncated view is normal - it is what a halo is for, and
+  the neighbour holding the rest may well have the whole thing. Reporting
+  per fragment rather than per object turns an ordinary reconciliation into
+  a page of warnings: on a 27-tile run of well-behaved nuclei it flagged a
+  third of them, all of which were fine.
 - For distance-transform steps, an EDT value at the core boundary that has
   not saturated means the true nearest background lay outside the tile.
 
@@ -874,15 +905,22 @@ Changed elsewhere, and deliberately little:
 
 | Phase | Content | Est. |
 | --- | --- | --- |
-| **L0 — Budget and plan** | `MemoryBudget`, `TilePlan`, the `StepIO` scaling fields, the plan summary in the GUI. No execution change; everything downstream depends on it | 1–2 wk |
-| **L1 — Lazy I/O and the store** | `io/store.py` as the single zarr seam, `Axes`, OME-NGFF 0.4 read/write with pyramids and a 5D `TCZYX` layout, lazy TIFF, ingest, `ZarrScratch`, lazy napari layers | 2–3 wk |
-| **L2 — The executor: elementwise, neighborhood, global stats** | Covers all of `imageprocessing` and `threshold_mask`. Padding, halo trimming, and the "single tile equals whole image" test | 2–3 wk |
-| **L3 — Labels across tiles** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
+| **L0 — Budget and plan** **done** | `MemoryBudget`, `TilePlan`, the `StepIO` scaling fields, the plan summary in the GUI. No execution change; everything downstream depends on it | 1–2 wk |
+| **L1 — Lazy I/O and the store** **done** | `io/store.py` as the single zarr seam, `Axes`, OME-NGFF 0.4 read/write with pyramids and a 5D `TCZYX` layout, lazy TIFF, ingest, `ZarrScratch`, lazy napari layers | 2–3 wk |
+| **L2 — The executor: elementwise, neighborhood, global stats** **done** | Covers all of `imageprocessing` and `threshold_mask`. Padding, halo trimming, and the "single tile equals whole image" test | 2–3 wk |
+| **L3 — Labels across tiles** **done** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
+
+L0-L3 are built. A protocol of blur, Otsu threshold, connected components
+and size filter now runs entirely out of core and returns the same objects,
+voxel for voxel, as the in-memory run - at one tile and at sixteen. L5's
+`RESEGMENT` is the piece of the reconciliation still outstanding, and until
+it exists a learned segmenter is refused rather than tiled, since every
+strategy that picks between tile copies keeps a wrong mask for one.
 
 **Total: roughly 18–28 engineer-weeks.** L0–L2 are worth landing on their
 own — they make a large dataset *openable and preprocessable*, which is
@@ -895,19 +933,16 @@ concentrated.
   buys a cluster and a dashboard, and costs a dependency and a failure mode.
   Recommend: threaded by default, `distributed` opt-in, and keep the
   executor agnostic.
-- **Which strategy is the default per step.** All four are selectable and
-  none is going away; what is open is which one a user who has not chosen
-  gets. Proposed: overlap matching generally, with `RESEGMENT` as the
-  resolution for Cellpose. But this is a scientific judgement as much as an
-  engineering one, and the way to settle it is to run the four against the
-  same real tissue - with vessels and tubules in it, not only nuclei - and
-  compare object counts, size distributions and the seam-exposed fraction.
-  The ledger is built to make that comparison a query rather than a study.
-  Three specific things it would answer: how often centroid matching
-  over-merges relative to overlap matching in packed epithelium; whether
-  edge-touching merge is within tolerance for sparse puncta, where it would
-  save the whole halo; and whether "no merge plus drop seam-touching
-  objects" costs less accuracy than it saves time on a first pass.
+- **When to move off the default.** Overlap matching is the default and
+  the other three are selectable (decided; see "The strategies"). What is
+  still open is guidance on when a user should switch, which is a question
+  about tissue rather than about code. The ledger is built to make that
+  comparison a query rather than a study, and three things are worth
+  measuring on real data: how often centroid matching over-merges relative
+  to overlap matching in packed epithelium; whether edge-touching merge is
+  within tolerance for sparse puncta, where it saves the whole halo; and
+  whether "no merge plus drop seam-touching objects" costs less accuracy
+  than it saves time on a first pass.
 - **Does anything need true random-access editing of a large label image?**
   Manual correction of a 33 GB label store is a different problem (chunk
   write amplification, undo). Out of scope here; flagged so it is not

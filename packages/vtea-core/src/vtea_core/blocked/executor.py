@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 from vtea_core.blocked.contract import (
+    APPROXIMATE,
     ELEMENTWISE,
     GLOBAL_STAT,
     NEIGHBORHOOD,
@@ -88,7 +89,9 @@ class BlockedResult:
     plan: TilePlan
     stats: ImageStats | None = None
     resolved_params: dict[str, Any] = field(default_factory=dict)
-    exceeded_halo: bool = False
+    # Present when this step produced objects rather than pixels: how every
+    # object a tile boundary cut was put back together.
+    ledger: Any = None
 
     def describe(self) -> str:
         parts = [f"{self.plan.n_tiles:,} tiles"]
@@ -97,6 +100,8 @@ class BlockedResult:
         if self.resolved_params:
             fixed = ", ".join(f"{key}={value!r}" for key, value in self.resolved_params.items())
             parts.append(f"resolved {fixed}")
+        if self.ledger is not None:
+            parts.append(self.ledger.describe())
         return "; ".join(parts)
 
 
@@ -153,16 +158,24 @@ def apply_blocked(
     return target
 
 
-def read_block(array: Any, tile: Tile, pad_mode: str = DEFAULT_PAD_MODE) -> np.ndarray:
+def read_block(array: Any, tile: Tile, pad_mode: str | None = DEFAULT_PAD_MODE) -> np.ndarray:
     """One tile's input: the padded region, with the part that fell off the
     edge of the dataset synthesized.
 
     Reading and padding are one operation on purpose. Every caller needs
     both, and a caller that forgets the padding gets a result that is right
     everywhere except the outside of the volume.
+
+    `pad_mode=None` returns the region as it is, unpadded - which is what a
+    *segmentation* wants. A filter's halo is a boundary condition and
+    mirroring is the right one; a segmenter handed a mirrored halo finds
+    objects in it and fuses them with the real objects they are reflections
+    of. At the specimen's own edge the honest answer is that there is no
+    more data, and the block is simply smaller. Pair it with
+    `Tile.inner_unpadded`.
     """
     block = np.asarray(array[tile.padded])
-    if any(before or after for before, after in tile.pad_width):
+    if pad_mode is not None and any(before or after for before, after in tile.pad_width):
         block = np.pad(block, tile.pad_width, mode=pad_mode)
     return block
 
@@ -292,14 +305,23 @@ class BlockedPipeline:
         scratch: ZarrScratch | None = None,
         spacing: Any = None,
         pad_mode: str = DEFAULT_PAD_MODE,
+        policy: Any = None,
     ):
+        from vtea_core.blocked.reconcile import DEFAULT_POLICY
+
         self.pipeline = pipeline
         self.plan = plan
         self.scratch = scratch
         self._owns_scratch = scratch is None
         self.spacing = spacing
         self.pad_mode = pad_mode
+        # How objects a tile boundary cut are put back together. Overlap
+        # matching by default - see vtea_core.blocked.reconcile.
+        self.policy = DEFAULT_POLICY if policy is None else policy
         self.results: dict[str, BlockedResult] = {}
+        # Per step name, and per context key, so that a later step can find
+        # the ledger belonging to the labels it was pointed at.
+        self.ledgers: dict[str, Any] = {}
 
     def __enter__(self) -> BlockedPipeline:  # noqa: PYI034 - typing.Self needs Python 3.11+, this package supports 3.10
         if self.scratch is None:
@@ -337,24 +359,16 @@ class BlockedPipeline:
             working[step.output_key] = result.array
             if step.name:
                 working[step.name] = result.array
+            if result.ledger is not None:
+                self.ledgers[step.output_key] = result.ledger
+                if step.name:
+                    self.ledgers[step.name] = result.ledger
         return working
 
     def _run_one(self, step: Any, context: Mapping[str, Any], *, progress) -> BlockedResult:
-        sources = {}
-        params = dict(step.params or {})
-        for argument, key in step.input_keys.items():
-            if key not in context:
-                raise KeyError(
-                    f"step '{step.category}.{step.function_name}' needs context key "
-                    f"'{key}', available: {sorted(context)}"
-                )
-            value = context[key]
-            if _is_arraylike(value):
-                sources[argument] = value
-            else:
-                # A Spacing, a channel axis - configuration that travels in
-                # the context but is not something to tile.
-                params[argument] = value
+        if _scaling_of(step).needs_reconciliation:
+            return self._run_reconciled(step, context, progress=progress)
+        sources, params = self._split_inputs(step, context)
 
         scaling = _scaling_of(step)
         _require_supported(step, scaling)
@@ -374,6 +388,106 @@ class BlockedPipeline:
             pad_mode=self.pad_mode,
             progress=progress,
         )
+
+
+    def _run_reconciled(
+        self, step: Any, context: Mapping[str, Any], *, progress
+    ) -> BlockedResult:
+        """A step whose objects have to be joined across tile boundaries.
+
+        Two shapes of it. A segmentation assigns identities, so it runs per
+        tile and is reconciled by the seam policy. `filter_by_size` assigns
+        nothing but needs a whole object's size, which no tile has and the
+        ledger from the segmentation it filters does - so it is a lookup
+        table over that.
+        """
+        from vtea_core.blocked.reconcile import RESEGMENT
+        from vtea_core.blocked.segment import segment_blocked
+
+        sources, params = self._split_inputs(step, context)
+        scaling = _scaling_of(step)
+
+        if step.function_name == "filter_by_size":
+            return self._filter_by_size(step, sources, params)
+
+        if scaling.exactness == APPROXIMATE and self.policy.resolution != RESEGMENT:
+            raise NotBlockableYet(
+                f"'{step.category}.{step.function_name}' does not give the same answer "
+                f"depending on where a tile edge falls, so every tile's copy of a "
+                f"seam-crossing object is shaped by a boundary that has nothing to do "
+                f"with the specimen. Choosing between them keeps a wrong mask. The "
+                f"resolution for that is 'resegment', which re-runs the segmenter on a "
+                f"window centred on the seam - Phase L5, with the rest of the "
+                f"deep-learning work. See docs/LARGE_IMAGES.md."
+            )
+
+        labels = segment_blocked(
+            step.function,
+            sources,
+            plan=self.plan,
+            scratch=self.scratch,
+            policy=self.policy,
+            params=params,
+            spacing=self.spacing,
+            name=_scratch_name(step),
+            progress=progress,
+        )
+        return BlockedResult(
+            array=labels.array, plan=labels.plan, ledger=labels.ledger
+        )
+
+    def _filter_by_size(
+        self, step: Any, sources: Mapping[str, Any], params: Mapping[str, Any]
+    ) -> BlockedResult:
+        from vtea_core.blocked.segment import BlockedLabels, filter_by_size_blocked
+
+        source_key = step.input_keys.get("labels", "labels")
+        ledger = self.ledgers.get(source_key)
+        if ledger is None:
+            raise KeyError(
+                f"'{step.name or step.function_name}' filters on whole-object sizes, "
+                f"which come from the ledger of the segmentation that produced "
+                f"'{source_key}'. No blocked segmentation in this pipeline produced it - "
+                f"available: {sorted(self.ledgers)}."
+            )
+        current = BlockedLabels(
+            array=sources["labels"],
+            ledger=ledger,
+            plan=self.plan,
+            policy=self.policy,
+        )
+        filtered = filter_by_size_blocked(
+            current,
+            scratch=self.scratch,
+            min_size=params.get("min_size"),
+            max_size=params.get("max_size"),
+            name=_scratch_name(step),
+        )
+        return BlockedResult(
+            array=filtered.array, plan=filtered.plan, ledger=filtered.ledger
+        )
+
+    def _split_inputs(
+        self, step: Any, context: Mapping[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """This step's array inputs and its parameters, from the context.
+
+        A Spacing or a channel axis travels in the context beside the
+        arrays and is configuration, not something to divide into tiles.
+        """
+        sources, params = {}, dict(step.params or {})
+        for argument, key in step.input_keys.items():
+            if key not in context:
+                raise KeyError(
+                    f"step '{step.category}.{step.function_name}' needs context key "
+                    f"'{key}', available: {sorted(context)}"
+                )
+            value = context[key]
+            if _is_arraylike(value):
+                sources[argument] = value
+            else:
+                params[argument] = value
+        return sources, params
 
 
 def _scratch_name(step: Any) -> str:

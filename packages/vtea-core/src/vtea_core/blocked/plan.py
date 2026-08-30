@@ -87,6 +87,28 @@ class Tile:
         return tuple(result)
 
     @property
+    def inner_unpadded(self) -> tuple[slice, ...]:
+        """Where the core sits inside the padded block when the block was
+        read *without* synthesizing the part that fell off the edge.
+
+        Segmentation reads its blocks that way. Mirroring the data at the
+        specimen's own border would invent objects there and fuse them with
+        the real ones they are reflections of, which is the correct
+        boundary condition for a filter and a fabricated cell for a
+        segmenter.
+        """
+        return tuple(
+            slice(core.start - padded.start, core.start - padded.start + (core.stop - core.start))
+            for core, padded in zip(self.core, self.padded)
+        )
+
+    @property
+    def origin(self) -> tuple[int, ...]:
+        """Global coordinates of the unpadded block's first voxel, for
+        turning a position inside a block into a position in the volume."""
+        return tuple(padded.start for padded in self.padded)
+
+    @property
     def at_dataset_border(self) -> bool:
         """Whether any of this tile's halo fell off the edge of the data.
 
