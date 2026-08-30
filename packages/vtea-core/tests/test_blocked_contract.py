@@ -303,6 +303,30 @@ def test_exactness_vocabulary_is_used_as_documented():
     assert APPROXIMATE in modes
 
 
+@pytest.mark.parametrize(("category", "function_name"), REGISTERED)
+def test_a_step_that_assigns_ids_says_so(category, function_name):
+    """The flag that decides whether a step can be tiled today, and the one
+    a block mode does not imply: `label_components` is a one-voxel
+    neighbourhood step and tiling it would still give every tile its own
+    object 1."""
+    assigns_ids = {
+        ("segmentation", "label_components"),
+        ("segmentation", "watershed_split"),
+        ("segmentation", "cellpose_segmentation"),
+        ("segmentation", "filter_by_size"),
+        ("segmentation", "watershed_ownership"),
+    }
+    scaling = scaling_for(category, function_name)
+    assert scaling.needs_reconciliation == ((category, function_name) in assigns_ids)
+
+
+def test_a_step_that_only_carries_ids_forward_needs_no_reconciliation():
+    # These grow, trim or remap a label image without inventing an id, so
+    # they are correct per tile given a sufficient halo.
+    for function_name in ("expand_labels", "label_ring", "subtract_labels", "restrict_labels_to"):
+        assert not scaling_for("segmentation", function_name).needs_reconciliation
+
+
 def test_object_local_steps_exist_and_declare_a_reach():
     local = [(c, f) for c, f in REGISTERED if scaling_for(c, f).mode == OBJECT_LOCAL]
     assert local

@@ -211,6 +211,7 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             mode=NEIGHBORHOOD,
             halo=HaloSpec(voxels=1),
             bytes_per_voxel=10,
+            needs_reconciliation=True,
             notes="dask_image.ndmeasure.label already merges components across chunks",
         ),
     ),
@@ -225,13 +226,21 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             halo=HaloSpec(object_extent=True, minimum=8),
             bytes_per_voxel=35,
             exactness=EXACT_WITH_HALO,
+            needs_reconciliation=True,
             notes="float64 distance transform plus markers; the heaviest step in a typical protocol",
         ),
     ),
     # Sizes come from the reconciled object ledger rather than from a tile,
     # so the blocked form is a lookup-table remap - per voxel, and exact.
     ("segmentation", "filter_by_size"): StepIO(
-        ("labels",), "labels", scaling=_LABEL_ELEMENTWISE
+        ("labels",),
+        "labels",
+        scaling=Scaling(
+            mode=ELEMENTWISE,
+            bytes_per_voxel=12,
+            needs_reconciliation=True,
+            notes="the remap is per voxel, but the sizes it filters on are per whole object",
+        ),
     ),
     ("segmentation", "labels_from_points"): StepIO(
         ("points", "shape"),
@@ -254,6 +263,7 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             halo=HaloSpec(param="diameter", scale=1.5, minimum=32),
             bytes_per_voxel=96,
             exactness=APPROXIMATE,
+            needs_reconciliation=True,
             notes=(
                 "not translation-invariant, so seam objects are re-segmented in a "
                 "seam-centred window rather than owned by one tile; sized against the "
@@ -319,6 +329,7 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             mode=OBJECT_LOCAL,
             halo=HaloSpec(object_extent=True, minimum=8),
             bytes_per_voxel=40,
+            needs_reconciliation=True,
         ),
     ),
     # `child_name`/`parent_name` are filled from the wiring: the segmentation

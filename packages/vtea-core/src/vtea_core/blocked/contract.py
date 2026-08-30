@@ -203,6 +203,17 @@ class Scaling:
     deliberately an upper bound: overestimating costs smaller tiles, and
     underestimating costs an out-of-memory kill three hours into a run.
 
+    `needs_reconciliation` is the difference between a step that can be
+    tiled today and one that cannot, and it is not the same question as the
+    block mode. `label_components` is a neighbourhood step by every other
+    measure - one voxel of reach, shape-preserving - and running it per tile
+    would still be wrong, because each tile would number its objects from 1
+    and object 7 would mean something different in every one. So would
+    `filter_by_size`, for the opposite reason: it needs a whole object's
+    size, which no single tile has. Both wait on the ledger in Phase L3.
+    Steps that only *carry* ids forward - `expand_labels`, `subtract_labels`,
+    `class_map` - assign nothing and need nothing global, so they tile now.
+
     `variants` is for the two steps whose scaling genuinely depends on a
     parameter rather than on the function: `threshold_mask` is elementwise
     with `method="fixed"` and needs a whole-image histogram with
@@ -214,6 +225,7 @@ class Scaling:
     halo: HaloSpec = field(default_factory=HaloSpec)
     bytes_per_voxel: int = 8
     exactness: str = EXACT
+    needs_reconciliation: bool = False
     notes: str = ""
     variant_param: str | None = None
     variants: Mapping[str, Scaling] = field(default_factory=dict)

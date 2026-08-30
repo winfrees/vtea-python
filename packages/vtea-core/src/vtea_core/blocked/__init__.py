@@ -43,6 +43,15 @@ from vtea_core.blocked.contract import (
     HaloTooLarge,
     Scaling,
 )
+from vtea_core.blocked.executor import (
+    BlockedPipeline,
+    BlockedResult,
+    NotBlockableYet,
+    apply_blocked,
+    numpy_pad_mode,
+    read_block,
+    run_step_blocked,
+)
 from vtea_core.blocked.plan import (
     StepCost,
     Tile,
@@ -51,6 +60,7 @@ from vtea_core.blocked.plan import (
     plan_tiles,
     step_costs,
 )
+from vtea_core.blocked.stats import ImageStats, otsu_threshold, percentile_threshold, scan
 from vtea_core.blocked.store import ZarrScratch
 
 __all__ = [
@@ -71,22 +81,33 @@ __all__ = [
     "OBJECT_LOCAL",
     "TABLE",
     "USER",
+    "BlockedPipeline",
+    "BlockedResult",
     "BudgetTooSmall",
     "HaloSpec",
     "HaloTooLarge",
+    "ImageStats",
     "MemoryBudget",
+    "NotBlockableYet",
     "Scaling",
     "StepCost",
     "Tile",
     "TilePlan",
     "ZarrScratch",
+    "apply_blocked",
     "available_bytes",
     "cgroup_limit_bytes",
     "detect_memory_budget",
     "format_bytes",
     "gpu_free_bytes",
+    "numpy_pad_mode",
+    "otsu_threshold",
     "parse_size",
+    "percentile_threshold",
     "plan_for_steps",
     "plan_tiles",
+    "read_block",
+    "run_step_blocked",
+    "scan",
     "step_costs",
 ]

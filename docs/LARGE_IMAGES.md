@@ -155,8 +155,22 @@ class Scaling:
     halo: HaloSpec = HaloSpec()       # fixed voxels, or derived from a param
     bytes_per_voxel: int = 8          # live intermediates, per input voxel
     exactness: str = EXACT            # EXACT | EXACT_WITH_HALO | APPROXIMATE
+    needs_reconciliation: bool = False     # objects have to be joined across seams
     variants: Mapping[str, Scaling] = {}   # keyed on a parameter's value
 ```
+
+`needs_reconciliation` turned out to be the field that decides whether a
+step can be tiled at all, and it is *not* implied by the block mode — a
+distinction L2 found the hard way. `label_components` is a one-voxel
+neighbourhood step by every mechanical measure, shape-preserving and
+cheap, and tiling it would still be wrong: every tile numbers its objects
+from 1, so object 7 means something different in each. `filter_by_size` is
+elementwise and equally unsafe, because the size it filters on belongs to a
+whole object. Both wait on the ledger. Steps that only *carry* ids forward —
+`expand_labels`, `subtract_labels`, `class_map` — assign nothing and need
+nothing global, so they tile today. The executor refuses on this flag by
+name, because a plausible-looking wrong label image is the worst outcome
+available.
 
 `variants` earns its place on the two steps whose scaling depends on a
 parameter rather than on the function: `threshold_mask` is elementwise with

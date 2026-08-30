@@ -147,6 +147,15 @@ class ZarrScratch:
         )
 
     def close(self) -> None:
+        """Delete the scratch directory, unless `keep` was set.
+
+        **Anything still holding one of these arrays reads zeros
+        afterwards, silently.** A Zarr array whose chunk files have gone
+        does not raise; it returns its fill value. So a result has to be
+        read, or copied somewhere durable, before the store is closed -
+        which is why the executor's results are documented as valid only
+        inside its context.
+        """
         if self._closed:
             return
         self._closed = True

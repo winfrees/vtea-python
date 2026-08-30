@@ -44,6 +44,7 @@ def enhance_contrast(
     *,
     method: str = "normalize",
     kernel_size: int | tuple[int, ...] | None = None,
+    in_range: tuple[float, float] | str = "image",
 ) -> np.ndarray:
     """Contrast enhancement. Replaces vtea.imageprocessing.builtin.EnhanceContrast.
 
@@ -59,9 +60,17 @@ def enhance_contrast(
     the operation mean the same thing at any scale (see
     docs/LARGE_IMAGES.md, and vtea_core.blocked.contract for how the tile
     planner reads it).
+
+    `in_range` is the intensity range method="normalize" stretches from,
+    defaulting to the image's own. Same problem, same shape of answer: a
+    tile's own range is not the volume's, so rescaling tile by tile would
+    stretch each one differently. The blocked executor measures the range
+    in one streaming pass and passes it here, which is what makes the
+    tiled result identical to the whole-image one rather than merely
+    similar.
     """
     if method == "normalize":
-        return rescale_intensity(volume)
+        return rescale_intensity(volume, in_range=in_range)
     elif method == "equalize":
         return equalize_adapthist(volume, kernel_size=kernel_size)
     else:
