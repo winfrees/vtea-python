@@ -22,7 +22,12 @@ This is a monorepo with two independently installable packages:
 docs/PORT_PLAN.md      Full porting plan and roadmap
 docs/SAVING_AND_ARCHIVING.md
                        Design for reloadable sessions and FAIR publication
-                       bundles (planned; gate JSON is the part already built)
+                       bundles (planned; gate JSON and the feature catalog
+                       are the parts already built)
+docs/OBJECT_ASSOCIATION.md
+                       Plan for associating segmentations into cells -
+                       derived masks, probabilistic parentage, contested
+                       voxels (planned, under review)
 tests/golden/          Golden-dataset parity fixtures (Java vs. Python outputs)
 packages/vtea-core/    Headless analysis library
 packages/vtea-napari/  napari plugin GUI
