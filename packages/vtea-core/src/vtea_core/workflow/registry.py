@@ -23,7 +23,13 @@ from vtea_core.imageprocessing import (
     subtract_background,
 )
 from vtea_core.measurements import extract_measurements, extract_measurements_by_channel
-from vtea_core.objects import associate_by_identity, associate_objects
+from vtea_core.objects import (
+    associate_by_identity,
+    associate_objects,
+    build_cells,
+    cell_features,
+    merge_associations,
+)
 from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne
 from vtea_core.segmentation import (
     cellpose_segmentation,
@@ -69,6 +75,13 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
     "association": {
         "associate_by_identity": associate_by_identity,
         "associate_objects": associate_objects,
+        # Two association steps become one hierarchy: a cell spans both
+        # nucleus <- cytoplasm and cytoplasm <- lysosome.
+        "merge_associations": merge_associations,
+    },
+    "cells": {
+        "build_cells": build_cells,
+        "cell_features": cell_features,
     },
     "measurements": {
         "extract_measurements": extract_measurements,

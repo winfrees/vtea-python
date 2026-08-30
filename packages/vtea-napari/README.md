@@ -74,13 +74,21 @@ widget and run it):
   its summary — how many children were linked, how many were left
   unassigned, how many were close calls — which is the number that says
   whether the parameters were right.
+- **Cells** — a `cells` analysis category: `build_cells` follows the
+  associations out from a chosen root segmentation (its `root` is the wiring,
+  like an association's names), and `cell_features` produces one row per cell
+  from one measurement table per segmentation. Those tables cannot be one
+  flat frame — a nucleus table and a lysosome table have different rows — so
+  the builder seeds them keyed by the segmentation each step measured, the
+  way it seeds `data` for clustering. The per-cell table is in the run
+  context; plotting and gating it in the Object Explorer is the next piece.
 - **Fixed-choice parameters are dropdowns** — a step function annotating a
   parameter `Literal["many_to_one", "one_to_one"]` gets a combo box rather
   than a text field, read from the annotation text (vtea-core's hints are
   strings at runtime). A mode that can only be picked from a list cannot be
   typed wrong.
-- **Analysis categories** — measurements, association, clustering, reduction
-  and gates.
+- **Analysis categories** — measurements, association, cells, clustering,
+  reduction and gates.
   Not classification: its steps need `crops`, a `model`, `object_ids` and
   `class_labels`, none of which any protocol step produces, so every one of
   them could only ever fail with "needs context key(s) [...]". The functions

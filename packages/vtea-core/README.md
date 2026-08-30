@@ -47,7 +47,15 @@ Phases 0-4 are done. Implemented and tested:
   `assignment` (a posterior with an explicit orphan option, then either
   `many_to_one` per child or a global `one_to_one` solve that is the only way
   to honour "one and only one"; the sparse candidate graph is split into
-  independent blocks first, so the O(n^3) solve stays affordable)
+  independent blocks first, so the O(n^3) solve stays affordable).
+  `Cell`/`CellSet`/`build_cells` then compose those links into cells - a
+  chosen root segmentation identifies them, ids come from the root object so
+  they survive a re-run, cycles are refused and objects that reach no root are
+  kept as `unclaimed`; `merge_associations` joins two association steps into
+  the one hierarchy a cell spans, and `cell_features` turns one measurement
+  table per segmentation into one row per cell, columns namespaced by role
+  (`nuclei_1.mean_ch0`) and one-to-many roles aggregated (`lysosome_1.n`,
+  `lysosome_1.mean_count`)
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
   (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
   max, threshold_mean), `extract_measurements_by_channel` (one segmentation
@@ -117,9 +125,9 @@ src/vtea_core/
                     and the identity-preserving derived segmentations
                     (expand/ring/shell/subtract/restrict/ownership)
   objects/          Association model: which object belongs to which, with the
-                    posterior behind the link and how it was made, plus the
-                    scoring and assignment that infer it between two
-                    independently segmented channels
+                    posterior behind the link and how it was made, the scoring
+                    and assignment that infer it between two independently
+                    segmented channels, and the cells those links compose into
   measurements/     MeasurementStore (DuckDB) + regionprops-based extraction
   clustering/       KMeans, GMM, hierarchical, BIC-based automatic-k selection
   reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE

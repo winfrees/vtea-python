@@ -93,6 +93,7 @@ class TestAddStep:
         assert analysis == {
             "measurements",
             "association",
+            "cells",
             "clustering",
             "reduction",
             "gates",
@@ -2228,3 +2229,191 @@ class TestProbabilisticAssociation:
         dialog = EditStepDialog(Step.for_function("segmentation", "threshold_mask"))
         qtbot.addWidget(dialog)
         assert isinstance(dialog.form._field_widgets["method"], QComboBox)
+
+
+class TestCellsFromTheBuilder:
+    """Nucleus, cytoplasm, and one row per cell: the point of associating
+    segmentations at all."""
+
+    def _builder(self, qtbot):
+        import numpy as np
+
+        viewer = _model_viewer()
+        volume = np.zeros((2, 20, 80))
+        for index in range(4):
+            left = index * 20 + 2
+            # Each cell a different size and a different nuclear brightness,
+            # so a per-cell table that joined the wrong rows together would
+            # show it rather than looking plausible.
+            volume[0, 3 : 17 - index, left : left + 16] = 200.0
+            centre = left + 8
+            volume[1, 8:12, centre - 2 : centre + 2] = 100.0 * (index + 1)
+        viewer.add_image(volume, name="two channel")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.channel_axis_combo.setCurrentIndex(1)
+        return widget
+
+    def _segment(self, widget, channel, name, value=50.0):
+        from vtea_core.workflow import Step
+
+        threshold = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "threshold_mask",
+                params={"method": "fixed", "value": value},
+                channel=channel,
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(threshold)
+        labels = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "label_components",
+                available=set(widget.last_context),
+                name=name,
+                taken_names=widget.step_names(),
+            )
+        )
+        labels.input_keys["mask"] = threshold.name
+        widget.run_single_step(labels)
+        return labels
+
+    def _measure(self, widget, segmentation, name):
+        from vtea_core.workflow import Step
+
+        measure = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "measurements",
+                "extract_measurements_by_channel",
+                available=set(widget.last_context),
+                name=name,
+                taken_names=widget.step_names(),
+            )
+        )
+        measure.input_keys["labels"] = segmentation
+        widget.run_single_step(measure)
+        return measure
+
+    def _cells(self, widget):
+        from vtea_core.workflow import Step
+
+        cytoplasm = self._segment(widget, 0, "cytoplasm")
+        nuclei = self._segment(widget, 1, "nuclei")
+
+        associate = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "association",
+                "associate_objects",
+                available=set(widget.last_context),
+                params={"method": "containment", "mode": "one_to_one"},
+                taken_names=widget.step_names(),
+            )
+        )
+        associate.input_keys["child_labels"] = cytoplasm.name
+        associate.input_keys["parent_labels"] = nuclei.name
+        widget.run_single_step(associate)
+
+        cells = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "cells",
+                "build_cells",
+                available=set(widget.last_context),
+                taken_names=widget.step_names(),
+            )
+        )
+        cells.input_keys["associations"] = associate.name
+        cells.input_keys["root_labels"] = nuclei.name
+        widget.run_single_step(cells)
+        return cytoplasm, nuclei, associate, cells
+
+    def test_cells_is_an_analysis_category(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText("cells")
+        offered = {stack.function_combo.itemText(i) for i in range(stack.function_combo.count())}
+        assert {"build_cells", "cell_features"} <= offered
+
+    def test_a_cell_is_built_for_every_nucleus(self, qtbot):
+        widget = self._builder(qtbot)
+        _cytoplasm, _nuclei, _associate, cells = self._cells(widget)
+        assert len(widget.last_context[cells.name]) == 4
+
+    def test_the_root_segmentation_comes_from_the_wiring(self, qtbot):
+        """`root` is not a field to type: it is the step the root input is
+        pointed at, so it can never disagree with what was actually read."""
+        widget = self._builder(qtbot)
+        _cytoplasm, nuclei, _associate, cells = self._cells(widget)
+        assert widget.last_context[cells.name].root_segmentation == nuclei.name
+
+    def test_the_log_says_how_complete_the_cells_are(self, qtbot):
+        widget = self._builder(qtbot)
+        self._cells(widget)
+        assert "4 cells" in widget.status_label.toPlainText()
+
+    def test_the_per_cell_table_has_a_row_for_each_cell(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei, _associate, cells = self._cells(widget)
+        self._measure(widget, nuclei.name, "nucleus_measurements")
+        self._measure(widget, cytoplasm.name, "cytoplasm_measurements")
+
+        table_step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "cells",
+                "cell_features",
+                available=set(widget.last_context) | {"measurement_tables"},
+                taken_names=widget.step_names(),
+            )
+        )
+        table_step.input_keys["cells"] = cells.name
+        widget.run_single_step(table_step)
+
+        table = widget.last_context[table_step.name]
+        assert len(table) == 4
+        assert list(table["cell_id"]) == [1, 2, 3, 4]
+
+    def test_the_per_cell_table_namespaces_each_segmentation_s_features(self, qtbot):
+        """The whole point: a nucleus's brightness and its cytoplasm's are
+        two columns of one row rather than two rows of one column."""
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei, _associate, cells = self._cells(widget)
+        self._measure(widget, nuclei.name, "nucleus_measurements")
+        self._measure(widget, cytoplasm.name, "cytoplasm_measurements")
+
+        table_step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "cells",
+                "cell_features",
+                available=set(widget.last_context) | {"measurement_tables"},
+                taken_names=widget.step_names(),
+            )
+        )
+        table_step.input_keys["cells"] = cells.name
+        widget.run_single_step(table_step)
+
+        table = widget.last_context[table_step.name]
+        assert f"{nuclei.name}.mean_ch1" in table.columns
+        assert f"{cytoplasm.name}.count" in table.columns
+        # Nucleus brightness rises across the four cells and cytoplasm size
+        # falls, both by construction - so a table that paired a nucleus with
+        # somebody else's cytoplasm would break one of these.
+        brightness = list(table[f"{nuclei.name}.mean_ch1"])
+        sizes = list(table[f"{cytoplasm.name}.count"])
+        assert brightness == sorted(brightness)
+        assert sizes == sorted(sizes, reverse=True)
+
+    def test_the_measurement_tables_are_keyed_by_the_segmentation_measured(self, qtbot):
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei, _associate, _cells = self._cells(widget)
+        self._measure(widget, nuclei.name, "nucleus_measurements")
+        self._measure(widget, cytoplasm.name, "cytoplasm_measurements")
+
+        context = {}
+        widget._seed_measurement_tables(context)
+        assert set(context["measurement_tables"]) == {nuclei.name, cytoplasm.name}

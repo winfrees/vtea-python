@@ -189,28 +189,39 @@ special case.
 **Done:** DAPI nuclei and a cytoplasm segmentation produce a 1:1 assignment
 with a recorded posterior, and the unassigned ones are visible as such.
 
-### Phase 3 — Cells: hierarchy and per-cell features *(medium)*
+### Phase 3 — Cells: hierarchy and per-cell features *(medium)* — **core done**
 
 Where it becomes useful rather than merely correct.
 
-- `CellSet`: compose associations into cells. A chosen root segmentation
-  defines cell identity; children inherit through the chain, so
-  nucleus → cytoplasm → lysosome works, and so does whole-cell → nucleus.
-- Handle honestly: orphans, cells missing a part, contradictory links,
-  and cycles (refuse them).
-- **The cell feature table** — one row per cell, with columns namespaced by
-  role: `nucleus.mean_ch0`, `cytoplasm.count`, `lysosome.n`,
-  `lysosome.total_count`, `lysosome.mean_of_mean_ch2`. One-to-many children
-  are aggregated (count / sum / mean / median), which is where "how many
-  endolysosomes per cell, and how bright" finally becomes a number.
-- `FeatureCatalog` gains the role and the relationship, so the data
-  dictionary says which segmentation *and* which association a column came
-  from.
-- The Object Explorer plots and gates this table, so gating on cells rather
-  than on objects is free.
+`vtea_core.objects.cells` composes associations into cells. `build_cells`
+follows the links out from a chosen root segmentation, so
+nucleus → cytoplasm → lysosome works and so does whole-cell → nucleus —
+the same model read the other way, which is also how a multinucleate cell is
+expressed. Cell ids are the root object's id, so a gate drawn on cell 412
+still means that cell after a re-run. The root's *label image* is what names
+its objects, because a nucleus nothing was assigned to is still a cell, and
+dropping exactly the cells that lost a part biases every statistic after it.
+Cycles are refused, a root that is only ever a child is refused with an
+explanation, and objects whose chain never reaches a root are kept as
+`unclaimed` rather than silently dropped. `merge_associations` folds two
+association steps into the one hierarchy a cell spans.
 
-**Done when** the scatter plot's X/Y menus offer `nucleus.mean_ch0` against
-`lysosome.n`.
+`cell_features` builds the per-cell table from one measurement table per
+segmentation: columns namespaced by role (`nuclei_1.mean_ch0`,
+`cytoplasm_1.count`), one-to-many roles aggregated (`lysosome_1.n`,
+`lysosome_1.mean_count`, `lysosome_1.sum_mean_ch2`), and a cell missing a
+part given NaN and a count of 0 rather than being dropped.
+
+One decision worth recording: **which roles are aggregated comes from how
+the association was made, not from the data.** A `one_to_one` assignment or
+a derived part is single; anything else is aggregated. Deciding it by
+looking at whether this particular field happens to contain a cell with two
+of something would make the same protocol produce differently shaped tables
+on different fields, and they could not be pooled.
+
+**Still to do:** the Object Explorer plots the per-object table; plotting and
+gating the *cell* table is the remaining half of this phase, along with
+recording the role on each column in the `FeatureCatalog`.
 
 ### Phase 4 — Pixel-level ownership *(large)*
 

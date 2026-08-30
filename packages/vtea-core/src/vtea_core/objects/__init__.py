@@ -34,6 +34,18 @@ from vtea_core.objects.association import (
     load_associations,
     save_associations,
 )
+from vtea_core.objects.cells import (
+    AGGREGATIONS,
+    CELL_FORMAT_VERSION,
+    DEFAULT_AGGREGATIONS,
+    Cell,
+    CellSet,
+    build_cells,
+    cell_features,
+    load_cells,
+    merge_associations,
+    save_cells,
+)
 from vtea_core.objects.identity import associate_by_identity
 from vtea_core.objects.scoring import (
     BOUNDARY_DISTANCE,
@@ -48,13 +60,16 @@ from vtea_core.objects.scoring import (
 )
 
 __all__ = [
+    "AGGREGATIONS",
     "ASSIGNED",
     "ASSIGNMENT_MODES",
     "ASSOCIATION_FORMAT_VERSION",
     "BOUNDARY_DISTANCE",
+    "CELL_FORMAT_VERSION",
     "CENTROID_DISTANCE",
     "CONTAINED",
     "CONTAINMENT",
+    "DEFAULT_AGGREGATIONS",
     "DERIVED",
     "MANUAL",
     "MANY_TO_ONE",
@@ -63,6 +78,8 @@ __all__ = [
     "Association",
     "AssociationSet",
     "CandidateScores",
+    "Cell",
+    "CellSet",
     "Match",
     "ObjectRef",
     "Posterior",
@@ -70,10 +87,15 @@ __all__ = [
     "associate_by_identity",
     "associate_objects",
     "boundary_distance",
+    "build_cells",
     "centroid_distance",
+    "cell_features",
     "containment",
     "load_associations",
+    "load_cells",
+    "merge_associations",
     "posterior",
     "save_associations",
+    "save_cells",
     "score_candidates",
 ]

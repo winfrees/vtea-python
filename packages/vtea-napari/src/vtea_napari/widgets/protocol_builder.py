@@ -41,7 +41,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from vtea_core.measurements import FeatureCatalog, feature_matrix
-from vtea_core.objects import AssociationSet
+from vtea_core.objects import AssociationSet, CellSet
 from vtea_core.workflow import Pipeline, Step
 
 from vtea_napari.session import AnalysisSession, session_for
@@ -255,7 +255,14 @@ class ProtocolBuilderWidget(QWidget):
     # "needs context key(s) [...]". The functions stay in vtea_core and work
     # from a script; putting them back in this menu needs a crop-extraction
     # step and a way to label training objects, neither of which exists yet.
-    ANALYSIS_CATEGORIES = ("measurements", "association", "clustering", "reduction", "gates")
+    ANALYSIS_CATEGORIES = (
+        "measurements",
+        "association",
+        "cells",
+        "clustering",
+        "reduction",
+        "gates",
+    )
 
     def __init__(
         self,
@@ -623,6 +630,7 @@ class ProtocolBuilderWidget(QWidget):
         # features too - that feedback is the point of running these
         # individually.
         self._seed_feature_matrix(context)
+        self._seed_measurement_tables(context)
 
         try:
             result = step.run(
@@ -644,6 +652,10 @@ class ProtocolBuilderWidget(QWidget):
 
         if isinstance(result, np.ndarray) and result.ndim >= 2:
             self.show_step_result(step)
+        elif isinstance(result, CellSet):
+            # Same reason as an association: nothing to draw, and how many
+            # cells are missing a part is the number worth seeing.
+            self.status_label.setText(f"{step.result_key}: {result.summary()}")
         elif isinstance(result, AssociationSet):
             # An association has nothing to draw, and how many objects were
             # left unlinked is the whole question - "it ran" would hide the
@@ -669,6 +681,27 @@ class ProtocolBuilderWidget(QWidget):
         frame = self.results_table()
         if frame is not None:
             context["data"] = frame
+
+    def _seed_measurement_tables(self, context: dict) -> None:
+        """Put each measurement step's table into the context under the
+        segmentation it measured, which is what a per-cell table is built
+        from.
+
+        A cell's parts come from several segmentations, so measuring them is
+        several steps producing several tables - and unlike `data`, they
+        cannot be one flat frame, because they have different rows. Keying
+        them by segmentation is what lets `cell_features` line up a nucleus
+        with the cytoplasm it belongs to.
+        """
+        tables = {}
+        for step in self.all_steps():
+            if step.output_key != "measurements" or not step.name:
+                continue
+            frame = self.last_context.get(step.name)
+            role = step.input_keys.get("labels", "")
+            if isinstance(frame, pd.DataFrame) and role:
+                tables[role] = frame
+        context["measurement_tables"] = tables
 
     def available_features(self) -> list[str]:
         """Every numeric feature a clustering or reduction step could be

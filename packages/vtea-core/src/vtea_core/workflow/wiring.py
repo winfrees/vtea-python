@@ -126,6 +126,23 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
         channel_mode=CHANNEL_NONE,
         names_from=(("child_name", "child_labels"), ("parent_name", "parent_labels")),
     ),
+    ("association", "merge_associations"): StepIO(
+        ("associations", "other"), "associations", channel_mode=CHANNEL_NONE
+    ),
+    # `root` names the segmentation that identifies a cell, so it is filled
+    # from the wiring like the association names are.
+    ("cells", "build_cells"): StepIO(
+        ("associations", "root_labels"),
+        "cells",
+        channel_mode=CHANNEL_NONE,
+        names_from=(("root", "root_labels"),),
+    ),
+    # One row per cell, from one measurement table per segmentation. The
+    # tables are seeded by the caller (the builder gathers them from its
+    # measurement steps), the way `data` is for clustering.
+    ("cells", "cell_features"): StepIO(
+        ("cells", "measurement_tables"), "cell_table", channel_mode=CHANNEL_NONE
+    ),
     ("measurements", "extract_measurements"): StepIO(
         ("labels", "intensity", "spacing"), "measurements"
     ),
