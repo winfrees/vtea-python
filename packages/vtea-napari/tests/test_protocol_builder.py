@@ -1951,7 +1951,7 @@ class TestDerivedSegmentationWorkflow:
                 "association",
                 "associate_by_identity",
                 available=set(widget.last_context),
-                params={"child_name": ring.name, "parent_name": nuclei_step.name},
+                # No names passed: they come from the wiring below.
                 taken_names=widget.step_names(),
             )
         )
@@ -1976,3 +1976,255 @@ class TestDerivedSegmentationWorkflow:
         candidates = widget.input_candidates("child_labels")
         assert "label_components_1" in candidates
         assert "label_ring_1" in candidates
+
+
+class TestProbabilisticAssociation:
+    """Two channels segmented independently, and the question that follows:
+    which cytoplasm belongs to which nucleus. Unlike the derived case
+    nothing in the data answers it, so the step has to be run and its
+    posterior read."""
+
+    def _builder(self, qtbot):
+        """A field of four cells: a bright nucleus inside each of four
+        cytoplasm blocks, in two channels of one image."""
+        import numpy as np
+
+        viewer = _model_viewer()
+        volume = np.zeros((2, 20, 80))
+        for index in range(4):
+            left = index * 20 + 2
+            volume[0, 3:17, left : left + 16] = 200.0  # cytoplasm
+            centre = left + 8
+            volume[1, 8:12, centre - 2 : centre + 2] = 200.0  # nucleus
+        viewer.add_image(volume, name="two channel")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.channel_axis_combo.setCurrentIndex(1)  # axis 0
+        return widget
+
+    def _segment(self, widget, channel, name):
+        from vtea_core.workflow import Step
+
+        threshold = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "threshold_mask",
+                params={"method": "fixed", "value": 50.0},
+                channel=channel,
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(threshold)
+        labels = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "label_components",
+                available=set(widget.last_context),
+                name=name,
+                taken_names=widget.step_names(),
+            )
+        )
+        labels.input_keys["mask"] = threshold.name
+        widget.run_single_step(labels)
+        return labels
+
+    def test_the_new_steps_are_offered_in_their_menus(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+
+        widget.processing_stack.category_combo.setCurrentText("segmentation")
+        combo = widget.processing_stack.function_combo
+        assert "watershed_ownership" in {combo.itemText(i) for i in range(combo.count())}
+
+        widget.analysis_stack.category_combo.setCurrentText("association")
+        combo = widget.analysis_stack.function_combo
+        assert "associate_objects" in {combo.itemText(i) for i in range(combo.count())}
+
+    def test_it_links_each_cytoplasm_to_the_nucleus_inside_it(self, qtbot):
+        import numpy as np
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm = self._segment(widget, 0, "cytoplasm")
+        nuclei = self._segment(widget, 1, "nuclei")
+
+        associate = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "association",
+                "associate_objects",
+                available=set(widget.last_context),
+                params={"method": "containment", "mode": "one_to_one"},
+                taken_names=widget.step_names(),
+            )
+        )
+        associate.input_keys["child_labels"] = cytoplasm.name
+        associate.input_keys["parent_labels"] = nuclei.name
+        widget.run_single_step(associate)
+
+        links = widget.last_context[associate.name]
+        assert len(links) == 4
+        assert links.unassigned == []
+        # The two segmentations number their objects independently, so the
+        # pairing has to be checked against the images, not against the ids:
+        # every linked nucleus lies inside the cytoplasm it was given to.
+        cytoplasms = widget.last_context[cytoplasm.name]
+        nucleus_labels = widget.last_context[nuclei.name]
+        for link in links:
+            inside = cytoplasms[nucleus_labels == link.parent.object_id]
+            assert set(np.unique(inside)) == {link.child.object_id}
+
+    def test_the_links_are_named_for_the_steps_they_were_wired_to(self, qtbot):
+        """Without the wiring filling these in, every ObjectRef would say
+        `child#3` - the function's own default - and the record would not
+        say which segmentation an object came from."""
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm = self._segment(widget, 0, "cytoplasm")
+        nuclei = self._segment(widget, 1, "nuclei")
+
+        associate = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "association",
+                "associate_objects",
+                available=set(widget.last_context),
+                taken_names=widget.step_names(),
+            )
+        )
+        associate.input_keys["child_labels"] = cytoplasm.name
+        associate.input_keys["parent_labels"] = nuclei.name
+        widget.run_single_step(associate)
+
+        link = next(iter(widget.last_context[associate.name]))
+        assert link.child.segmentation == "cytoplasm"
+        assert link.parent.segmentation == "nuclei"
+
+    def test_rewiring_the_step_renames_the_segmentations_too(self, qtbot):
+        """The names are the wiring, so pointing the step somewhere else has
+        to move them with it."""
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm = self._segment(widget, 0, "cytoplasm")
+        nuclei = self._segment(widget, 1, "nuclei")
+
+        associate = Step.for_function(
+            "association", "associate_objects", available=set(widget.last_context)
+        )
+        associate.input_keys["child_labels"] = nuclei.name
+        associate.input_keys["parent_labels"] = cytoplasm.name
+        widget.analysis_pipeline.add_step(associate)
+        widget.run_single_step(associate)
+
+        link = next(iter(widget.last_context[associate.name]))
+        assert link.child.segmentation == "nuclei"
+        assert link.parent.segmentation == "cytoplasm"
+
+    def test_the_log_says_how_much_of_it_worked(self, qtbot):
+        """An association draws nothing, so "it ran" would hide the one
+        number that says whether the parameters were right."""
+        import numpy as np
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm = self._segment(widget, 0, "cytoplasm")
+        nuclei = self._segment(widget, 1, "nuclei")
+        # Take one nucleus away: that cytoplasm now has nothing to link to.
+        widget.last_context[nuclei.name] = np.where(
+            widget.last_context[nuclei.name] == 3, 0, widget.last_context[nuclei.name]
+        )
+
+        associate = Step.for_function(
+            "association",
+            "associate_objects",
+            available=set(widget.last_context),
+            params={"mode": "one_to_one"},
+        )
+        associate.input_keys["child_labels"] = cytoplasm.name
+        associate.input_keys["parent_labels"] = nuclei.name
+        widget.analysis_pipeline.add_step(associate)
+        widget.run_single_step(associate)
+
+        logged = widget.status_label.toPlainText()
+        assert "3 linked" in logged
+        assert "1 unassigned" in logged
+
+    def test_ownership_splits_a_shared_region_between_two_nuclei(self, qtbot):
+        """The deterministic answer to a contested area, run from the
+        builder: one cytoplasm mask, two nuclei, two territories."""
+        import numpy as np
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        volume = np.zeros((2, 16, 40))
+        volume[0, 3:13, 2:38] = 200.0  # one connected cytoplasm
+        volume[1, 7:9, 6:9] = 200.0
+        volume[1, 7:9, 31:34] = 200.0
+        viewer.add_image(volume, name="two channel")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.channel_axis_combo.setCurrentIndex(1)
+
+        cytoplasm_mask = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "threshold_mask",
+                params={"method": "fixed", "value": 50.0},
+                channel=0,
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(cytoplasm_mask)
+        nuclei = self._segment(widget, 1, "nuclei")
+
+        ownership = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "watershed_ownership",
+                available=set(widget.last_context) | {"spacing"},
+                taken_names=widget.step_names(),
+            )
+        )
+        ownership.input_keys["labels"] = nuclei.name
+        ownership.input_keys["mask"] = cytoplasm_mask.name
+        widget.run_single_step(ownership)
+
+        territories = widget.last_context[ownership.name]
+        assert set(np.unique(territories)) == {0, 1, 2}
+        assert territories[8, 7] != territories[8, 32]
+
+    def test_a_choice_of_methods_is_a_dropdown_not_a_text_field(self, qtbot):
+        """A typed "one_to_1" would fail at run time; a dropdown cannot be
+        typed wrong at all."""
+        from qtpy.QtWidgets import QComboBox
+        from vtea_core.workflow import Step
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        dialog = EditStepDialog(Step.for_function("association", "associate_objects"))
+        qtbot.addWidget(dialog)
+
+        mode = dialog.form._field_widgets["mode"]
+        assert isinstance(mode, QComboBox)
+        assert {mode.itemText(i) for i in range(mode.count())} == {"many_to_one", "one_to_one"}
+
+    def test_the_segmentation_names_are_not_offered_as_form_fields(self, qtbot):
+        """They come from the wiring, so a text field for them could only
+        disagree with the step the input is pointed at."""
+        from vtea_core.workflow import Step
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        dialog = EditStepDialog(Step.for_function("association", "associate_objects"))
+        qtbot.addWidget(dialog)
+        assert "child_name" not in dialog.form._field_widgets
+        assert "parent_name" not in dialog.form._field_widgets
+
+    def test_the_threshold_method_is_still_a_dropdown(self, qtbot):
+        """It used to be one by a hard-coded special case; it should now be
+        one because its own annotation says so."""
+        from qtpy.QtWidgets import QComboBox
+        from vtea_core.workflow import Step
+        from vtea_napari.widgets.protocol_builder import EditStepDialog
+
+        dialog = EditStepDialog(Step.for_function("segmentation", "threshold_mask"))
+        qtbot.addWidget(dialog)
+        assert isinstance(dialog.form._field_widgets["method"], QComboBox)

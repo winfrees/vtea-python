@@ -141,39 +141,53 @@ a `label_ring` added there would otherwise have silently run in voxels.
 **Done:** a protocol produces nucleus → envelope → cytosol from one DAPI
 channel, measures each, and says which envelope belongs to which nucleus.
 
-### Phase 2 — Probabilistic association between independent segmentations *(medium)*
+### Phase 2 — Probabilistic association between independent segmentations *(medium)* — **done**
 
 The heart of it.
 
-- **Candidate scoring** (`vtea_core.objects.scoring`), each returning a
-  sparse child × parent score matrix: `containment` (fraction of the child's
-  voxels inside the parent), `centroid_distance`, `boundary_distance`,
-  optionally a `size_ratio` prior.
-- **Posterior**: scores → a normalised distribution over candidate parents
-  per child, plus an explicit *orphan* probability so "this cytoplasm has no
-  nucleus" is representable rather than forced onto the nearest one.
-- **Assignment modes**, and the distinction matters:
-  - `many_to_one` — argmax per child. Right for organelles: one cytoplasm
-    holds many lysosomes.
-  - `one_to_one` — a global optimum over the whole cost matrix
-    (`scipy.optimize.linear_sum_assignment`). Right for your nucleus ↔
-    cytoplasm case, and **not** the same as argmax: per-child argmax will
-    happily hand the same nucleus to two cytoplasms, which is exactly the
-    constraint you said should hold. A global assignment is the only way to
-    honour "one and only one".
-  - A threshold below which a child is left unassigned rather than forced.
-- GUI: an "Association" category in the analysis pane, with the two
-  segmentations picked by name from the same dropdown that measurement steps
-  use.
+`vtea_core.objects.scoring` measures the evidence, each function returning a
+sparse child × parent affinity in [0, 1]: `containment` (the fraction of the
+child's voxels inside each parent, needing no distance parameter at all),
+`centroid_distance`, and `boundary_distance` — the gap between the two
+objects' nearest voxels, which is the one that matches how a person decides
+these by eye and the one that is not fooled by a parent much larger than its
+children. The `size_ratio` prior was not built; nothing needed it yet.
 
-**Done when** DAPI nuclei and a cytoskeletal cytoplasm segmentation produce
-a 1:1 assignment with a recorded posterior, and the unassigned ones are
-visible as such.
+`vtea_core.objects.assignment` turns those into an answer.
+`posterior()` normalises a child's affinities against an explicit
+`orphan_score`, so "this cytoplasm has no nucleus" is a probability rather
+than an absence — without it a cytoplasm with one distant nucleus comes out
+certain of it. `assign()` then resolves the competition: `many_to_one` per
+child for organelles, `one_to_one` globally through
+`scipy.optimize.linear_sum_assignment` for the nucleus/cytoplasm case, and a
+`min_probability` below which a child is left unassigned rather than forced.
 
-**Risk:** the Hungarian algorithm is O(n³). 5,000 objects is seconds;
-50,000 is not. Mitigate by restricting candidates to a spatial neighbourhood
-first, which makes the matrix sparse and blocks it into independent
-components — worth building in from the start rather than retrofitting.
+The anticipated O(n³) risk is handled where it arises rather than
+retrofitted: because scoring only proposes nearby parents, the candidate
+graph splits into connected blocks, and the global solve runs per block. A
+field of 50,000 objects is thousands of tiny problems instead of one
+impossible matrix, and a test pins that blocking does not change the answer.
+
+`AssociationSet` gained `unassigned` (format version 2) so a run that linked
+383 of 400 children says so; `summary()` is what the builder's log prints,
+because an association draws nothing and "it ran" would hide the one number
+that says whether the parameters were right.
+
+`segmentation.watershed_ownership` is the deterministic ownership baseline,
+brought forward as planned: it divides a region among the objects inside it,
+splitting at the region's own narrow waist rather than midway between
+markers, and keeps each owner's id so the territories associate back by
+identity.
+
+In the GUI, `child_name`/`parent_name` are no longer form fields — they are
+filled from the wiring (`StepIO.names_from`), so an `ObjectRef` names the
+step the input is actually pointed at instead of the function's `"child"`
+default, and re-pointing a step moves the names with it. `method` and `mode`
+render as dropdowns, from `Literal` annotations rather than a hard-coded
+special case.
+
+**Done:** DAPI nuclei and a cytoplasm segmentation produce a 1:1 assignment
+with a recorded posterior, and the unassigned ones are visible as such.
 
 ### Phase 3 — Cells: hierarchy and per-cell features *(medium)*
 
@@ -202,11 +216,12 @@ Where it becomes useful rather than merely correct.
 
 The genuinely hard one, and the one I would most like to keep small.
 
-- The deterministic baseline, `watershed_ownership`, ships in **Phase 2**:
+- The deterministic baseline, `watershed_ownership`, shipped in **Phase 2**:
   watershed the candidate region from the parent objects as markers. It is
-  the standard answer for "split the cytoplasm between these nuclei", it is
-  one skimage call, and for many datasets it is enough. Everything below
-  builds on having it already.
+  the standard answer for "split the cytoplasm between these nuclei", and for
+  many datasets it is enough. Everything below builds on having it already.
+  What it does not do is say a division was a close call — it answers every
+  voxel with the same confidence, which is exactly the gap this phase fills.
 - `distance_ownership`: per contested voxel, a posterior over nearby
   cells from spacing-aware distance with a tunable falloff.
 - Optionally `membrane_ownership`, where a membrane channel raises the cost

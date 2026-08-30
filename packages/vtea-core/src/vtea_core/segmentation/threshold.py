@@ -8,6 +8,8 @@ algorithm class.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 from skimage.filters import threshold_otsu
 
@@ -15,7 +17,7 @@ from skimage.filters import threshold_otsu
 def threshold_mask(
     volume: np.ndarray,
     *,
-    method: str = "fixed",
+    method: Literal["fixed", "otsu", "percentile"] = "fixed",
     value: float | None = None,
     percentile: float | None = None,
 ) -> np.ndarray:

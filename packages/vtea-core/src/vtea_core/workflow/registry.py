@@ -23,7 +23,7 @@ from vtea_core.imageprocessing import (
     subtract_background,
 )
 from vtea_core.measurements import extract_measurements, extract_measurements_by_channel
-from vtea_core.objects import associate_by_identity
+from vtea_core.objects import associate_by_identity, associate_objects
 from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne
 from vtea_core.segmentation import (
     cellpose_segmentation,
@@ -36,6 +36,7 @@ from vtea_core.segmentation import (
     restrict_labels_to,
     subtract_labels,
     threshold_mask,
+    watershed_ownership,
     watershed_split,
 )
 
@@ -61,9 +62,13 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
         "label_shell": label_shell,
         "subtract_labels": subtract_labels,
         "restrict_labels_to": restrict_labels_to,
+        # Divides a region among the objects inside it - the
+        # deterministic answer to which cell owns a contested voxel.
+        "watershed_ownership": watershed_ownership,
     },
     "association": {
         "associate_by_identity": associate_by_identity,
+        "associate_objects": associate_objects,
     },
     "measurements": {
         "extract_measurements": extract_measurements,

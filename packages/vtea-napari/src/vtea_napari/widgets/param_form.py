@@ -17,6 +17,7 @@ against its (string) annotation otherwise.
 from __future__ import annotations
 
 import inspect
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,6 +49,28 @@ class ParamSpec:
     default: Any
     required: bool
     optional: bool  # True if the parameter's default is literally None (e.g. `float | None = None`)
+    # The values a parameter accepts, where it accepts a fixed set of them.
+    # A step choosing between three scoring methods deserves a dropdown, and
+    # more to the point deserves not to fail at run time on a typo.
+    choices: tuple[str, ...] = ()
+
+
+_LITERAL = re.compile(r"Literal\[(.*)\]", re.DOTALL)
+
+
+def _literal_choices(annotation: Any) -> tuple[str, ...]:
+    """The options in a `Literal["a", "b"]` annotation.
+
+    Read out of the annotation *text* rather than by evaluating it, because
+    vtea_core's `from __future__ import annotations` leaves every hint a
+    plain string here - the same reason _infer_kind matches on substrings.
+    """
+    match = _LITERAL.search(str(annotation))
+    if not match:
+        return ()
+    return tuple(
+        option.strip().strip("\"'") for option in match.group(1).split(",") if option.strip()
+    )
 
 
 def _infer_kind(annotation: Any, default: Any) -> str:
@@ -91,6 +114,7 @@ def editable_parameters(category: str, function_name: str) -> list[ParamSpec]:
                 default=default,
                 required=not has_default,
                 optional=has_default and default is None,
+                choices=_literal_choices(param.annotation),
             )
         )
     return specs
@@ -111,6 +135,15 @@ class ParameterForm(QWidget):
             layout.addRow(spec.name, field)
 
     def _make_field(self, spec: ParamSpec) -> QWidget:
+        # A parameter with a fixed set of values is a choice, whatever its
+        # type: offering it as free text invites "one_to_1" and a failure at
+        # run time rather than at edit time.
+        if spec.choices:
+            widget = QComboBox()
+            widget.addItems(list(spec.choices))
+            if spec.default is not None:
+                widget.setCurrentText(str(spec.default))
+            return widget
         # Optional numeric/bool params (default is literally None) always get
         # a text field, empty by default - a QSpinBox/QCheckBox has no way to
         # represent "unset" distinctly from 0/False.
@@ -132,11 +165,6 @@ class ParameterForm(QWidget):
             widget.setRange(-1e12, 1e12)
             widget.setDecimals(6)
             widget.setValue(float(spec.default) if spec.default is not None else 0.0)
-            return widget
-        if spec.name == "method" and spec.default in ("fixed", "otsu", "percentile"):
-            widget = QComboBox()
-            widget.addItems(["fixed", "otsu", "percentile"])
-            widget.setCurrentText(str(spec.default))
             return widget
         widget = QLineEdit()
         if spec.default is not None:

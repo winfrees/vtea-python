@@ -58,14 +58,27 @@ widget and run it):
   chosen features.
 - **Derived segmentations and association** — the segmentation menu carries
   the morphology-only steps (`label_ring` for cytosol, `label_shell` for a
-  nuclear envelope, `expand_labels`, `subtract_labels`,
-  `restrict_labels_to`), and the analysis pane carries an `association`
-  category whose `associate_by_identity` step records which derived object
-  belongs to which parent. Because those steps read a label image rather than
+  nuclear envelope, `expand_labels`, `subtract_labels`, `restrict_labels_to`,
+  and `watershed_ownership` to divide a shared region between the cells in
+  it), and the analysis pane carries an `association` category:
+  `associate_by_identity` where the child was built from the parent, and
+  `associate_objects` where two channels were segmented independently and the
+  link has to be inferred. Because those steps read a label image rather than
   an intensity image, their cards say "no channel" and their Edit dialog
-  offers none; their `labels`/`other`/`child_labels`/`parent_labels` inputs
+  offers none; their `labels`/`mask`/`child_labels`/`parent_labels` inputs
   are pickable by segmentation *name*, so nucleus → ring → association is
-  wired by choosing steps from a menu.
+  wired by choosing steps from a menu. An association step's segmentation
+  names are **not** form fields: they come from the wiring, so a link records
+  the step its input is actually pointed at, and re-pointing the step moves
+  the names with it. An association draws nothing, so what the log shows is
+  its summary — how many children were linked, how many were left
+  unassigned, how many were close calls — which is the number that says
+  whether the parameters were right.
+- **Fixed-choice parameters are dropdowns** — a step function annotating a
+  parameter `Literal["many_to_one", "one_to_one"]` gets a combo box rather
+  than a text field, read from the annotation text (vtea-core's hints are
+  strings at runtime). A mode that can only be picked from a list cannot be
+  typed wrong.
 - **Analysis categories** — measurements, association, clustering, reduction
   and gates.
   Not classification: its steps need `crops`, a `model`, `object_ids` and

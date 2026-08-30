@@ -57,12 +57,19 @@ class StepIO:
     into the (n_objects, n_features) matrix the function expects, using the
     step's own `features` selection - which is how a clustering step is told
     to use six of the forty measured features and no others.
+    `names_from`: parameters whose value is the *name of another input's
+    source*, mapped parameter -> input. An association step records which
+    segmentation each object came from, and that name is the wiring - the
+    step the input is pointed at - not something for the user to retype and
+    get wrong. Step.run fills these in, and they are excluded from the Edit
+    form for the same reason data inputs are.
     """
 
     inputs: tuple[str, ...]
     output: str
     channel_mode: str = CHANNEL_SLICE
     feature_input: str | None = None
+    names_from: tuple[tuple[str, str], ...] = ()
 
     @property
     def channel_aware(self) -> bool:
@@ -100,8 +107,24 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("segmentation", "restrict_labels_to"): StepIO(
         ("labels", "mask"), "labels", channel_mode=CHANNEL_NONE
     ),
+    # Divides a region among the markers inside it, keeping their ids, so the
+    # territories associate back to their owners by identity.
+    ("segmentation", "watershed_ownership"): StepIO(
+        ("labels", "mask", "spacing"), "labels", channel_mode=CHANNEL_NONE
+    ),
+    # `child_name`/`parent_name` are filled from the wiring: the segmentation
+    # an object came from is the step the input points at.
     ("association", "associate_by_identity"): StepIO(
-        ("child_labels", "parent_labels"), "associations", channel_mode=CHANNEL_NONE
+        ("child_labels", "parent_labels"),
+        "associations",
+        channel_mode=CHANNEL_NONE,
+        names_from=(("child_name", "child_labels"), ("parent_name", "parent_labels")),
+    ),
+    ("association", "associate_objects"): StepIO(
+        ("child_labels", "parent_labels", "spacing"),
+        "associations",
+        channel_mode=CHANNEL_NONE,
+        names_from=(("child_name", "child_labels"), ("parent_name", "parent_labels")),
     ),
     ("measurements", "extract_measurements"): StepIO(
         ("labels", "intensity", "spacing"), "measurements"
@@ -155,9 +178,12 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
 
 # Kept as a name-only view for callers that just need "which parameters are
 # data, not form fields" - the napari Edit-step form uses this to decide
-# what to render.
+# what to render. The `names_from` parameters join them: they are derived
+# from the wiring too, so putting them on the form would invite a typed
+# segmentation name that disagrees with the step the input is pointed at.
 DATA_PARAMETERS: dict[tuple[str, str], set[str]] = {
-    key: set(step_io.inputs) for key, step_io in STEP_IO.items()
+    key: set(step_io.inputs) | {parameter for parameter, _input in step_io.names_from}
+    for key, step_io in STEP_IO.items()
 }
 
 

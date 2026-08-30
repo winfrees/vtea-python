@@ -21,6 +21,7 @@ from vtea_core.segmentation.derived import (
     label_shell,
     restrict_labels_to,
     subtract_labels,
+    watershed_ownership,
 )
 from vtea_core.segmentation.labeling import filter_by_size, label_components, watershed_split
 from vtea_core.segmentation.manual import import_labels, labels_from_points
@@ -38,5 +39,6 @@ __all__ = [
     "restrict_labels_to",
     "subtract_labels",
     "threshold_mask",
+    "watershed_ownership",
     "watershed_split",
 ]

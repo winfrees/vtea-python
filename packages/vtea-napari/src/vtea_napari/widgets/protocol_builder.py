@@ -41,6 +41,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from vtea_core.measurements import FeatureCatalog, feature_matrix
+from vtea_core.objects import AssociationSet
 from vtea_core.workflow import Pipeline, Step
 
 from vtea_napari.session import AnalysisSession, session_for
@@ -643,6 +644,11 @@ class ProtocolBuilderWidget(QWidget):
 
         if isinstance(result, np.ndarray) and result.ndim >= 2:
             self.show_step_result(step)
+        elif isinstance(result, AssociationSet):
+            # An association has nothing to draw, and how many objects were
+            # left unlinked is the whole question - "it ran" would hide the
+            # one number that says whether the parameters were right.
+            self.status_label.setText(f"{step.result_key}: {result.summary()}")
         else:
             self.status_label.setText(f"Ran {step.function_name} -> '{step.result_key}'")
 

@@ -206,8 +206,29 @@ class Step:
                 arg: self._select_channel(context[key], channel_axis, full_ndim)
                 for arg, key in self.input_keys.items()
             }
+        self._fill_source_names(kwargs)
         kwargs.update(self.params)
         return self.function(**kwargs)
+
+    def _fill_source_names(self, kwargs: dict[str, Any]) -> None:
+        """Pass the *name* of an input's source to the parameters that want
+        it - see vtea_core.workflow.wiring.StepIO.names_from.
+
+        An association records which segmentation each object came from, and
+        that name has to be the one the step is actually reading. Deriving it
+        from `input_keys` is what stops an ObjectRef saying `child#7` (the
+        function's own default) or naming a segmentation the step is not
+        pointed at.
+        """
+        from vtea_core.workflow.wiring import STEP_IO
+
+        spec = STEP_IO.get((self.category, self.function_name))
+        if spec is None:
+            return
+        for parameter, argument in spec.names_from:
+            source = self.input_keys.get(argument)
+            if source:
+                kwargs[parameter] = source
 
     def _build_feature_matrix(self, kwargs: dict[str, Any]) -> None:
         """Turn a feature *table* wired to this step's feature input into the

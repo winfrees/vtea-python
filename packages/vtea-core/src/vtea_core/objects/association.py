@@ -33,7 +33,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-ASSOCIATION_FORMAT_VERSION = 1
+# 2 added `unassigned`: children that were considered and deliberately left
+# without a parent. Version 1 files still load - the check below only refuses
+# a file newer than the reader.
+ASSOCIATION_FORMAT_VERSION = 2
 
 # How a link was arrived at, as opposed to by which algorithm.
 #
@@ -138,13 +141,25 @@ class AssociationSet:
     discovered, with the runners-up kept on the link itself. A parent may
     have any number of children, which is what makes "the lysosomes of this
     cell" a question with an answer.
+
+    `unassigned` holds the children that were considered and left without a
+    parent. Keeping them is what makes the set a *result* rather than a list
+    of successes: "17 of 400 cytoplasms had no nucleus" is a finding, and the
+    difference between that and a set of 383 links is invisible without it.
     """
 
-    def __init__(self, associations: list[Association] | None = None):
+    def __init__(
+        self,
+        associations: list[Association] | None = None,
+        unassigned: list[ObjectRef] | None = None,
+    ):
         self._by_child: dict[ObjectRef, Association] = {}
         self._by_parent: dict[ObjectRef, list[Association]] = defaultdict(list)
+        self._unassigned: list[ObjectRef] = []
         for association in associations or []:
             self.add(association)
+        for child in unassigned or []:
+            self.add_unassigned(child)
 
     def add(self, association: Association) -> Association:
         """Add a link, replacing any the child already had. Re-running an
@@ -155,7 +170,19 @@ class AssociationSet:
             self._by_parent[existing.parent].remove(existing)
         self._by_child[association.child] = association
         self._by_parent[association.parent].append(association)
+        if association.child in self._unassigned:
+            self._unassigned.remove(association.child)
         return association
+
+    def add_unassigned(self, child: ObjectRef) -> None:
+        """Record that `child` was considered and given no parent."""
+        self.remove_child(child)
+        if child not in self._unassigned:
+            self._unassigned.append(child)
+
+    @property
+    def unassigned(self) -> list[ObjectRef]:
+        return sorted(self._unassigned)
 
     def remove_child(self, child: ObjectRef) -> None:
         association = self._by_child.pop(child, None)
@@ -181,6 +208,9 @@ class AssociationSet:
     def segmentations(self) -> tuple[set[str], set[str]]:
         """(child segmentations, parent segmentations) present in this set."""
         children = {ref.segmentation for ref in self._by_child}
+        # An unassigned child came from the same segmentation as the rest, and
+        # a run where nothing linked should still say which two it was about.
+        children |= {ref.segmentation for ref in self._unassigned}
         parents = {link.parent.segmentation for link in self._by_child.values()}
         return children, parents
 
@@ -192,6 +222,23 @@ class AssociationSet:
             (link for link in self if link.margin < threshold),
             key=lambda link: link.margin,
         )
+
+    def summary(self, threshold: float = 0.9) -> str:
+        """One line for a log or a report: how much of this worked.
+
+        The counts matter more than the links: an association step that
+        assigned 400 of 400 children and one that assigned 210 look identical
+        in a viewer, and only the second one means the parameters are wrong.
+        """
+        children, parents = self.segmentations()
+        contested = len(self.uncertain(threshold))
+        parts = [f"{len(self)} linked"]
+        if self._unassigned:
+            parts.append(f"{len(self._unassigned)} unassigned")
+        if contested:
+            parts.append(f"{contested} contested (margin < {threshold:g})")
+        pair = f"{'/'.join(sorted(children)) or '?'} -> {'/'.join(sorted(parents)) or '?'}"
+        return f"{pair}: " + ", ".join(parts)
 
     def __iter__(self):
         return iter(self._by_child.values())
@@ -208,6 +255,7 @@ class AssociationSet:
         return {
             "vtea_association_version": ASSOCIATION_FORMAT_VERSION,
             "associations": [link.to_dict() for link in self],
+            "unassigned": [ref.to_dict() for ref in self.unassigned],
         }
 
     @classmethod
@@ -218,7 +266,10 @@ class AssociationSet:
                 f"association file version {version} is newer than this VTEA understands "
                 f"({ASSOCIATION_FORMAT_VERSION}); upgrade vtea-core to read it"
             )
-        return cls([Association.from_dict(entry) for entry in data.get("associations", [])])
+        return cls(
+            [Association.from_dict(entry) for entry in data.get("associations", [])],
+            [ObjectRef.from_dict(entry) for entry in data.get("unassigned", [])],
+        )
 
 
 def save_associations(associations: AssociationSet, path: str | Path) -> Path:

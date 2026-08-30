@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy import ndimage as ndi
-from skimage.segmentation import find_boundaries
+from skimage.segmentation import find_boundaries, watershed
 
 from vtea_core.data.spacing import Spacing
 
@@ -115,6 +115,43 @@ def label_shell(
         rim = (labels != 0) & (to_boundary <= inward)
         shell = np.where(rim, labels, shell)
     return shell
+
+
+def watershed_ownership(
+    labels: np.ndarray, mask: np.ndarray, *, spacing: Spacing | None = None
+) -> np.ndarray:
+    """Divide a region among the objects inside it, one owner per voxel.
+
+    The standard answer to "split this cytoplasm between those two nuclei",
+    and the deterministic baseline for the whole question of contested area:
+    every voxel of `mask` goes to exactly one object of `labels`, so a
+    territory carries its owner's id and `associate_by_identity` links the
+    two exactly.
+
+    The division follows the region's own shape - the flood is over the
+    negated distance transform, so territories meet at the narrowest waist
+    between them rather than halfway along a straight line, which is what
+    makes it a reasonable answer for touching cells. That distance is
+    physical wherever the voxel size is known, so a thin neck in z is not
+    mistaken for a wide one.
+
+    `mask` may be a boolean mask or another label image; only whether each
+    voxel belongs to the region is used. A marker lying outside the region
+    gets no territory, and a region with no marker in it is left as
+    background - both are results worth seeing rather than errors.
+
+    An answer without a posterior: it says which cell owns a voxel and never
+    that it was a close call. The probabilistic version, and the confidence
+    map that goes with it, are Phase 4 in docs/OBJECT_ASSOCIATION.md.
+    """
+    labels = _require_labels(labels)
+    region = np.asarray(mask) != 0
+    if labels.shape != region.shape:
+        raise ValueError(f"shapes differ: {labels.shape} != {region.shape}")
+
+    elevation = -ndi.distance_transform_edt(region, sampling=_sampling(labels, spacing))
+    markers = np.where(region, labels, 0)
+    return watershed(elevation, markers=markers, mask=region).astype(labels.dtype, copy=False)
 
 
 def subtract_labels(labels: np.ndarray, other: np.ndarray) -> np.ndarray:

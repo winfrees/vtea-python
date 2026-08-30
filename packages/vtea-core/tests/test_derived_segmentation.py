@@ -11,12 +11,14 @@ specimen.
 import numpy as np
 import pytest
 from vtea_core.data import Spacing
+from vtea_core.objects import associate_by_identity
 from vtea_core.segmentation import (
     expand_labels,
     label_ring,
     label_shell,
     restrict_labels_to,
     subtract_labels,
+    watershed_ownership,
 )
 
 ISOTROPIC = Spacing((1.0, 1.0, 1.0), source="user")
@@ -226,3 +228,115 @@ class TestSubtractAndRestrict:
             subtract_labels(np.zeros((4, 4), dtype=np.int32), np.zeros((5, 5), dtype=np.int32))
         with pytest.raises(ValueError, match="shapes differ"):
             restrict_labels_to(np.zeros((4, 4), dtype=np.int32), np.zeros((5, 5), dtype=bool))
+
+
+class TestWatershedOwnership:
+    """Dividing one region among the objects inside it - the deterministic
+    answer to which cell owns a contested voxel."""
+
+    @staticmethod
+    def two_nuclei_in_one_blob():
+        region = np.zeros((12, 30), dtype=bool)
+        region[2:10, 2:28] = True
+        nuclei = np.zeros((12, 30), dtype=np.int32)
+        nuclei[5:7, 6:8] = 1
+        nuclei[5:7, 22:24] = 2
+        return nuclei, region
+
+    def test_every_voxel_of_the_region_gets_an_owner(self):
+        nuclei, region = self.two_nuclei_in_one_blob()
+        owned = watershed_ownership(nuclei, region)
+        assert (owned[region] != 0).all()
+
+    def test_nothing_outside_the_region_is_claimed(self):
+        nuclei, region = self.two_nuclei_in_one_blob()
+        assert (watershed_ownership(nuclei, region)[~region] == 0).all()
+
+    def test_each_territory_carries_its_owner_s_id(self):
+        """Which is what lets associate_by_identity link the two exactly."""
+        nuclei, region = self.two_nuclei_in_one_blob()
+        assert set(np.unique(watershed_ownership(nuclei, region))) == {0, 1, 2}
+
+    def test_a_marker_keeps_the_area_around_itself(self):
+        nuclei, region = self.two_nuclei_in_one_blob()
+        owned = watershed_ownership(nuclei, region)
+        assert owned[6, 7] == 1
+        assert owned[6, 23] == 2
+
+    def test_the_two_territories_are_disjoint(self):
+        nuclei, region = self.two_nuclei_in_one_blob()
+        owned = watershed_ownership(nuclei, region)
+        assert (owned[:, :10] != 2).all()
+        assert (owned[:, 20:] != 1).all()
+
+    def test_it_splits_at_the_waist_rather_than_between_the_markers(self):
+        """The reason to watershed the region's own shape: a dumbbell parts
+        at its neck even when the neck is nowhere near halfway between the
+        markers. Splitting on proximity alone would cut the large lobe and
+        hand a third of it to the cell in the small one."""
+        region = np.zeros((14, 30), dtype=bool)
+        region[4:10, 2:8] = True    # a small lobe
+        region[6:8, 8:10] = True    # the neck, far off-centre
+        region[2:12, 10:28] = True  # a large lobe
+        nuclei = np.zeros((14, 30), dtype=np.int32)
+        nuclei[6:8, 4:6] = 1    # in the small lobe
+        nuclei[6:8, 24:26] = 2  # in the large one
+
+        owned = watershed_ownership(nuclei, region)
+        large_lobe = owned[2:12, 10:28][region[2:12, 10:28]]
+        assert set(np.unique(large_lobe)) == {2}
+        # x=12 is 7 voxels from marker 1 and 13 from marker 2, so proximity
+        # to a marker would have given it to the wrong cell.
+        assert owned[7, 12] == 2
+
+    def test_a_region_with_no_marker_is_left_as_background(self):
+        """Cytoplasm with no nucleus in it is a finding, not something to
+        hand to the nearest cell in the next blob."""
+        nuclei, region = self.two_nuclei_in_one_blob()
+        region[11, 29] = True  # a separate speck, no marker
+        assert watershed_ownership(nuclei, region)[11, 29] == 0
+
+    def test_a_marker_outside_the_region_gets_no_territory(self):
+        nuclei, region = self.two_nuclei_in_one_blob()
+        nuclei[0, 0] = 3
+        assert 3 not in np.unique(watershed_ownership(nuclei, region))
+
+    def test_a_label_image_may_stand_in_for_the_mask(self):
+        """Only membership matters, so the cytoplasm segmentation itself is
+        an acceptable region."""
+        nuclei, region = self.two_nuclei_in_one_blob()
+        as_labels = np.where(region, 7, 0).astype(np.int32)
+        np.testing.assert_array_equal(
+            watershed_ownership(nuclei, as_labels), watershed_ownership(nuclei, region)
+        )
+
+    def test_an_anisotropic_spacing_still_divides_the_whole_region(self):
+        """A smoke test rather than a claim about where the boundary lands:
+        what must not happen is a stack whose z-step confuses the distance
+        transform into leaving part of the region unowned."""
+        region = np.zeros((7, 5, 20), dtype=bool)
+        region[1:6, 1:4, 1:19] = True
+        nuclei = np.zeros((7, 5, 20), dtype=np.int32)
+        nuclei[3, 2, 3] = 1
+        nuclei[3, 2, 16] = 2
+
+        isotropic = watershed_ownership(nuclei, region, spacing=ISOTROPIC)
+        anisotropic = watershed_ownership(nuclei, region, spacing=ANISOTROPIC)
+        assert (isotropic[region] != 0).all()
+        assert (anisotropic[region] != 0).all()
+        assert set(np.unique(anisotropic)) == {0, 1, 2}
+
+    def test_mismatched_shapes_are_refused(self):
+        with pytest.raises(ValueError, match="shapes differ"):
+            watershed_ownership(np.zeros((4, 4), dtype=np.int32), np.zeros((5, 5), dtype=bool))
+
+    def test_the_territories_associate_back_to_their_owners(self):
+        """The pairing this exists for: split the region, then say which
+        cell each piece belongs to."""
+        nuclei, region = self.two_nuclei_in_one_blob()
+        territories = watershed_ownership(nuclei, region)
+        links = associate_by_identity(
+            territories, nuclei, child_name="cytoplasm_1", parent_name="nuclei_1"
+        )
+        assert len(links) == 2
+        assert all(link.is_certain for link in links)

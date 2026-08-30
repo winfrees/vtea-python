@@ -28,16 +28,26 @@ Phases 0-4 are done. Implemented and tested:
   one label image out of another by morphology rather than by intensity -
   `expand_labels`, `label_ring` (a cytosol band around a nucleus),
   `label_shell` (a nuclear envelope straddling the boundary),
-  `subtract_labels`, `restrict_labels_to`. Each preserves label identity, and
-  each takes a `Spacing`, so a 2 µm band is 2 µm in the specimen rather than
-  2 voxels in an anisotropic stack
+  `subtract_labels`, `restrict_labels_to`, and `watershed_ownership` (divide
+  one region among the objects inside it, splitting at its own narrow waist).
+  Each preserves label identity, and each takes a `Spacing`, so a 2 µm band is
+  2 µm in the specimen rather than 2 voxels in an anisotropic stack
 - **objects** (new): `ObjectRef`/`Association`/`AssociationSet` - which object
   of one segmentation belongs to which object of another, keeping the whole
   posterior (`alternatives`) rather than only the winner, along with how the
   link was made (`relationship`, `method`, `params`);
-  `save_associations`/`load_associations` as versioned JSON.
+  `save_associations`/`load_associations` as versioned JSON, and `unassigned`
+  for the children deliberately left without a parent - "17 of 400 cytoplasms
+  had no nucleus" is a finding, and invisible without it.
   `associate_by_identity` covers the exact case: a derived segmentation keeps
-  its parent's ids, so every link is certain by construction
+  its parent's ids, so every link is certain by construction.
+  `associate_objects` covers the inferred one - two channels segmented
+  independently - through `scoring` (`containment`, `centroid_distance`,
+  `boundary_distance`, each a sparse child x parent affinity) and
+  `assignment` (a posterior with an explicit orphan option, then either
+  `many_to_one` per child or a global `one_to_one` solve that is the only way
+  to honour "one and only one"; the sparse candidate graph is split into
+  independent blocks first, so the O(n^3) solve stays affordable)
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
   (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
   max, threshold_mean), `extract_measurements_by_channel` (one segmentation
@@ -105,9 +115,11 @@ src/vtea_core/
   segmentation/     threshold -> label -> (optional watershed split) -> size
                     filter, plus cellpose_segmentation (deep-learning-based)
                     and the identity-preserving derived segmentations
-                    (expand/ring/shell/subtract/restrict)
+                    (expand/ring/shell/subtract/restrict/ownership)
   objects/          Association model: which object belongs to which, with the
-                    posterior behind the link and how it was made
+                    posterior behind the link and how it was made, plus the
+                    scoring and assignment that infer it between two
+                    independently segmented channels
   measurements/     MeasurementStore (DuckDB) + regionprops-based extraction
   clustering/       KMeans, GMM, hierarchical, BIC-based automatic-k selection
   reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE
