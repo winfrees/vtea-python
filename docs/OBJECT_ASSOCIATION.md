@@ -5,7 +5,9 @@ cell: a nucleus with its envelope and cytosol, a cytoplasm assigned to one
 nucleus, organelles belonging to that cytoplasm — and an honest account of
 what happens where the evidence runs out.
 
-Nothing here is built. This document is for review before any of it is.
+Phases 0 to 3 are built; each phase below records what it actually turned
+out to be, including where the plan was wrong. Phases 4 and 5 are still
+a plan.
 
 ## What is actually being asked
 
