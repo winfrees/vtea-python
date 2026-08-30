@@ -32,7 +32,17 @@ dependencies = [
 [project.optional-dependencies]
 bioformats = ["bioio>=1.0"]
 deeplearning = ["torch>=2.1", "cellpose>=3.0"]
-dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.16,<0.17", "mypy"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "ruff>=0.16,<0.17",
+    "mypy",
+    # Reads back what vtea_core.io.ome_zarr writes, in the interoperability
+    # test. Pinned below 0.11 because later releases require zarr 3 and
+    # vtea-core is on zarr 2 - see docs/LARGE_IMAGES.md. Test-only: nothing
+    # in the package imports it.
+    "ome-zarr>=0.9,<0.11",
+]
 
 # Entry-point groups mirror the SciJava extension points from the Java
 # vtea.services classes (Segmentation, Measurements, GateMath, ...).

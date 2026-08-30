@@ -80,6 +80,7 @@ everything else exists:
 | Changing chunking without an OOM | `rechunker` | a hand-rolled shuffle |
 | Lazy display, pyramid rendering, ROI | napari `multiscale`, `corner_pixels` | a custom viewer path |
 | Reading vendor formats lazily | `bioio` (already an extra) | — |
+| Reading back what we wrote, in a test | `ome-zarr-py` | trusting our own writer |
 | Tables larger than RAM | DuckDB over Parquet (already a dep) | a custom spill-to-disk table |
 | Streaming estimators | `MiniBatchKMeans`, `IncrementalPCA` | reimplementation |
 | 2D-to-3D mask linking in Cellpose | cellpose's own `stitch_threshold` | our own for the z axis |
@@ -285,7 +286,7 @@ Six modes. The whole protocol classifies into them.
 
 | Step | Notes |
 | --- | --- |
-| `read_tiff` | Add a lazy path: `TiffFile.aszarr()` → `da.from_zarr`. Keep the eager one for small files |
+| `read_tiff` | Keep the eager path for files that fit. `open_tiff` (new) maps the file a plane at a time, via Dask over `tifffile`'s pages |
 | `read_zarr` | Already lazy. Gains multiscale awareness |
 | OME-Zarr read/write | New, via `ome-zarr-py`: the working format, with a pyramid |
 | Ingest | New: convert anything readable into a chunked OME-Zarr with a pyramid, once, before analysis. This is the honest answer to "my data is a 40 GB TIFF" |
@@ -581,10 +582,30 @@ Being "ready" has to mean concrete rules, not an intention:
    128–256 voxels per axis, not 1024³ blocks that a shard could never
    usefully subdivide. This costs nothing now and is the difference between
    "enable sharding" and "rewrite every store" later.
+6. **Chunk keys are written nested** (`0/1/2`, not zarr 2's default
+   `0.1.2`). NGFF asks for it, Zarr 3 does it as standard, and a store
+   written the other way is worse than broken: it opens, reports the right
+   shape, and hands back fill values, because the chunk files are not where
+   the reader looks. This was found by the interoperability test below and
+   not by reading the spec, which is the argument for having the test.
 
 Revisit when `ome-zarr-py` and `napari-ome-zarr` both read v3 by default, or
 when chunk count becomes a measured bottleneck on real data — whichever
 comes first.
+
+Two things L1 turned up that are worth recording against that decision,
+because both are the ecosystem moving:
+
+- **`ome-zarr-py` 0.11 and later require Zarr 3.** The interoperability
+  test therefore pins `ome-zarr<0.11`, test-only. This is a real cost of
+  the Zarr 2 choice and the clearest signal so far of when to revisit it.
+- **`tifffile`'s `aszarr` store now requires Zarr 3 too**, which took the
+  originally planned lazy-TIFF path off the table. What replaced it is
+  better: `open_tiff` builds a Dask array from the file's own pages, one
+  plane per chunk, which keeps zarr out of the TIFF path entirely. It also
+  makes the case for `ingest` sharper — a TIFF's finest unit is a plane, so
+  pulling a small cube out of a large stack still costs a full plane per
+  slice until the data is converted.
 
 ## Axes: five in the store, four in memory
 

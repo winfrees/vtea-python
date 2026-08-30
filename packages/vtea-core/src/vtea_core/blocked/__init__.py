@@ -51,6 +51,7 @@ from vtea_core.blocked.plan import (
     plan_tiles,
     step_costs,
 )
+from vtea_core.blocked.store import ZarrScratch
 
 __all__ = [
     "ACCUMULATE",
@@ -78,6 +79,7 @@ __all__ = [
     "StepCost",
     "Tile",
     "TilePlan",
+    "ZarrScratch",
     "available_bytes",
     "cgroup_limit_bytes",
     "detect_memory_budget",
