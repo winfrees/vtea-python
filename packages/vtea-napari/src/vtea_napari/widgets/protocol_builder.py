@@ -47,6 +47,7 @@ from vtea_napari.session import AnalysisSession, session_for
 from vtea_napari.widgets.feature_select import FeatureSelectWidget
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.param_form import ParameterForm
+from vtea_napari.widgets.spacing_control import SpacingControl
 from vtea_napari.widgets.step_stack import StepStackWidget
 
 ALL_CHANNELS = "All channels"
@@ -284,6 +285,11 @@ class ProtocolBuilderWidget(QWidget):
 
         root = QVBoxLayout(self)
 
+        # Built before anything that might report into it - reading a voxel
+        # size off the first layer happens during construction, and a
+        # message with nowhere to go would take the whole widget down.
+        self.status_label = LogView()
+
         # Source, then how to read its axes, then run - left to right in the
         # order you have to decide them.
         top_row = QHBoxLayout()
@@ -307,6 +313,13 @@ class ProtocolBuilderWidget(QWidget):
         )
         self.z_axis_combo.currentIndexChanged.connect(self._on_z_axis_changed)
         top_row.addWidget(self.z_axis_combo)
+
+        # The physical voxel size, read off the image where the file
+        # recorded one. Sits with the axis pickers because it is the same
+        # kind of fact: how to read the array as a specimen.
+        self.spacing_control = SpacingControl()
+        self.spacing_control.spacing_changed.connect(self._on_spacing_changed)
+        top_row.addWidget(self.spacing_control)
 
         top_row.addStretch()
 
@@ -351,7 +364,7 @@ class ProtocolBuilderWidget(QWidget):
             # Analysis steps consume what processing produced, plus the two
             # things the widget itself supplies: how to read the channel axis,
             # and the measurement table flattened into a feature matrix.
-            seed_keys={"volume", "intensity", "labels", "mask", "channel_axis", "data"},
+            seed_keys={"volume", "intensity", "labels", "mask", "channel_axis", "spacing", "data"},
             n_channels_provider=lambda: self.n_channels(),
             results_provider=lambda: self.last_context,
             default_channel_provider=lambda: self.default_channel(),
@@ -373,7 +386,6 @@ class ProtocolBuilderWidget(QWidget):
             self.splitter.setStretchFactor(index, 1)
         root.addWidget(self.splitter, 1)
 
-        self.status_label = LogView()
         root.addWidget(self.status_label)
 
         self._apply_compact_style(root)
@@ -451,12 +463,20 @@ class ProtocolBuilderWidget(QWidget):
             self.layer_combo.blockSignals(False)
         self._refresh_channel_axis_choices()
         self._refresh_z_axis_choices()
+        if hasattr(self, "spacing_control"):
+            self.spacing_control.read_from_layer(self.source_layer())
 
     def _on_source_layer_changed(self, _index: int) -> None:
         # A different image can have a different shape, so the axis choices
         # have to be rebuilt against it.
         self._refresh_channel_axis_choices()
         self._refresh_z_axis_choices()
+        self.spacing_control.read_from_layer(self.source_layer())
+
+    def _on_spacing_changed(self, spacing) -> None:
+        self.session.set_spacing(spacing)
+        if spacing is not None and spacing.is_known:
+            self.status_label.setText(f"Voxel size: {spacing.describe()}")
 
     def all_steps(self) -> list[Step]:
         return list(self.pipeline.steps) + list(self.analysis_pipeline.steps)
@@ -548,11 +568,15 @@ class ProtocolBuilderWidget(QWidget):
         image = self.active_image()
         if image is None:
             return {}
-        return {
+        context = {
             "volume": image,
             "intensity": image,
             "channel_axis": self.pipeline.channel_axis,
         }
+        spacing = self.spacing_control.spacing()
+        if spacing is not None:
+            context["spacing"] = spacing
+        return context
 
     def run_processing(self) -> dict:
         """Run only the processing pipeline. Analysis steps are run
@@ -848,6 +872,7 @@ class ProtocolBuilderWidget(QWidget):
             channel_axis=self.pipeline.channel_axis,
             z_axis=self.z_axis,
         )
+        self.session.set_spacing(self.spacing_control.spacing())
         self.session.set_context(self.last_context, self.results_table())
 
     # -- channel axis -----------------------------------------------------

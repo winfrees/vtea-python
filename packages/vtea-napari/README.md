@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (339 tests, including real
+Phase 4 done. Implemented and tested (361 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -92,6 +92,15 @@ widget and run it):
   catalog lives on the shared session, renders as the publication data
   dictionary, and is dropped and rebuilt on a re-measurement so a stale entry
   can't outlive the column it described.
+- **`SpacingControl`** — the physical voxel size, in the builder's top row
+  beside the axis pickers because it is the same kind of fact: how to read
+  the array as a specimen. Read from the image where the file recorded one,
+  and asked for where it didn't — napari fills `layer.scale` with ones both
+  when a file says "one unit per voxel" and when it says nothing, so
+  "unknown" is a state the user has to be able to resolve rather than a
+  value to be believed. Everything distance-dependent that follows (dilation
+  thicknesses, object-to-object distances) needs it, and gets it wrong in a
+  plausible-looking way without it.
 - **`ParameterForm`** — builds the Edit-step form from a registered
   function's actual signature, split into data arguments (arrays/dataframes,
   excluded - resolved from the pipeline's run context) and editable

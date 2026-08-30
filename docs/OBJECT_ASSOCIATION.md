@@ -102,9 +102,16 @@ re-runnable on its own.
 
 ## Phases
 
-### Phase 0 — Voxel spacing *(small)*
+### Phase 0 — Voxel spacing *(small)* — **done**
 
-As above. Prerequisite for 1, 2 and 4; independently useful today.
+`vtea_core.data.Spacing` carries the voxel size, its unit, and where it came
+from; `spacing_from_scale` reads a napari layer's `.scale` and reports an
+all-ones scale as *unknown* rather than as one micron isotropic. The
+builder's top row gains a voxel-size button that reads the image, says so
+when nothing was recorded, and opens a dialog to set it by hand — a value
+typed there outlives switching between layers. It threads into the run
+context beside `channel_axis`, and `extract_measurements*` add a physical
+`volume` column when — and only when — the spacing is actually known.
 
 ### Phase 1 — The model, and derived segmentation *(small–medium)*
 
@@ -190,12 +197,12 @@ Where it becomes useful rather than merely correct.
 
 The genuinely hard one, and the one I would most like to keep small.
 
-- Deterministic baseline first: `watershed_ownership` — watershed the
-  candidate region from the parent objects as markers. This is the standard
-  answer for "split the cytoplasm between these nuclei", it is one skimage
-  call, and for many datasets it is enough. Ship it before anything
-  probabilistic.
-- Then `distance_ownership`: per contested voxel, a posterior over nearby
+- The deterministic baseline, `watershed_ownership`, ships in **Phase 2**:
+  watershed the candidate region from the parent objects as markers. It is
+  the standard answer for "split the cytoplasm between these nuclei", it is
+  one skimage call, and for many datasets it is enough. Everything below
+  builds on having it already.
+- `distance_ownership`: per contested voxel, a posterior over nearby
   cells from spacing-aware distance with a tunable falloff.
 - Optionally `membrane_ownership`, where a membrane channel raises the cost
   of crossing a boundary.
@@ -242,30 +249,46 @@ Assignment quality is not self-evident from looking at it, so:
   assigned, mean posterior, count of contested voxels, count of cells
   missing a part. These are what tell you the parameters are wrong.
 
-## Questions I need answered before starting
+## Decisions
 
-1. **Is nucleus ↔ cytoplasm strictly 1:1?** Multinucleate cells —
-   hepatocytes, syncytia, osteoclasts — break it, and the constraint is
-   baked into the algorithm choice, not a parameter. If they matter, the
-   model needs one-to-many in that direction too.
-2. **Where does pixel size come from?** napari's `layer.scale` where the
-   file provides it, with manual override, is my proposal — but if your
-   TIFFs generally lack it, the override becomes the main path and deserves
-   to be more prominent.
-3. **Can one object belong to two cells?** My default is no — one parent,
-   with the alternatives retained for inspection. Shared or ambiguous
-   structures would need a different answer.
-4. **Should cell ids be stable across re-runs?** Stable ids mean gates and
-   annotations survive a re-run; unstable ones are simpler. I lean stable,
-   derived from the root object's id.
-5. **How much does Phase 4 matter to you?** If contested membranes are
-   central to the science, it moves earlier and the deterministic watershed
-   baseline should land in Phase 2. If it is a refinement, the order above
-   is right.
+Answered, and folded into the phases above.
 
-## What I would build first
+**Multinucleate cells are allowed, behind a flag — and the flag moves the
+root.** This is more than relaxing a constraint, so it is worth being
+explicit. With the flag off, a nucleus defines a cell and a cytoplasm is
+assigned to exactly one of them (the Hungarian case). With it on, one
+cytoplasm may hold several nuclei — which means the nucleus can no longer
+be what identifies the cell, because there are several. The cell root moves
+to the cytoplasm, nuclei become its children (an ordinary many-to-one
+assignment, no special algorithm), and a cell gains an `n_nuclei` feature.
+So the flag reads as "multinucleate" to the user and as "which segmentation
+identifies a cell" to the model.
 
-Phase 0 and Phase 1 together: they are small, they are prerequisites for
-everything else, and they deliver the nuclear-envelope/cytosol workflow —
-which is the half of your request that needs no inference at all and should
-not wait behind the half that does.
+**Pixel size comes from the image metadata, and is asked for when it is
+not there.** With a wrinkle: napari sets `layer.scale` to `(1, 1, 1)` when a
+file carries no scale, so "one micron isotropic" and "nobody said" are the
+same value. The session therefore tracks *where* the spacing came from -
+metadata, the user, or unknown - and treats an all-ones scale as unknown.
+Steps whose result depends on it (any dilation thickness, any distance)
+prompt for it rather than silently running in voxels.
+
+**One object, one cell.** The alternatives stay on the association for
+inspection, but a child has one parent.
+
+**Cell ids are stable, derived from the root object's id**, so gates and
+annotations survive a re-run.
+
+**Contested voxels are in scope, user-selected, with manual override.**
+Phase 2 brings the deterministic watershed baseline forward so there is a
+usable answer early; Phase 4 adds the probabilistic framework and the
+override, which is where "user selected" is honoured - the method is a
+choice per protocol, not a fixed behaviour.
+
+## Build order
+
+Phase 0 and Phase 1 first: small, prerequisites for everything else, and
+they deliver the nuclear-envelope/cytosol workflow — the half of the
+request that needs no inference at all and should not wait behind the half
+that does. Then Phase 2 (association plus the deterministic ownership
+baseline), Phase 3 (cells), Phase 4 (probabilistic ownership and override),
+Phase 5 (QC and persistence).

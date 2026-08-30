@@ -16,7 +16,11 @@ full porting plan, architecture mapping, and phased roadmap.
 Phases 0-4 are done. Implemented and tested:
 
 - **data**: `VolumeDataset`/`InMemoryVolumeDataset`/`ChunkedVolumeDataset`,
-  `object_ids`/`object_pixel_indices`/`object_intensity_values`
+  `object_ids`/`object_pixel_indices`/`object_intensity_values`; `Spacing`
+  (new) - the physical size of a voxel, its unit, and whether it came from
+  the image, from the user, or from nowhere. `spacing_from_scale` reads a
+  napari layer's scale and treats all-ones as unknown, since that is what
+  napari fills in when a file records no scale
 - **io**: `read_tiff`/`write_tiff`/`read_zarr`/`write_zarr`/`open_volume`
 - **segmentation**: `threshold_mask`, `label_components`, `watershed_split`,
   `filter_by_size`, `labels_from_points`, `import_labels`,
@@ -27,7 +31,8 @@ Phases 0-4 are done. Implemented and tested:
   against every channel as one flat table, intensity columns suffixed with
   the channel they were measured on: `mean_ch0`, `mean_ch2`, ...),
   `feature_matrix` (that table as the float array clustering and reduction
-  take as `data`), `threshold_mean`; `FeatureCatalog`/`FeatureDescriptor`
+  take as `data`), a physical `volume` column when the voxel size is known,
+  `threshold_mean`; `FeatureCatalog`/`FeatureDescriptor`
   (new) - what each column of the table is and how it was produced (what was
   measured, on which channel and segmentation, by which step with what
   parameters, and for a derived feature which features were fed to it),

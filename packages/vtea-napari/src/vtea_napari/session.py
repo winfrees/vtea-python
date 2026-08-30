@@ -23,6 +23,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from qtpy.QtCore import QObject, Signal
+from vtea_core.data import Spacing
 from vtea_core.gates import GateSet
 from vtea_core.measurements import FeatureCatalog
 from vtea_core.workflow import Pipeline
@@ -65,6 +66,10 @@ class AnalysisSession(QObject):
         self.source_layer_name: str | None = None
         self.channel_axis: int | None = None
         self.z_axis: int | None = None
+        # Physical voxel size. Read from the image where the file recorded
+        # it, otherwise asked for: every distance and thickness downstream
+        # is wrong without it, and wrong in a way that looks plausible.
+        self.spacing: Spacing | None = None
         self._table: pd.DataFrame | None = None
 
     # -- data -------------------------------------------------------------
@@ -103,6 +108,9 @@ class AnalysisSession(QObject):
         self.source_layer_name = source_layer_name
         self.channel_axis = channel_axis
         self.z_axis = z_axis
+
+    def set_spacing(self, spacing: Spacing | None) -> None:
+        self.spacing = spacing
 
     # -- gates ------------------------------------------------------------
 

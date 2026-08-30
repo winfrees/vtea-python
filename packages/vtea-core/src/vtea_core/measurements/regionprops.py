@@ -16,6 +16,11 @@ import numpy as np
 import pandas as pd
 from skimage.measure import regionprops_table
 
+from vtea_core.data.spacing import Spacing
+
+# A physical volume, present only when the voxel size is actually known.
+VOLUME_COLUMN = "volume"
+
 _COLUMN_RENAME = {
     "label": "object_id",
     "area": "count",
@@ -48,13 +53,20 @@ def _region_stddev(region_mask: np.ndarray, region_intensity: np.ndarray) -> flo
     return float(np.std(region_intensity[region_mask]))
 
 
-def extract_measurements(labels: np.ndarray, intensity: np.ndarray) -> pd.DataFrame:
+def extract_measurements(
+    labels: np.ndarray, intensity: np.ndarray, *, spacing: Spacing | None = None
+) -> pd.DataFrame:
     """Per-object measurement table: object_id, centroid-0..N, count, mean, sum,
     stddev, min, max, threshold_mean.
 
     `labels` and `intensity` must be the same shape (any dimensionality). Centroid
     columns follow the array's own axis order (e.g. centroid-0/1/2 = Z/Y/X for a
     3D label array) - used for plot axes and to locate objects for gallery crops.
+
+    With a known `spacing`, a `volume` column in physical units is added
+    beside `count`. Without one it is left out rather than filled with the
+    voxel count under a physical name, which would silently claim a
+    calibration nobody supplied.
     """
     if labels.shape != intensity.shape:
         raise ValueError(f"labels shape {labels.shape} != intensity shape {intensity.shape}")
@@ -66,13 +78,19 @@ def extract_measurements(labels: np.ndarray, intensity: np.ndarray) -> pd.DataFr
         labels, intensity_image=intensity, properties=properties, extra_properties=extra_properties
     )
     frame = pd.DataFrame(table).rename(columns=_COLUMN_RENAME)
-    return frame.rename(columns={"_region_sum": "sum", "_region_stddev": "stddev"})
+    frame = frame.rename(columns={"_region_sum": "sum", "_region_stddev": "stddev"})
+    if spacing is not None and spacing.is_known:
+        voxel_volume = float(np.prod(spacing.for_ndim(labels.ndim)))
+        frame.insert(
+            frame.columns.get_loc("count") + 1, VOLUME_COLUMN, frame["count"] * voxel_volume
+        )
+    return frame
 
 
 # Columns describing an object's geometry rather than its brightness. They
 # are identical for every channel, so a multi-channel table carries them
 # once instead of repeating them per channel.
-GEOMETRY_COLUMNS = ("object_id", "count")
+GEOMETRY_COLUMNS = ("object_id", "count", VOLUME_COLUMN)
 
 # Columns that identify or locate an object rather than describe it. Feeding
 # a centroid into PCA or k-means clusters objects by where they sit in the
@@ -133,6 +151,7 @@ def extract_measurements_by_channel(
     *,
     channel_axis: int | None = None,
     channel: int | None = None,
+    spacing: Spacing | None = None,
 ) -> pd.DataFrame:
     """Measure one segmentation against every channel, as one flat table.
 
@@ -148,7 +167,7 @@ def extract_measurements_by_channel(
     measurement to one channel instead of all of them.
     """
     if channel_axis is None or intensity.ndim == labels.ndim:
-        return extract_measurements(labels, intensity)
+        return extract_measurements(labels, intensity, spacing=spacing)
 
     if not -intensity.ndim <= channel_axis < intensity.ndim:
         raise ValueError(
@@ -166,7 +185,7 @@ def extract_measurements_by_channel(
     merged: pd.DataFrame | None = None
     for index in wanted:
         single = np.take(intensity, index, axis=channel_axis)
-        table = extract_measurements(labels, single)
+        table = extract_measurements(labels, single, spacing=spacing)
         if merged is None:
             merged = table.rename(
                 columns={

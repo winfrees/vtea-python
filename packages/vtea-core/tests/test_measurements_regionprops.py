@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from vtea_core.data import Spacing
 from vtea_core.measurements import (
     extract_measurements,
     extract_measurements_by_channel,
@@ -181,3 +182,55 @@ class TestFeatureMatrix:
         matrix, columns = feature_matrix(frame)
         assert columns == []
         assert matrix.shape == (2, 0)
+
+
+class TestPhysicalVolume:
+    """A voxel count is not a volume until someone says how big a voxel is."""
+
+    @staticmethod
+    def make_volume():
+        labels = np.zeros((2, 4, 4), dtype=np.int32)
+        labels[:, 0:2, 0:2] = 1
+        return labels, np.ones((2, 4, 4))
+
+    def test_no_spacing_means_no_volume_column(self):
+        """Rather than a count under a physical name, which would claim a
+        calibration nobody supplied."""
+        labels, intensity = self.make_volume()
+        assert "volume" not in extract_measurements(labels, intensity).columns
+
+    def test_an_unknown_spacing_also_leaves_it_out(self):
+        labels, intensity = self.make_volume()
+        table = extract_measurements(labels, intensity, spacing=Spacing.unknown(3))
+        assert "volume" not in table.columns
+
+    def test_a_known_spacing_adds_it_beside_the_count(self):
+        labels, intensity = self.make_volume()
+        table = extract_measurements(labels, intensity, spacing=Spacing((1.0, 0.25, 0.25)))
+        assert list(table.columns).index("volume") == list(table.columns).index("count") + 1
+        # 8 voxels of 1 x 0.25 x 0.25.
+        assert table.loc[0, "volume"] == pytest.approx(0.5)
+
+    def test_anisotropy_is_honoured(self):
+        """The whole point: a z-step several times the lateral pixel size."""
+        labels, intensity = self.make_volume()
+        flat = extract_measurements(labels, intensity, spacing=Spacing((0.25, 0.25, 0.25)))
+        tall = extract_measurements(labels, intensity, spacing=Spacing((2.0, 0.25, 0.25)))
+        assert tall.loc[0, "volume"] == pytest.approx(8 * flat.loc[0, "volume"])
+
+    def test_the_by_channel_table_carries_it_once(self):
+        labels = np.zeros((2, 4, 4), dtype=np.int32)
+        labels[:, 0:2, 0:2] = 1
+        intensity = np.ones((2, 3, 4, 4))
+        table = extract_measurements_by_channel(
+            labels, intensity, channel_axis=1, spacing=Spacing((1.0, 0.25, 0.25))
+        )
+        assert list(table.columns).count("volume") == 1
+        assert "volume_ch0" not in table.columns
+
+    def test_volume_is_a_feature_but_not_an_identifier(self):
+        from vtea_core.measurements import feature_matrix
+
+        labels, intensity = self.make_volume()
+        table = extract_measurements(labels, intensity, spacing=Spacing((1.0, 0.25, 0.25)))
+        assert "volume" in feature_matrix(table)[1]

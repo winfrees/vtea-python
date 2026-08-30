@@ -83,9 +83,13 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("segmentation", "filter_by_size"): StepIO(("labels",), "labels"),
     ("segmentation", "labels_from_points"): StepIO(("points", "shape"), "labels"),
     ("segmentation", "cellpose_segmentation"): StepIO(("volume", "model"), "labels"),
-    ("measurements", "extract_measurements"): StepIO(("labels", "intensity"), "measurements"),
+    ("measurements", "extract_measurements"): StepIO(
+        ("labels", "intensity", "spacing"), "measurements"
+    ),
     ("measurements", "extract_measurements_by_channel"): StepIO(
-        ("labels", "intensity", "channel_axis"), "measurements", channel_mode=CHANNEL_ARGUMENT
+        ("labels", "intensity", "channel_axis", "spacing"),
+        "measurements",
+        channel_mode=CHANNEL_ARGUMENT,
     ),
     # Clustering and reduction consume "data" - the per-object feature
     # matrix built from the measurement table, which already carries every
