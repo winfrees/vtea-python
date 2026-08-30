@@ -80,8 +80,12 @@ widget and run it):
   from one measurement table per segmentation. Those tables cannot be one
   flat frame — a nucleus table and a lysosome table have different rows — so
   the builder seeds them keyed by the segmentation each step measured, the
-  way it seeds `data` for clustering. The per-cell table is in the run
-  context; plotting and gating it in the Object Explorer is the next piece.
+  way it seeds `data` for clustering. The Object Explorer plots and gates the
+  result: a table picker appears once there is more than one table, and each
+  table travels with what its rows are — the id column that names a row
+  (`cell_id` rather than `object_id`), the segmentation a gate on it should
+  light up on the image, and its own gates, since a polygon drawn over cell
+  features selects nothing among objects.
 - **Fixed-choice parameters are dropdowns** — a step function annotating a
   parameter `Literal["many_to_one", "one_to_one"]` gets a combo box rather
   than a text field, read from the annotation text (vtea-core's hints are

@@ -18,6 +18,7 @@ restored into (see docs/SAVING_AND_ARCHIVING.md).
 from __future__ import annotations
 
 import weakref
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -27,6 +28,32 @@ from vtea_core.data import Spacing
 from vtea_core.gates import GateSet
 from vtea_core.measurements import FeatureCatalog
 from vtea_core.workflow import Pipeline
+
+
+OBJECT_TABLE = "Objects"
+
+
+@dataclass
+class TableView:
+    """One table the explorer can plot, and what its rows are.
+
+    A per-object table and a per-cell table are both rows of features, but
+    they are not interchangeable: their rows are different things, their id
+    column has a different name, and the label image a gate highlights is a
+    different image. Bundling the three together is what lets the explorer
+    switch between them without any of its own code knowing which is which.
+
+    `labels_key` is a context key rather than an array, so the image is
+    looked up when it is needed and a re-run does not leave a stale copy
+    behind.
+    """
+
+    frame: pd.DataFrame
+    id_column: str = "object_id"
+    labels_key: str = "labels"
+    # What a row is, for the status line: "objects", "cells".
+    noun: str = "objects"
+    gate_set: GateSet = field(default_factory=GateSet)
 
 
 class AnalysisSession(QObject):
@@ -51,7 +78,11 @@ class AnalysisSession(QObject):
         self.processing_pipeline = Pipeline()
         self.analysis_pipeline = Pipeline()
         self.context: dict[str, Any] = {}
-        self.gate_set = GateSet()
+        # Every table the explorer can plot, keyed by name. A protocol that
+        # builds cells has two - its objects and its cells - and a gate drawn
+        # on one means nothing on the other, so each carries its own gates.
+        self.tables: dict[str, TableView] = {}
+        self.active_table: str = OBJECT_TABLE
         # What each column of the measurement table is and how it was
         # produced. Lives here so both panes can read it, and so it is
         # already assembled when a session is saved.
@@ -71,26 +102,83 @@ class AnalysisSession(QObject):
         # is wrong without it, and wrong in a way that looks plausible.
         self.spacing: Spacing | None = None
         self._table: pd.DataFrame | None = None
+        # Gates drawn before any table was published - the explorer can be
+        # driven directly, without the builder.
+        self._loose_gates = GateSet()
 
     # -- data -------------------------------------------------------------
 
-    def set_context(self, context: dict[str, Any], table: pd.DataFrame | None = None) -> None:
-        """Publish a new run context, and the flat feature table derived from
-        it. The table is passed in rather than recomputed here because only
-        the builder knows the step graph that names its extra columns."""
+    def set_context(
+        self,
+        context: dict[str, Any],
+        table: pd.DataFrame | None = None,
+        tables: dict[str, TableView] | None = None,
+    ) -> None:
+        """Publish a new run context, the flat per-object feature table
+        derived from it, and any further tables the run produced.
+
+        The tables are passed in rather than recomputed here because only the
+        builder knows the step graph that names their columns. Gates survive
+        a re-run: a table that was already here keeps the gates drawn on it,
+        since they are drawn on features that still exist.
+        """
         self.context = context
         self._table = table
+        published = dict(tables or {})
+        if table is not None:
+            published.setdefault(OBJECT_TABLE, TableView(table))
+        for name, view in published.items():
+            existing = self.tables.get(name)
+            if existing is not None:
+                view.gate_set = existing.gate_set
+        self.tables = published
+        if self.active_table not in self.tables:
+            self.active_table = OBJECT_TABLE if OBJECT_TABLE in self.tables else (
+                next(iter(self.tables), OBJECT_TABLE)
+            )
         self.data_changed.emit()
 
-    def results_table(self) -> pd.DataFrame | None:
-        if self._table is None or self._table.empty:
-            return None
-        return self._table
+    def table_names(self) -> list[str]:
+        """The tables on offer, the per-object one first."""
+        names = list(self.tables)
+        if OBJECT_TABLE in names:
+            names.remove(OBJECT_TABLE)
+            names.insert(0, OBJECT_TABLE)
+        return names
 
-    def labels(self) -> np.ndarray | None:
-        """The label image the measurements were taken from, for
-        highlighting a gate's members back on the viewer."""
-        labels = self.context.get("labels")
+    def table_view(self, name: str | None = None) -> TableView | None:
+        return self.tables.get(self.active_table if name is None else name)
+
+    def set_active_table(self, name: str) -> None:
+        """Switch which table the explorer plots. A no-op for a name that
+        isn't on offer, so a remembered choice from a previous run cannot
+        leave the pane pointing at nothing."""
+        if name in self.tables and name != self.active_table:
+            self.active_table = name
+            self.data_changed.emit()
+
+    def results_table(self, name: str | None = None) -> pd.DataFrame | None:
+        view = self.table_view(name)
+        frame = self._table if view is None else view.frame
+        if frame is None or frame.empty:
+            return None
+        return frame
+
+    def id_column(self, name: str | None = None) -> str:
+        view = self.table_view(name)
+        return "object_id" if view is None else view.id_column
+
+    def row_noun(self, name: str | None = None) -> str:
+        view = self.table_view(name)
+        return "objects" if view is None else view.noun
+
+    def labels(self, name: str | None = None) -> np.ndarray | None:
+        """The label image this table's rows are objects of, for highlighting
+        a gate's members back on the viewer. A per-cell table points at the
+        segmentation its cells are rooted on, so a gate on cells lights up
+        the nuclei that identify them."""
+        view = self.table_view(name)
+        labels = self.context.get("labels" if view is None else view.labels_key)
         return labels if isinstance(labels, np.ndarray) else None
 
     def intensity(self) -> np.ndarray | None:
@@ -113,6 +201,23 @@ class AnalysisSession(QObject):
         self.spacing = spacing
 
     # -- gates ------------------------------------------------------------
+
+    @property
+    def gate_set(self) -> GateSet:
+        """The gates on the active table. Each table keeps its own: a polygon
+        drawn over cell features selects nothing on a per-object table, and
+        silently sharing them between the two would show a gate that cannot
+        be what it claims."""
+        view = self.table_view()
+        return self._loose_gates if view is None else view.gate_set
+
+    @gate_set.setter
+    def gate_set(self, gate_set: GateSet) -> None:
+        view = self.table_view()
+        if view is None:
+            self._loose_gates = gate_set
+        else:
+            view.gate_set = gate_set
 
     def set_gate_set(self, gate_set: GateSet) -> None:
         self.gate_set = gate_set

@@ -44,7 +44,7 @@ from vtea_core.measurements import FeatureCatalog, feature_matrix
 from vtea_core.objects import AssociationSet, CellSet
 from vtea_core.workflow import Pipeline, Step
 
-from vtea_napari.session import AnalysisSession, session_for
+from vtea_napari.session import AnalysisSession, TableView, session_for
 from vtea_napari.widgets.feature_select import FeatureSelectWidget
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.param_form import ParameterForm
@@ -920,7 +920,33 @@ class ProtocolBuilderWidget(QWidget):
             z_axis=self.z_axis,
         )
         self.session.set_spacing(self.spacing_control.spacing())
-        self.session.set_context(self.last_context, self.results_table())
+        self.session.set_context(self.last_context, self.results_table(), self.cell_tables())
+
+    def cell_tables(self) -> dict:
+        """The per-cell tables this protocol produced, ready to plot.
+
+        A cell table is not the object table with extra columns - its rows
+        are cells - so it travels with what its rows are: `cell_id` rather
+        than `object_id`, and the segmentation the cells are rooted on, so a
+        gate drawn on cells lights up the nuclei that identify them rather
+        than nothing at all.
+        """
+        tables = {}
+        for step in self.all_steps():
+            if step.output_key != "cell_table" or not step.name:
+                continue
+            frame = self.last_context.get(step.name)
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                continue
+            cells = self.last_context.get(step.input_keys.get("cells", ""))
+            root = cells.root_segmentation if isinstance(cells, CellSet) else ""
+            tables[step.name] = TableView(
+                frame=frame,
+                id_column="cell_id",
+                labels_key=root or "labels",
+                noun="cells",
+            )
+        return tables
 
     # -- channel axis -----------------------------------------------------
 

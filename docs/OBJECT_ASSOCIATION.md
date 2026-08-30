@@ -189,7 +189,7 @@ special case.
 **Done:** DAPI nuclei and a cytoplasm segmentation produce a 1:1 assignment
 with a recorded posterior, and the unassigned ones are visible as such.
 
-### Phase 3 — Cells: hierarchy and per-cell features *(medium)* — **core done**
+### Phase 3 — Cells: hierarchy and per-cell features *(medium)* — **done**
 
 Where it becomes useful rather than merely correct.
 
@@ -219,9 +219,17 @@ looking at whether this particular field happens to contain a cell with two
 of something would make the same protocol produce differently shaped tables
 on different fields, and they could not be pooled.
 
-**Still to do:** the Object Explorer plots the per-object table; plotting and
-gating the *cell* table is the remaining half of this phase, along with
-recording the role on each column in the `FeatureCatalog`.
+The Object Explorer plots and gates that table. It is a second table rather
+than more columns on the first — its rows are cells, not objects — so the
+session carries both, each with what its rows are: the id column that names
+a row, the segmentation a gate on it should light up, and its own gates,
+since a polygon drawn over cell features selects nothing on a per-object
+table. The pane gains a table picker once there is more than one to choose
+between, and the gallery crops around the root segmentation's centroids,
+which is where a cell's id points anyway.
+
+**Still to do:** recording the role on each column in the `FeatureCatalog`,
+so the data dictionary says which association a per-cell column came from.
 
 ### Phase 4 — Pixel-level ownership *(large)*
 

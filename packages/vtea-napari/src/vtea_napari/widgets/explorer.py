@@ -39,7 +39,9 @@ import pandas as pd
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
+    QLabel,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -134,6 +136,16 @@ class ExplorerWidget(QWidget):
         root = QVBoxLayout(self)
 
         header = QHBoxLayout()
+        # Which table is being plotted. A protocol that builds cells has two
+        # - its objects and its cells - and they are not two views of one
+        # thing: their rows are different, so the axes, the gates and the
+        # highlighted image all change with the choice.
+        self.table_combo = QComboBox()
+        self.table_combo.setToolTip("Which table to plot: the objects, or the cells built from them")
+        self.table_combo.currentTextChanged.connect(self._on_table_changed)
+        self.table_label = QLabel("Table:")
+        header.addWidget(self.table_label)
+        header.addWidget(self.table_combo)
         self.subgate_checkbox = QCheckBox("Gate within selection")
         self.subgate_checkbox.setToolTip(
             "New gates become subgates of the selected one: their membership is "
@@ -208,6 +220,13 @@ class ExplorerWidget(QWidget):
         return self.session.results_table()
 
     @property
+    def id_column(self) -> str:
+        """What names a row of the current table - `object_id` for objects,
+        `cell_id` for cells. Everything that maps a plotted point back to the
+        image goes through this rather than assuming one of them."""
+        return self.session.id_column()
+
+    @property
     def labels(self) -> np.ndarray | None:
         return self.session.labels()
 
@@ -232,6 +251,7 @@ class ExplorerWidget(QWidget):
         """
         self._restoring = True
         try:
+            self._refresh_table_choices()
             self.gate_manager.gate_set = self.session.gate_set
             frame = self.session.results_table()
             if frame is None:
@@ -244,9 +264,33 @@ class ExplorerWidget(QWidget):
             self.refresh_highlights()
             self.plot.apply_view_state(self.session.view_state)
             self.style_panel.read_from_plot()
-            self.status_label.setText(f"{len(frame)} objects, {len(frame.columns)} features.")
+            noun = self.session.row_noun()
+            self.status_label.setText(f"{len(frame)} {noun}, {len(frame.columns)} features.")
         finally:
             self._restoring = False
+
+    def _refresh_table_choices(self) -> None:
+        names = self.session.table_names()
+        # One table is the ordinary case; a picker offering a single choice
+        # is furniture, so it only appears once there is a choice to make.
+        visible = len(names) > 1
+        self.table_combo.setVisible(visible)
+        self.table_label.setVisible(visible)
+        if names == [self.table_combo.itemText(i) for i in range(self.table_combo.count())]:
+            self.table_combo.setCurrentText(self.session.active_table)
+            return
+        self.table_combo.blockSignals(True)
+        self.table_combo.clear()
+        self.table_combo.addItems(names)
+        self.table_combo.setCurrentText(self.session.active_table)
+        self.table_combo.blockSignals(False)
+
+    def _on_table_changed(self, name: str) -> None:
+        if self._restoring or not name:
+            return
+        # The gates belong to the table, so switching hides the ones drawn on
+        # the other and shows this table's own - including on the image.
+        self.session.set_active_table(name)
 
     def set_data(self, frame: pd.DataFrame, labels: np.ndarray | None = None) -> None:
         """Load a table directly, bypassing the protocol builder - used by
@@ -330,7 +374,7 @@ class ExplorerWidget(QWidget):
             return
         mask = self.gate_set.mask(gate_id, self.frame)
         self.gate_membership_changed.emit(gate_id, mask)
-        gated_ids = self.frame.loc[mask, "object_id"].to_numpy()
+        gated_ids = self.frame.loc[mask, self.id_column].to_numpy()
         self.refresh_highlights()
         self._fill_gallery(gated_ids)
         self.status_label.setText(f"{gate.name}: {len(gated_ids)} of {len(self.frame)} objects.")
@@ -366,7 +410,7 @@ class ExplorerWidget(QWidget):
                 self._remove_highlight(gate.id)
                 continue
             mask = self.gate_set.mask(gate.id, frame)
-            gated_ids = frame.loc[mask, "object_id"].to_numpy()
+            gated_ids = frame.loc[mask, self.id_column].to_numpy()
             name = f"{HIGHLIGHT_LAYER_NAME}: {gate.name}"
             signature = (name, gate.color, frozenset(int(i) for i in gated_ids))
 
@@ -395,7 +439,14 @@ class ExplorerWidget(QWidget):
         channel_axis = self.session.channel_axis
         if channel_axis is not None and intensity.ndim > 2 and channel_axis < intensity.ndim:
             intensity = np.take(intensity, 0, axis=channel_axis)
-        self.gallery.show_objects(intensity, self.frame, gated_ids)
+        view = self.session.table_view()
+        # A per-cell table's centroids are namespaced by the segmentation
+        # they were measured on, so crop around the one the cells are rooted
+        # on - the same objects their ids name.
+        prefix = f"{view.labels_key}." if view is not None and view.id_column != "object_id" else ""
+        self.gallery.show_objects(
+            intensity, self.frame, gated_ids, id_column=self.id_column, prefix=prefix
+        )
 
     def _on_object_selected(self, object_id: int) -> None:
         """A gallery crop was clicked: outline it there, and show only that

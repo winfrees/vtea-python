@@ -467,3 +467,151 @@ class TestGateColouredHighlights:
         _draw_triangle(widget.plot, (0, 0), (20, 0), (10, 20))
 
         assert self._highlight_layers(viewer) == []
+
+
+def _cell_session():
+    """A session holding both an object table and the cell table built from
+    it - what a protocol with an association step publishes."""
+    from vtea_napari.session import OBJECT_TABLE, AnalysisSession, TableView
+
+    session = AnalysisSession()
+    nuclei = np.zeros((6, 12), dtype=np.int32)
+    nuclei[1:3, 1:3] = 1
+    nuclei[1:3, 5:7] = 2
+    nuclei[1:3, 9:11] = 3
+
+    objects = pd.DataFrame(
+        {
+            "object_id": [1, 2, 3],
+            "centroid-0": [1.5, 1.5, 1.5],
+            "centroid-1": [1.5, 5.5, 9.5],
+            "mean_ch0": [10.0, 20.0, 30.0],
+        }
+    )
+    cells = pd.DataFrame(
+        {
+            "cell_id": [1, 2, 3],
+            "nuclei_1.centroid-0": [1.5, 1.5, 1.5],
+            "nuclei_1.centroid-1": [1.5, 5.5, 9.5],
+            "nuclei_1.mean_ch0": [10.0, 20.0, 30.0],
+            "lysosome_1.n": [4.0, 1.0, 0.0],
+        }
+    )
+    session.set_context(
+        {"labels": nuclei, "nuclei_1": nuclei, "intensity": np.ones((6, 12))},
+        objects,
+        {
+            OBJECT_TABLE: TableView(objects),
+            "cell_features_1": TableView(
+                cells, id_column="cell_id", labels_key="nuclei_1", noun="cells"
+            ),
+        },
+    )
+    return session
+
+
+class TestCellTable:
+    """A cell table is not the object table with more columns - its rows are
+    cells - so switching to it has to move the axes, the gates and the
+    highlighted image together."""
+
+    def test_the_picker_offers_both_tables(self, qtbot):
+        widget = ExplorerWidget(session=_cell_session())
+        qtbot.addWidget(widget)
+        offered = [widget.table_combo.itemText(i) for i in range(widget.table_combo.count())]
+        assert offered == ["Objects", "cell_features_1"]
+
+    def test_the_picker_is_hidden_when_there_is_nothing_to_choose(self, qtbot):
+        """A control offering one option is furniture."""
+        widget = ExplorerWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(make_frame())
+        assert widget.table_combo.isVisibleTo(widget) is False
+
+    def test_switching_plots_the_cell_features(self, qtbot):
+        widget = ExplorerWidget(session=_cell_session())
+        qtbot.addWidget(widget)
+        widget.table_combo.setCurrentText("cell_features_1")
+        assert "lysosome_1.n" in widget.frame.columns
+        assert len(widget.frame) == 3
+
+    def test_the_axis_menus_offer_the_cell_features(self, qtbot):
+        widget = ExplorerWidget(session=_cell_session())
+        qtbot.addWidget(widget)
+        widget.table_combo.setCurrentText("cell_features_1")
+        offered = [widget.plot.x_combo.itemText(i) for i in range(widget.plot.x_combo.count())]
+        assert "lysosome_1.n" in offered
+        assert "nuclei_1.mean_ch0" in offered
+
+    def test_a_row_is_a_cell_not_an_object(self, qtbot):
+        widget = ExplorerWidget(session=_cell_session())
+        qtbot.addWidget(widget)
+        widget.table_combo.setCurrentText("cell_features_1")
+        assert widget.id_column == "cell_id"
+        assert "cells" in widget.status_label.toPlainText()
+
+    def test_gates_belong_to_the_table_they_were_drawn_on(self, qtbot):
+        """A polygon over cell features selects nothing on a per-object
+        table, so showing it there would be a gate that cannot be what it
+        claims."""
+        widget = ExplorerWidget(session=_cell_session())
+        qtbot.addWidget(widget)
+        widget.table_combo.setCurrentText("cell_features_1")
+        widget.plot.set_data(widget.frame, x_column="cell_id", y_column="lysosome_1.n")
+        _draw_triangle(widget.plot, (0, -1), (4, -1), (2, 6))
+        assert len(widget.gate_set) == 1
+
+        widget.table_combo.setCurrentText("Objects")
+        assert len(widget.gate_set) == 0
+
+        widget.table_combo.setCurrentText("cell_features_1")
+        assert len(widget.gate_set) == 1
+
+    def test_a_gate_on_cells_highlights_the_segmentation_they_are_rooted_on(self, qtbot):
+        """The cell ids are nucleus ids, so the nuclei are what can be lit
+        up - and the explorer has to look up that image, not the last
+        `labels` any step happened to write."""
+        session = _cell_session()
+        session.context["labels"] = np.zeros((6, 12), dtype=np.int32)  # some later step's output
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.table_combo.setCurrentText("cell_features_1")
+        assert widget.labels is not None
+        assert set(np.unique(widget.labels)) == {0, 1, 2, 3}
+
+    def test_the_gallery_crops_around_the_root_s_centroids(self, qtbot):
+        """A cell table's centroid columns are namespaced, so the plain
+        `centroid-*` lookup finds nothing and would crop the wrong place."""
+        widget = ExplorerWidget(session=_cell_session())
+        qtbot.addWidget(widget)
+        widget.table_combo.setCurrentText("cell_features_1")
+        widget._fill_gallery(np.array([1, 2, 3]))
+        assert len(widget.gallery._thumbnails) == 3
+
+    def test_a_table_with_no_usable_centroids_leaves_the_gallery_empty(self, qtbot):
+        from vtea_napari.session import OBJECT_TABLE, AnalysisSession, TableView
+
+        session = AnalysisSession()
+        frame = pd.DataFrame({"cell_id": [1, 2], "value": [1.0, 2.0]})
+        session.set_context(
+            {"intensity": np.ones((6, 12))},
+            frame,
+            {OBJECT_TABLE: TableView(frame, id_column="cell_id")},
+        )
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget._fill_gallery(np.array([1, 2]))
+        assert widget.gallery._thumbnails == []
+
+    def test_a_re_run_keeps_the_gates_on_each_table(self, qtbot):
+        session = _cell_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.table_combo.setCurrentText("cell_features_1")
+        widget.plot.set_data(widget.frame, x_column="cell_id", y_column="lysosome_1.n")
+        _draw_triangle(widget.plot, (0, -1), (4, -1), (2, 6))
+
+        republished = _cell_session()
+        session.set_context(republished.context, republished.results_table("Objects"),
+                            dict(republished.tables))
+        assert len(session.tables["cell_features_1"].gate_set) == 1

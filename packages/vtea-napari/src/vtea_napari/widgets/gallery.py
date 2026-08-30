@@ -82,12 +82,20 @@ class GalleryWidget(QWidget):
         *,
         crop_radius: int = 20,
         thumbnail_size: int = 64,
+        id_column: str = "object_id",
+        prefix: str = "",
     ) -> None:
         """`volume` is an intensity array whose last two axes are (row,
-        col); `frame` has `object_id` and `centroid-*` columns (see
+        col); `frame` has an id column and `centroid-*` columns (see
         vtea_core.measurements.extract_measurements) - the last two
         centroid columns are always the array's own (row, col) axes,
-        whether the source volume was 2D or 3D."""
+        whether the source volume was 2D or 3D.
+
+        A per-cell table names its columns for the segmentation each came
+        from (`nuclei_1.centroid-0`), so `prefix` says which of them to crop
+        around - the segmentation the cells are rooted on, which is where
+        their id points anyway.
+        """
         while self._grid.count():
             item = self._grid.takeAt(0)
             widget = item.widget()
@@ -95,9 +103,19 @@ class GalleryWidget(QWidget):
                 widget.deleteLater()
         self._thumbnails = []
 
-        indexed = frame.set_index("object_id")
-        centroid_columns = sorted(c for c in frame.columns if c.startswith("centroid-"))
+        if id_column not in frame.columns:
+            return
+        indexed = frame.set_index(id_column)
+        centroid_columns = sorted(
+            column for column in frame.columns if column.startswith(f"{prefix}centroid-")
+        )
         spatial_columns = centroid_columns[-2:]
+        if len(spatial_columns) < 2:
+            # Nothing to crop around - a table with no centroids at all, or
+            # one whose centroids belong to a different segmentation. An
+            # empty gallery is the honest answer; guessing a position would
+            # show crops of the wrong things.
+            return
 
         for position, object_id in enumerate(object_ids):
             if object_id not in indexed.index:
