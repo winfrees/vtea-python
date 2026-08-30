@@ -523,6 +523,86 @@ What to lean on rather than build:
 - **Labels layers** display from Zarr the same way images do, so results
   come back into the viewer without materializing.
 
+## The store: Zarr 2 now, Zarr 3 ready
+
+**Decided: Zarr 2 (`zarr>=2.16,<3`), writing OME-NGFF 0.4.** The pin stays
+where it is.
+
+The reason is not inertia. NGFF 0.4 *is* a Zarr-2 spec, and the tools a
+collaborator will open the store with — `ome-zarr-py`, `napari-ome-zarr`,
+Fiji's N5/Zarr reader, `bioio` — read v2 first and v3 with varying
+enthusiasm. A v3 store written today is one that the people the data is
+shared with cannot open, which is the opposite of the point of adopting a
+community format at all.
+
+What Zarr 3 buys, so the decision is revisitable rather than forgotten:
+**sharding**. A 33 GB volume at 256³ chunks is ~500,000 chunk files on the
+finest pyramid level alone. On a laptop's SSD that is untidy; on a network
+filesystem or object store it is the actual bottleneck, and sharding is the
+fix. NGFF 0.5 also lands there.
+
+Being "ready" has to mean concrete rules, not an intention:
+
+1. **One module touches `zarr`.** All of it — including `da.from_zarr` /
+   `da.to_zarr`, which are zarr use by another name — lives in
+   `io/store.py`. Nothing else in either package imports `zarr`. The
+   migration is then a module rewrite with a test suite already pointed at
+   it, not an archaeology exercise.
+2. **Only API that exists in both versions.** `zarr.open_group`, array and
+   group `attrs`, array creation through our own wrapper. No `.store`
+   internals, no reading `.zarray` by hand, no `numcodecs` objects crossing
+   the module boundary — a compressor is named by string in our config and
+   translated inside.
+3. **The NGFF version written is a constant** (`NGFF_VERSION = "0.4"`), and
+   **the reader accepts 0.4 and 0.5 from the start.** Reading is where a
+   version mismatch actually costs a user something; writing can lag safely.
+4. **Every store carries `vtea_format_version` in its root attrs**, so a
+   future reader knows what it is looking at instead of inferring.
+5. **Chunk shapes are chosen to survive becoming shard-inner chunks** —
+   128–256 voxels per axis, not 1024³ blocks that a shard could never
+   usefully subdivide. This costs nothing now and is the difference between
+   "enable sharding" and "rewrite every store" later.
+
+Revisit when `ome-zarr-py` and `napari-ome-zarr` both read v3 by default, or
+when chunk count becomes a measured bottleneck on real data — whichever
+comes first.
+
+## Axes: five in the store, four in memory
+
+**Decided: the store is 5D `TCZYX` from day one; the in-memory model stays
+4D `CZYX`; `T` is squeezed on read; `T > 1` raises a specific, named
+error.** Time-series *compatibility* is built now. Time-series *analysis* is
+not, and the plan says so rather than leaving a half-built axis around.
+
+Why build the compatibility now, when nothing uses it:
+
+- OME-NGFF's canonical order is `TCZYX` and readers expect it. Writing 4D
+  today and 5D later means converting every store written in between.
+  Writing 5D with `T=1` costs one axis of length one and nothing else — it
+  is already a valid time-series store that happens to have one timepoint.
+- The changes real time support needs are individually small and spread
+  wide: `_to_czyx`, `VolumeDataset`, `Spacing.for_ndim`, the measurement
+  table's id space (an object becomes `(t, id)`), the tile plan's axis
+  handling, and the GUI's axis pickers. Fixing the axis model once, now,
+  while there is only one caller of each, is far cheaper than after the
+  blocked executor has hardcoded four dimensions in nine places.
+- And one honest caveat: **linking objects across timepoints is tracking,
+  not association.** It is a different problem with different algorithms,
+  and nothing in this plan should imply that a `T` axis brings it along.
+
+| Built now | Deliberately deferred |
+| --- | --- |
+| `vtea_core.data.axes.Axes` — a validated axis-order string, canonical `TCZYX`, generalising the reordering `_to_czyx` does by hand | Any per-timepoint execution loop |
+| Readers parse and record the timepoint count even when it is 1 | Per-timepoint measurement tables and their id space |
+| `TimeSeriesNotSupported`, naming the axis and its length, raised at read | Tracking: linking an object at *t* to the same object at *t+1* |
+| The OME-Zarr writer emits five axes with correct types, units and a `coordinateTransformations` scale from `Spacing` | Time-aware gating, plots and galleries |
+| The tile plan treats `T` as a non-tiled axis of length 1 | Making `T` the outermost tiling loop (the cheap part, once the rest exists) |
+
+The test that keeps this honest is small and worth writing in L1: a
+round-trip of a `T=1` store through `ome-zarr-py`'s own reader, asserting
+the axis metadata is what the spec says it should be. Compatibility claimed
+and never checked against another implementation is not compatibility.
+
 ## Module layout
 
 One new package in `vtea-core`, plus small changes at the seams of existing
@@ -540,13 +620,23 @@ vtea_core/blocked/
     table.py       Parquet/DuckDB-backed feature table
 ```
 
+Plus two new modules that are not about blocking as such, but that the
+decisions above require:
+
+```
+vtea_core/data/axes.py     Axes: canonical TCZYX, validation, reordering
+vtea_core/io/store.py      The only module that imports zarr (see above)
+vtea_core/io/ome_zarr.py   OME-NGFF 0.4 read/write, pyramids, ingest
+```
+
 Changed elsewhere, and deliberately little:
 
 - `workflow/wiring.py` — the four new `StepIO` fields. Declarative, no
   behavior.
 - `workflow/pipeline.py` — `Pipeline.run` gains an optional executor; the
   in-memory path is unchanged and stays the default.
-- `io/` — lazy TIFF, OME-Zarr read/write, the ingest entry point.
+- `io/tiff.py`, `io/zarr_io.py` — a lazy TIFF path; the direct `zarr` and
+  `da.from_zarr` calls move behind `io/store.py`.
 - `objects/ownership.py` — the sparse, mask-restricted representation.
 - `measurements/store.py` — the Parquet-backed registration.
 - `vtea_napari` — lazy `active_image()`, the budget control, ROI preview,
@@ -557,7 +647,7 @@ Changed elsewhere, and deliberately little:
 | Phase | Content | Est. |
 | --- | --- | --- |
 | **L0 — Budget and plan** | `MemoryBudget`, `TilePlan`, the `StepIO` scaling fields, the plan summary in the GUI. No execution change; everything downstream depends on it | 1–2 wk |
-| **L1 — Lazy I/O and the store** | OME-Zarr read/write with pyramids, lazy TIFF, ingest, `ZarrScratch`, lazy napari layers | 2–3 wk |
+| **L1 — Lazy I/O and the store** | `io/store.py` as the single zarr seam, `Axes`, OME-NGFF 0.4 read/write with pyramids and a 5D `TCZYX` layout, lazy TIFF, ingest, `ZarrScratch`, lazy napari layers | 2–3 wk |
 | **L2 — The executor: elementwise, neighborhood, global stats** | Covers all of `imageprocessing` and `threshold_mask`. Padding, halo trimming, and the "single tile equals whole image" test | 2–3 wk |
 | **L3 — Labels across tiles** | The ledger, the four rules, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
@@ -573,10 +663,6 @@ concentrated.
 
 ## Open questions
 
-- **Zarr 2 or 3.** `vtea-core` pins `zarr>=2.16,<3`. Zarr 3 brings sharding,
-  which matters for a pyramid with millions of chunks on a network
-  filesystem, but `ome-zarr-py` and the wider ecosystem moved at their own
-  pace. Decide before L1 rather than during it.
 - **Dask scheduler.** Threads are enough for a workstation; `distributed`
   buys a cluster and a dashboard, and costs a dependency and a failure mode.
   Recommend: threaded by default, `distributed` opt-in, and keep the
@@ -590,6 +676,9 @@ concentrated.
   Manual correction of a 33 GB label store is a different problem (chunk
   write amplification, undo). Out of scope here; flagged so it is not
   assumed to be in.
-- **Time series.** `_to_czyx` currently rejects `T` outright. Large data and
-  time are likely to arrive together; the axis model should be decided
-  before L1 fixes a store layout, even if the implementation waits.
+- **When time actually lands.** The axis model and the store layout are
+  settled above; what is not settled is whether the first real time support
+  is "run the whole protocol per timepoint independently" (cheap, useful,
+  no tracking) or waits for tracking to exist. The former is a few days'
+  work on top of L0-L4 and is probably what most users mean; confirm that
+  before building either.
