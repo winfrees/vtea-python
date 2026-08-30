@@ -340,6 +340,26 @@ Both tiles segment it. A gets object 7, B gets object 3. They are one
 nucleus, they have different local ids, each has a truncated shape, and
 neither tile knows the other exists.
 
+### Two primitives, then the rules
+
+The four rules below are not four algorithms. They are two ways of knowing
+that a fragment in tile A and a fragment in tile B are the same object,
+followed by four things to do about it — and separating those is what keeps
+the implementation from being four half-shared code paths.
+
+**Primitive 1: the centroid.** A tile's cores partition the volume exactly
+(no voxel is in two cores, none is in none — the property `TilePlan`'s tests
+assert against every tile). So an object's centroid lands in exactly one
+core, and "the tile whose core holds the centroid keeps it" is a
+deduplication rule that needs no cross-tile comparison at all. A number per
+object, no voxel reads.
+
+**Primitive 2: halo correspondence.** Two adjacent tiles both segment the
+region where their halos overlap. Comparing their labellings of that shared
+region — IoU per fragment pair — says which fragment in A is which fragment
+in B. It costs one pass over the halo regions and it is the thing that makes
+the other three rules possible.
+
 ### The rules
 
 A `SeamPolicy`, recorded on the run like a `Spacing` is, with a default that
@@ -351,41 +371,99 @@ class SeamPolicy:
     rule: str = OWN_BY_CENTROID
     halo: int | None = None          # None → from the step's contract
     max_object_extent: float | None = None   # physical; overrides the halo
-    min_overlap: float = 0.5         # IoU in the shared halo, for MERGE_BY_OVERLAP
+    min_overlap: float = 0.5         # IoU in the shared halo, for the correspondence
     border_objects: str = KEEP       # KEEP | DROP  — the *dataset* border
     pad_mode: str = "reflect"
     on_halo_exceeded: str = FLAG     # FLAG | RAISE | RETILE
 ```
 
-**`OWN_BY_CENTROID`** (default). Every tile segments its core plus its halo.
-An object is *kept* by exactly one tile: the one whose core contains its
-centroid. Every other tile drops it. No merging, no matching, no
-double-counting, and the kept copy is the complete object because it lay
-entirely within core-plus-halo. Exact whenever the halo exceeds the object's
-extent, which is the same condition the neighborhood steps already need.
-Cheap: a centroid comparison, no cross-tile voxel reads.
+**`OWN_BY_CENTROID`** (default, primitive 1). Every tile segments its core
+plus its halo. An object is kept by exactly one tile: the one whose core
+contains its centroid. Every other tile drops it. No matching, no merging,
+and the kept copy is the complete object because it lay entirely within
+core-plus-halo. Cheap, and exact whenever the halo exceeds the object's
+extent — the same condition the neighborhood steps already need.
 
-**`MERGE_BY_OVERLAP`**. For objects genuinely larger than any affordable
-halo — a vessel, a tubule, a whole glomerulus. Fragments are matched across
-the seam by IoU within the shared halo region; a match above `min_overlap`
-unions their ids. Union-find over the whole grid gives global ids in one
-pass. This is the case the Java `ObjectStitcher` (a Smile kD-tree over
-boundary objects) was written for, and the only one where its logic needs a
-real port rather than a library.
+Its failure mode is worth stating, because it is silent and it is the reason
+the halo is verified rather than assumed. Take an object *larger* than the
+halo, straddling a seam. Tile A sees a truncated copy and computes a
+centroid pulled towards A; tile B sees a different truncated copy and
+computes a centroid pulled towards B. Both centroids can land in their own
+tile's core, so **both tiles keep it** — one object becomes two truncated
+ones, and nothing in the arithmetic notices. That is precisely what the halo
+check catches, and precisely why an object bigger than any affordable halo
+needs one of the rules below instead.
 
-**`RESEGMENT_SEAM`**. Neither of the above works when the segmenter itself
-is not translation-invariant — which is exactly the deep-learning case, and
-why it gets its own rule. Fragments touching a seam are re-segmented in a
-window *centred on the seam*, so the object that was cut is now interior,
-and the new answer replaces both fragments. Costs one extra inference per
-seam-crossing object; buys a mask that no boundary ever ran through.
+**`OWN_BY_OVERLAP`** (primitive 2). The same idea as `OWN_BY_CENTROID` —
+exactly one tile keeps the object, the rest drop it — but the correspondence
+decides the winner instead of a point: the object goes to the tile holding
+the most of it in its *core*, with the fragments linked first so that
+"the most of it" is a question that can be asked at all.
 
-**`FLAG_ONLY`**. Keep both fragments, link them, mark them contested,
-resolve nothing. For QC, for a first look at unfamiliar data, and as the
-fallback when a rule's own precondition fails.
+When is that worth the correspondence pass? Not when every tile's copy is
+the same copy — under a sufficient halo and a translation-invariant
+segmenter, all tiles that see the object segment it identically, so choosing
+between them is choosing between duplicates and the cheapest tie-break wins.
+It earns its cost in the two cases where the copies genuinely *differ*:
 
-**`border_objects`** is a separate axis and must not be confused with the
-above: dropping objects that touch the *dataset* boundary is a standard
+- A **concave or elongated** object — a tubule in cross-section, a C-shaped
+  cell, a branching vessel — whose centroid can lie outside the object
+  entirely, and so in the core of a tile that barely contains it. Centroid
+  ownership hands the object to a tile with a poor view of it; overlap
+  ownership hands it to the tile that actually holds it.
+- **A segmenter that is not translation-invariant**, where each tile's copy
+  is a different mask rather than a copy. Picking the best-supported one is
+  a real improvement over picking by centroid, and it costs one comparison
+  pass rather than an extra inference.
+
+So: a middle rung, cheaper than resegmenting and more robust than a
+centroid. It is not a merge — the object stays whole, one tile's version of
+it is chosen — which is what distinguishes it from the next rule.
+
+**`MERGE_BY_OVERLAP`** (primitive 2). Same correspondence, opposite
+conclusion: rather than choosing a winner, union the fragments into one
+object. For things genuinely larger than any affordable halo — a vessel, a
+tubule, a whole glomerulus — where no tile has a complete copy to choose.
+Union-find over the grid gives global ids in one pass. This is the case the
+Java `ObjectStitcher` (a Smile kD-tree over boundary objects) was written
+for, and the only one whose logic needs a real port rather than a library.
+
+**`RESEGMENT_SEAM`**. **Not** an overlap rule, and the distinction matters.
+The two rules above both assume that at least one tile's answer is worth
+keeping, and choose between them. When the segmenter is not
+translation-invariant — the deep-learning case — that assumption is what
+fails: the flow field near a tile edge is computed from truncated context,
+so *both* copies are influenced by a boundary that has nothing to do with
+the specimen, and choosing the better of two wrong masks is still a wrong
+mask. The fix is not a better choice, it is to remove the thing being chosen
+between: re-run the segmenter on a window *centred on the seam*, where the
+object is interior, and let that replace both fragments. Costs one extra
+inference per seam-crossing object; buys a mask no boundary ever ran
+through. Overlap is used only to find which objects need it.
+
+**`FLAG_ONLY`**. Keep both fragments, link them by correspondence, mark them
+contested, resolve nothing. For QC, for a first look at unfamiliar data, and
+as the fallback when a rule's own precondition fails.
+
+| Rule | Needs correspondence | Result | Right when |
+| --- | --- | --- | --- |
+| `OWN_BY_CENTROID` | no | one tile's copy | halo suffices, segmenter is translation-invariant |
+| `OWN_BY_OVERLAP` | yes | the best-supported copy | copies differ — concave objects, or a learned segmenter |
+| `MERGE_BY_OVERLAP` | yes | fragments unioned | the object exceeds any affordable halo |
+| `RESEGMENT_SEAM` | to find candidates | a new copy | no copy is trustworthy at all |
+| `FLAG_ONLY` | yes | both, marked | QC, or a failed precondition |
+
+**A fifth, not proposed but worth naming.** Once several tiles have each
+produced a segmentation of the same seam region, that is a multi-rater
+consensus problem, not a choice — and there is an algorithm for exactly that
+shape of thing which the Java codebase already contains: `vtea.objects`
+ships STAPLE (see PORT_PLAN.md's inventory). A `CONSENSUS` rule combining
+the overlapping copies rather than picking one is therefore a port rather
+than new research, if the seam review ever shows that picking is the thing
+losing accuracy. Not in scope for L3; recorded so it is not reinvented.
+
+**`border_objects`** is a separate axis and must not be confused with any of
+the above: dropping objects that touch the *dataset* boundary is a standard
 cytometry choice (they are genuinely truncated specimens). Dropping objects
 that touch a *tile* boundary would be a bug. The ledger distinguishes them
 because the executor knows which faces are which.
@@ -703,7 +781,7 @@ Changed elsewhere, and deliberately little:
 | **L0 — Budget and plan** | `MemoryBudget`, `TilePlan`, the `StepIO` scaling fields, the plan summary in the GUI. No execution change; everything downstream depends on it | 1–2 wk |
 | **L1 — Lazy I/O and the store** | `io/store.py` as the single zarr seam, `Axes`, OME-NGFF 0.4 read/write with pyramids and a 5D `TCZYX` layout, lazy TIFF, ingest, `ZarrScratch`, lazy napari layers | 2–3 wk |
 | **L2 — The executor: elementwise, neighborhood, global stats** | Covers all of `imageprocessing` and `threshold_mask`. Padding, halo trimming, and the "single tile equals whole image" test | 2–3 wk |
-| **L3 — Labels across tiles** | The ledger, the four rules, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
+| **L3 — Labels across tiles** | The ledger, the two correspondence primitives and the rules over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
@@ -725,7 +803,13 @@ concentrated.
   (`OWN_BY_CENTROID` generally, `RESEGMENT_SEAM` for Cellpose), but this is
   a scientific judgement as much as an engineering one and should be
   confirmed against real tissue with vessels and tubules in it, not only
-  against nuclei.
+  against nuclei. The specific thing to measure: how often
+  `OWN_BY_OVERLAP` and `OWN_BY_CENTROID` disagree on real data. If the
+  answer is "rarely, and only on the elongated things", overlap ownership
+  should be the default for everything and the centroid rule is a fast path
+  for nuclei; if they never disagree, the correspondence pass is not worth
+  running by default. That is a measurement, not an argument, and the seam
+  ledger is what makes it cheap to take.
 - **Does anything need true random-access editing of a large label image?**
   Manual correction of a 33 GB label store is a different problem (chunk
   write amplification, undo). Out of scope here; flagged so it is not
