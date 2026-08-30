@@ -30,7 +30,6 @@ from vtea_core.measurements import FeatureCatalog
 from vtea_core.objects import AssociationSet, CellSet, ObjectRef
 from vtea_core.workflow import Pipeline
 
-
 OBJECT_TABLE = "Objects"
 
 
