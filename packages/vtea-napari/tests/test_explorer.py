@@ -348,10 +348,17 @@ class TestLayout:
         assert widget.style_panel.parentWidget() is left
         assert widget.results_splitter.widget(1) is widget.gate_manager
 
-    def test_the_gallery_is_a_second_tab(self, qtbot):
+    def test_the_gallery_and_the_review_are_further_tabs(self, qtbot):
+        """Each needs the full width - the gallery to show a useful number of
+        crops, the review to show what a link's alternatives were - so they
+        are tabs rather than a third and fourth column."""
         widget = ExplorerWidget(float_by_default=False)
         qtbot.addWidget(widget)
-        assert [widget.tabs.tabText(i) for i in range(widget.tabs.count())] == ["Plot", "Gallery"]
+        assert [widget.tabs.tabText(i) for i in range(widget.tabs.count())] == [
+            "Plot",
+            "Gallery",
+            "Associations",
+        ]
 
 
 class TestGateColouredHighlights:
@@ -615,3 +622,215 @@ class TestCellTable:
         session.set_context(republished.context, republished.results_table("Objects"),
                             dict(republished.tables))
         assert len(session.tables["cell_features_1"].gate_set) == 1
+
+
+def _reviewable_session():
+    """A session holding an association with one obviously contested link."""
+    from vtea_core.objects import Association, AssociationSet, ObjectRef
+    from vtea_napari.session import AnalysisSession
+
+    session = AnalysisSession()
+    nuclei = np.zeros((6, 14), dtype=np.int32)
+    nuclei[1:3, 1:3] = 1
+    nuclei[1:3, 11:13] = 2
+    cytoplasm = np.zeros((6, 14), dtype=np.int32)
+    cytoplasm[3:5, 5:9] = 1
+
+    associations = AssociationSet(
+        [
+            Association(
+                child=ObjectRef("cytoplasm_1", 1),
+                parent=ObjectRef("nuclei_1", 1),
+                probability=0.52,
+                method="centroid_distance",
+                alternatives=[(ObjectRef("nuclei_1", 2), 0.46)],
+            )
+        ]
+    )
+    session.set_context(
+        {"nuclei_1": nuclei, "cytoplasm_1": cytoplasm, "associate_objects_1": associations},
+        None,
+    )
+    return session, associations
+
+
+class TestAssociationReview:
+    """The point of keeping each link's posterior was to be able to put the
+    few percent worth a person's attention in front of them and let them
+    settle it."""
+
+    def test_the_contested_link_is_listed(self, qtbot):
+        session, _associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        assert widget.review.table.rowCount() == 1
+        assert widget.review.table.item(0, 0).text() == "cytoplasm_1#1"
+
+    def test_a_certain_link_is_not_listed(self, qtbot):
+        """A review list that shows everything is one nobody reads."""
+        from vtea_core.objects import Association, AssociationSet, ObjectRef
+        from vtea_napari.session import AnalysisSession
+
+        session = AnalysisSession()
+        session.set_context(
+            {
+                "a": AssociationSet(
+                    [Association(ObjectRef("c", 1), ObjectRef("p", 1), probability=1.0)]
+                )
+            },
+            None,
+        )
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        assert widget.review.table.rowCount() == 0
+
+    def test_the_summary_says_how_much_of_the_run_worked(self, qtbot):
+        session, _associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        assert "1 linked" in widget.review.summary_label.text()
+
+    def test_the_choices_are_the_parents_that_were_considered(self, qtbot):
+        """Not free text: a reassignment is a choice between the answers the
+        evidence actually offered, plus breaking the link."""
+        session, _associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+
+        combo = widget.review.parent_combo
+        offered = [combo.itemText(i) for i in range(combo.count())]
+        assert offered[0] == "nuclei_1#1"
+        assert "nuclei_1#2 (0.46)" in offered
+        assert "(no parent)" in offered
+
+    def test_applying_a_choice_reassigns_the_child(self, qtbot):
+        from vtea_core.objects import ObjectRef
+
+        session, associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+        widget.review.parent_combo.setCurrentText("nuclei_1#2 (0.46)")
+        widget.review.apply_reassignment()
+
+        assert associations.parent_of(ObjectRef("cytoplasm_1", 1)) == ObjectRef("nuclei_1", 2)
+
+    def test_a_reassignment_is_recorded_as_a_decision(self, qtbot):
+        from vtea_core.objects import ObjectRef
+
+        session, associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+        widget.review.parent_combo.setCurrentText("nuclei_1#2 (0.46)")
+        widget.review.apply_reassignment()
+
+        link = associations.link_for(ObjectRef("cytoplasm_1", 1))
+        assert link.method == "manual"
+        assert link.params["previous_parent"] == "nuclei_1#1"
+
+    def test_a_settled_link_leaves_the_review_list(self, qtbot):
+        session, _associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+        widget.review.apply_reassignment()
+        assert widget.review.table.rowCount() == 0
+
+    def test_a_link_can_be_broken_by_hand(self, qtbot):
+        """A cytoplasm with no nucleus in the section is an ordinary result,
+        not a failure to choose."""
+        from vtea_core.objects import ObjectRef
+
+        session, associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+        widget.review.parent_combo.setCurrentText("(no parent)")
+        widget.review.apply_reassignment()
+
+        assert associations.parent_of(ObjectRef("cytoplasm_1", 1)) is None
+        assert associations.unassigned == [ObjectRef("cytoplasm_1", 1)]
+
+    def test_the_decision_is_remembered_on_the_session(self, qtbot):
+        """So that re-running the association step corrects the automated
+        answers without undoing the settled ones."""
+        from vtea_core.objects import ObjectRef
+
+        session, _associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+        widget.review.parent_combo.setCurrentText("nuclei_1#2 (0.46)")
+        widget.review.apply_reassignment()
+
+        assert session.manual_links == {ObjectRef("cytoplasm_1", 1): ObjectRef("nuclei_1", 2)}
+
+    def test_a_re_run_keeps_the_decision(self, qtbot):
+        """The behaviour that makes the correction worth making."""
+        from vtea_core.objects import Association, AssociationSet, ObjectRef
+
+        session, _associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+        widget.review.parent_combo.setCurrentText("nuclei_1#2 (0.46)")
+        widget.review.apply_reassignment()
+
+        # What re-running the step would produce: the algorithm's answer
+        # again, with no knowledge of the correction.
+        rerun = AssociationSet(
+            [
+                Association(
+                    child=ObjectRef("cytoplasm_1", 1),
+                    parent=ObjectRef("nuclei_1", 1),
+                    probability=0.52,
+                    method="centroid_distance",
+                )
+            ]
+        )
+        assert session.apply_manual_links(rerun) == 1
+        assert rerun.parent_of(ObjectRef("cytoplasm_1", 1)) == ObjectRef("nuclei_1", 2)
+
+    def test_an_edit_for_another_segmentation_is_left_alone(self, qtbot):
+        """The corrections belonging to a different association step are not
+        this step's to apply."""
+        from vtea_core.objects import Association, AssociationSet, ObjectRef
+
+        session, _associations = _reviewable_session()
+        session.record_manual_link(ObjectRef("lysosome_1", 4), ObjectRef("cytoplasm_1", 1))
+        other = AssociationSet(
+            [Association(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 1))]
+        )
+        assert session.apply_manual_links(other) == 0
+
+    def test_selecting_a_link_shows_both_objects(self, qtbot):
+        """Reading a posterior off a table is not how anybody decides which
+        nucleus a cytoplasm belongs to - looking at them is."""
+        import napari
+
+        session, _associations = _reviewable_session()
+        viewer = napari.components.ViewerModel()
+        widget = ExplorerWidget(napari_viewer=viewer, session=session, float_by_default=False)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+
+        names = [layer.name for layer in viewer.layers]
+        assert "Reviewing: cytoplasm_1" in names
+        assert "Reviewing: nuclei_1" in names
+
+    def test_the_associations_round_trip_through_a_file(self, qtbot, tmp_path):
+        from vtea_core.objects import ObjectRef, load_associations, save_associations
+
+        session, associations = _reviewable_session()
+        widget = ExplorerWidget(session=session)
+        qtbot.addWidget(widget)
+        widget.review.table.selectRow(0)
+        widget.review.parent_combo.setCurrentText("nuclei_1#2 (0.46)")
+        widget.review.apply_reassignment()
+
+        path = save_associations(widget.review.associations, tmp_path / "a.json")
+        restored = load_associations(path)
+        assert restored.was_edited(ObjectRef("cytoplasm_1", 1))
+        assert restored.link_for(ObjectRef("cytoplasm_1", 1)).method == "manual"

@@ -2606,3 +2606,109 @@ class TestProbabilisticOwnership:
         broad_step = self._own(widget, cytoplasm, nuclei, falloff=10.0)
         broad = widget.last_context[broad_step.name]
         assert sharp.contested(0.9).sum() < broad.contested(0.9).sum()
+
+
+class TestManualDecisionsSurviveARerun:
+    """A correction a re-run silently discards is barely a correction. The
+    association step is the one people re-run most - it is where the
+    parameters get tuned - so this is the path that has to hold."""
+
+    def _builder(self, qtbot):
+        import numpy as np
+
+        viewer = _model_viewer()
+        volume = np.zeros((2, 20, 80))
+        for index in range(4):
+            left = index * 20 + 2
+            volume[0, 3:17, left : left + 16] = 200.0
+            centre = left + 8
+            volume[1, 8:12, centre - 2 : centre + 2] = 200.0
+        viewer.add_image(volume, name="two channel")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.channel_axis_combo.setCurrentIndex(1)
+        return widget
+
+    def _associate(self, widget):
+        from vtea_core.workflow import Step
+
+        segments = {}
+        for channel, name in ((0, "cytoplasm"), (1, "nuclei")):
+            threshold = widget.pipeline.add_step(
+                Step.for_function(
+                    "segmentation",
+                    "threshold_mask",
+                    params={"method": "fixed", "value": 50.0},
+                    channel=channel,
+                    taken_names=widget.step_names(),
+                )
+            )
+            widget.run_single_step(threshold)
+            labels = widget.pipeline.add_step(
+                Step.for_function(
+                    "segmentation",
+                    "label_components",
+                    available=set(widget.last_context),
+                    name=name,
+                    taken_names=widget.step_names(),
+                )
+            )
+            labels.input_keys["mask"] = threshold.name
+            widget.run_single_step(labels)
+            segments[name] = labels
+
+        associate = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "association",
+                "associate_objects",
+                available=set(widget.last_context),
+                params={"method": "containment", "mode": "one_to_one"},
+                taken_names=widget.step_names(),
+            )
+        )
+        associate.input_keys["child_labels"] = segments["cytoplasm"].name
+        associate.input_keys["parent_labels"] = segments["nuclei"].name
+        widget.run_single_step(associate)
+        return associate
+
+    def test_a_hand_made_link_is_re_applied_on_a_re_run(self, qtbot):
+        from vtea_core.objects import ObjectRef
+
+        widget = self._builder(qtbot)
+        associate = self._associate(widget)
+
+        # Somebody decides cytoplasm 1 belongs to nucleus 3, not nucleus 1.
+        child = ObjectRef("cytoplasm", 1)
+        widget.session.record_manual_link(child, ObjectRef("nuclei", 3))
+
+        widget.run_single_step(associate)
+        links = widget.last_context[associate.name]
+        assert links.parent_of(child) == ObjectRef("nuclei", 3)
+        assert links.was_edited(child)
+
+    def test_the_log_says_the_decision_was_kept(self, qtbot):
+        from vtea_core.objects import ObjectRef
+
+        widget = self._builder(qtbot)
+        associate = self._associate(widget)
+        widget.session.record_manual_link(ObjectRef("cytoplasm", 1), ObjectRef("nuclei", 3))
+        widget.run_single_step(associate)
+        assert "1 manual decision(s) kept" in widget.status_label.toPlainText()
+
+    def test_a_run_with_no_decisions_says_nothing_about_them(self, qtbot):
+        widget = self._builder(qtbot)
+        self._associate(widget)
+        assert "manual decision" not in widget.status_label.toPlainText()
+
+    def test_a_broken_link_is_re_applied_too(self, qtbot):
+        from vtea_core.objects import ObjectRef
+
+        widget = self._builder(qtbot)
+        associate = self._associate(widget)
+        child = ObjectRef("cytoplasm", 2)
+        widget.session.record_manual_link(child, None)
+
+        widget.run_single_step(associate)
+        links = widget.last_context[associate.name]
+        assert links.parent_of(child) is None
+        assert child in links.unassigned

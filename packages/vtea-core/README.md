@@ -62,7 +62,10 @@ Phases 0-4 are done. Implemented and tested:
   label image and `probabilities[0]` the confidence map; `margin()` separates
   "two cells claim this equally" from "one cell weakly claims it and nobody
   contests"; `override()` gives a region to one owner and records that a
-  person said so
+  person said so. `AssociationSet.set_parent`/`unassign` are the same idea
+  one level up - a hand-made link keeps the answer it replaced in `params`,
+  is marked `manual` forever after, and drops out of `uncertain()` because a
+  person's decision is not a posterior
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
   (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
   max, threshold_mean), `extract_measurements_by_channel` (one segmentation

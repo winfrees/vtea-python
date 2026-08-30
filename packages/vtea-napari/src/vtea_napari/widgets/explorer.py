@@ -50,6 +50,7 @@ from qtpy.QtWidgets import (
 )
 
 from vtea_napari.session import AnalysisSession, session_for
+from vtea_napari.widgets.association_review import AssociationReviewWidget
 from vtea_napari.widgets.gallery import GalleryWidget
 from vtea_napari.widgets.gate_manager import GateManagerWidget
 from vtea_napari.widgets.log_view import LogView
@@ -66,6 +67,7 @@ GATE_WIDTH_SHARE = 1
 DEFAULT_FLOATING_SIZE = (900, 560)
 
 HIGHLIGHT_LAYER_NAME = "Gate highlight"
+REVIEW_LAYER_NAME = "Reviewing"
 
 
 def _solid_label_colormap(label_ids, color: str):
@@ -192,9 +194,17 @@ class ExplorerWidget(QWidget):
         # column: it needs the full width to show a useful number of crops.
         self.gallery = GalleryWidget()
         self.gallery.object_selected.connect(self._on_object_selected)
+        # Reviewing the association is a third view of the same analysis, not
+        # a third column: the few percent of links worth a person's attention
+        # need the width to show what the alternatives were.
+        self.review = AssociationReviewWidget()
+        self.review.link_selected.connect(self._on_link_selected)
+        self.review.associations_changed.connect(self._on_associations_changed)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self.results_splitter, "Plot")
         self.tabs.addTab(self.gallery, "Gallery")
+        self.tabs.addTab(self.review, "Associations")
         root.addWidget(self.tabs, 1)
 
         self.status_label = LogView()
@@ -252,6 +262,7 @@ class ExplorerWidget(QWidget):
         self._restoring = True
         try:
             self._refresh_table_choices()
+            self.review.set_sources(self.session.associations())
             self.gate_manager.gate_set = self.session.gate_set
             frame = self.session.results_table()
             if frame is None:
@@ -268,6 +279,39 @@ class ExplorerWidget(QWidget):
             self.status_label.setText(f"{len(frame)} {noun}, {len(frame.columns)} features.")
         finally:
             self._restoring = False
+
+    def _on_link_selected(self, child, parent) -> None:
+        """Show the two objects a contested link is between.
+
+        Reading a posterior off a table is not how anybody decides which
+        nucleus a cytoplasm belongs to - looking at them is - so selecting a
+        row puts both on the image.
+        """
+        self.status_label.setText(f"{child} -> {parent}")
+        if self.viewer is None:
+            return
+        for ref, colour in ((child, "yellow"), (parent, "cyan")):
+            labels = self.session.context.get(ref.segmentation)
+            if not isinstance(labels, np.ndarray):
+                continue
+            name = f"{REVIEW_LAYER_NAME}: {ref.segmentation}"
+            for existing in list(self.viewer.layers):
+                if existing.name == name:
+                    self.viewer.layers.remove(existing)
+            layer = self.viewer.add_labels(
+                np.where(labels == ref.object_id, labels, 0).astype(np.int32), name=name
+            )
+            _apply_gate_color(layer, _solid_label_colormap([ref.object_id], colour))
+
+    def _on_associations_changed(self) -> None:
+        """A hand-made decision: remember it on the session so re-running the
+        association step corrects the automated answers without undoing it."""
+        associations = self.review.associations
+        if associations is None:
+            return
+        for child in associations.edited_by_hand:
+            self.session.record_manual_link(child, associations.parent_of(child))
+        self.status_label.setText(associations.summary())
 
     def _refresh_table_choices(self) -> None:
         names = self.session.table_names()

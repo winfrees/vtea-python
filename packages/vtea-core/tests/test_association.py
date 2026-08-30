@@ -244,3 +244,83 @@ class TestIdentityAssociation:
 
     def test_an_empty_child_gives_an_empty_set(self):
         assert len(associate_by_identity(np.zeros((5, 5), dtype=np.int32), self.nuclei())) == 0
+
+
+class TestManualOverride:
+    """Every automated assignment is wrong somewhere, and an analysis nobody
+    can correct is one nobody can publish. What matters as much as the
+    correction is that it stays visible as one."""
+
+    def test_a_child_can_be_reassigned_by_hand(self):
+        associations = AssociationSet([link(1, 7, 0.55, [(9, 0.44)])])
+        associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        assert associations.parent_of(ObjectRef("cytoplasm_1", 1)) == ObjectRef("nuclei_1", 9)
+
+    def test_a_hand_made_link_says_so(self):
+        associations = AssociationSet([link(1, 7, 0.55, [(9, 0.44)])])
+        edited = associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        assert edited.method == "manual"
+        assert edited.probability == 1.0
+
+    def test_the_answer_it_replaced_is_recorded(self):
+        """So a reviewer can see afterwards what the algorithm had said, and
+        how confident it had been about it."""
+        associations = AssociationSet([link(1, 7, 0.55, [(9, 0.44)])])
+        edited = associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        assert edited.params["previous_parent"] == "nuclei_1#7"
+        assert edited.params["previous_probability"] == pytest.approx(0.55)
+        assert edited.params["previous_method"] == "test"
+
+    def test_the_alternatives_the_algorithm_offered_are_kept(self):
+        associations = AssociationSet([link(1, 7, 0.55, [(9, 0.44)])])
+        edited = associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        assert edited.alternatives == [(ObjectRef("nuclei_1", 9), pytest.approx(0.44))]
+
+    def test_a_link_can_be_broken_by_hand(self):
+        associations = AssociationSet([link(1, 7)])
+        associations.unassign(ObjectRef("cytoplasm_1", 1))
+        assert associations.parent_of(ObjectRef("cytoplasm_1", 1)) is None
+        assert associations.unassigned == [ObjectRef("cytoplasm_1", 1)]
+
+    def test_a_broken_link_is_still_marked_as_reviewed(self):
+        """"Somebody looked at this and decided it has no parent" is a
+        different statement from "the evidence ran out"."""
+        associations = AssociationSet([link(1, 7)])
+        associations.unassign(ObjectRef("cytoplasm_1", 1))
+        assert associations.was_edited(ObjectRef("cytoplasm_1", 1))
+
+    def test_an_untouched_link_is_not_marked(self):
+        associations = AssociationSet([link(1, 7), link(2, 8)])
+        associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        assert associations.edited_by_hand == [ObjectRef("cytoplasm_1", 1)]
+
+    def test_the_edits_survive_a_round_trip(self):
+        associations = AssociationSet([link(1, 7, 0.55, [(9, 0.44)])])
+        associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        restored = AssociationSet.from_dict(associations.to_dict())
+        assert restored.was_edited(ObjectRef("cytoplasm_1", 1))
+        assert restored.link_for(ObjectRef("cytoplasm_1", 1)).method == "manual"
+
+    def test_a_broken_link_survives_a_round_trip_as_reviewed(self):
+        associations = AssociationSet([link(1, 7)])
+        associations.unassign(ObjectRef("cytoplasm_1", 1))
+        restored = AssociationSet.from_dict(associations.to_dict())
+        assert restored.edited_by_hand == [ObjectRef("cytoplasm_1", 1)]
+
+    def test_the_summary_counts_the_hand_edits(self):
+        associations = AssociationSet([link(1, 7)])
+        associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        assert "1 set by hand" in associations.summary()
+
+    def test_a_reviewed_link_stops_appearing_in_the_review_list(self):
+        """A person's decision is not a posterior. A review list that keeps
+        handing back the cases already reviewed is one nobody finishes - and
+        the runners-up stay on the link, so the margin alone would not have
+        dropped it."""
+        associations = AssociationSet([link(1, 7, 0.51, [(9, 0.49)])])
+        assert len(associations.uncertain(0.9)) == 1
+
+        associations.set_parent(ObjectRef("cytoplasm_1", 1), ObjectRef("nuclei_1", 9))
+        edited = associations.link_for(ObjectRef("cytoplasm_1", 1))
+        assert edited.margin < 0.9  # still a close call by the numbers
+        assert associations.uncertain(0.9) == []  # but not by anybody's question

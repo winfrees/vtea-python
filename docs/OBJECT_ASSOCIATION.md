@@ -5,8 +5,10 @@ cell: a nucleus with its envelope and cytosol, a cytoplasm assigned to one
 nucleus, organelles belonging to that cytoplasm — and an honest account of
 what happens where the evidence runs out.
 
-Phases 0 to 4 are built; each phase below records what it actually turned
-out to be, including where the plan was wrong. Phase 5 is still a plan.
+Every phase below is built; each records what it actually turned out to
+be, including where the plan was wrong and what it missed. The one piece
+outstanding is folding associations and cells into a saved protocol, which
+waits on the saving system in `SAVING_AND_ARCHIVING.md` existing at all.
 
 ## What is actually being asked
 
@@ -283,16 +285,37 @@ An `Ownership` saves as compressed npz with its provenance beside it; JSON
 would be the wrong container for image-sized data, and the point of the
 top-*k* form is that it is small enough to keep at all.
 
-### Phase 5 — QC, editing and persistence *(medium)*
+### Phase 5 — QC, editing and persistence *(medium)* — **done, except the archive**
 
-- A **Cells pane**: the association graph, per-link confidence, counts of
-  assigned/orphaned/contested, and the ambiguous cells sorted worst-first.
-- **Manual override**: reassign or break a link by hand, recorded as
-  `method="manual"` so it is distinguishable from an inferred one forever
-  after. Non-negotiable for real use — every automated assignment is wrong
-  somewhere, and an analysis you cannot correct is one you cannot publish.
-- Associations and cells fold into the saved protocol and the publication
-  bundle, extending `docs/SAVING_AND_ARCHIVING.md`.
+An **Associations tab** in the Object Explorer rather than a separate Cells
+pane: it shows the run's summary — linked, unassigned, contested, set by hand
+— and the links the method was least sure about, worst first, with each one's
+probability, margin and runner-up. Selecting a row puts both objects on the
+image in different colours, because reading a posterior off a table is not
+how anybody decides which nucleus a cytoplasm belongs to.
+
+**Manual override** is a choice between the parents that were actually
+considered, plus "no parent" — which is a real answer, not a failure to
+choose. The correction is recorded as `method="manual"` with the answer it
+replaced kept in `params`, and the child is marked as reviewed, so a link
+somebody has settled stops coming back in the review list however close the
+algorithm's call had been. A person's decision is not a posterior.
+
+One thing the plan did not say, and it turned out to matter more than the
+override itself: **a correction has to survive a re-run.** The association
+step is the one people re-run most, because it is where the parameters get
+tuned, and a re-run replaces the whole `AssociationSet`. So the decisions
+live on the session and are re-applied after every association run — the log
+says how many were kept — which is what makes correcting something worth
+doing at all.
+
+**Persistence is half done.** Associations save and reload as versioned JSON
+from the pane, corrections included, exactly as gates already do; cells and
+ownership have the same round trip in `vtea-core`. What is *not* done is
+folding them into a saved protocol or a publication bundle — because neither
+exists yet. `docs/SAVING_AND_ARCHIVING.md` is still a plan, and building its
+first tier is its own piece of work rather than a detail of this one. The
+pieces are all serialisable and ready for it.
 
 ## Validation
 

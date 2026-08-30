@@ -666,7 +666,16 @@ class ProtocolBuilderWidget(QWidget):
             # An association has nothing to draw, and how many objects were
             # left unlinked is the whole question - "it ran" would hide the
             # one number that says whether the parameters were right.
-            self.status_label.setText(f"{step.result_key}: {result.summary()}")
+            #
+            # Any decisions a person has already made about these objects are
+            # re-applied first: re-running with different parameters should
+            # correct the automated answers, not quietly undo the settled
+            # ones.
+            restored = self.session.apply_manual_links(result)
+            summary = result.summary()
+            if restored:
+                summary += f"; {restored} manual decision(s) kept"
+            self.status_label.setText(f"{step.result_key}: {summary}")
         else:
             self.status_label.setText(f"Ran {step.function_name} -> '{step.result_key}'")
 

@@ -27,6 +27,7 @@ from qtpy.QtCore import QObject, Signal
 from vtea_core.data import Spacing
 from vtea_core.gates import GateSet
 from vtea_core.measurements import FeatureCatalog
+from vtea_core.objects import AssociationSet, CellSet, ObjectRef
 from vtea_core.workflow import Pipeline
 
 
@@ -101,6 +102,12 @@ class AnalysisSession(QObject):
         # it, otherwise asked for: every distance and thickness downstream
         # is wrong without it, and wrong in a way that looks plausible.
         self.spacing: Spacing | None = None
+        # Links a person reassigned or broke by hand, child -> parent (or
+        # None for "no parent"). Held here rather than only on the
+        # AssociationSet a run produced, because re-running the association
+        # step replaces that set - and a correction that a re-run silently
+        # discards is barely a correction at all.
+        self.manual_links: dict[ObjectRef, ObjectRef | None] = {}
         self._table: pd.DataFrame | None = None
         # Gates drawn before any table was published - the explorer can be
         # driven directly, without the builder.
@@ -171,6 +178,47 @@ class AnalysisSession(QObject):
     def row_noun(self, name: str | None = None) -> str:
         view = self.table_view(name)
         return "objects" if view is None else view.noun
+
+    def associations(self) -> dict[str, AssociationSet]:
+        """Every association result in the run context, by the step that
+        produced it."""
+        return {
+            key: value
+            for key, value in self.context.items()
+            if isinstance(value, AssociationSet) and key != "associations"
+        }
+
+    def cell_sets(self) -> dict[str, CellSet]:
+        return {
+            key: value
+            for key, value in self.context.items()
+            if isinstance(value, CellSet) and key != "cells"
+        }
+
+    def record_manual_link(self, child: ObjectRef, parent: ObjectRef | None) -> None:
+        """Remember a hand-made decision so a re-run does not undo it."""
+        self.manual_links[child] = parent
+
+    def apply_manual_links(self, associations: AssociationSet) -> int:
+        """Re-apply the hand-made decisions that concern this set.
+
+        Called after an association step runs, so re-running it with
+        different parameters corrects the automated answers while leaving the
+        ones a person has already settled. Only children this set actually
+        contains are touched - the edits for a different segmentation belong
+        to a different step.
+        """
+        applied = 0
+        known = {link.child for link in associations} | set(associations.unassigned)
+        for child, parent in self.manual_links.items():
+            if child not in known:
+                continue
+            if parent is None:
+                associations.unassign(child)
+            else:
+                associations.set_parent(child, parent)
+            applied += 1
+        return applied
 
     def labels(self, name: str | None = None) -> np.ndarray | None:
         """The label image this table's rows are objects of, for highlighting

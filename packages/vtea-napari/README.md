@@ -96,6 +96,17 @@ widget and run it):
   `weighted_measurements_by_channel` step measures it, and knows which
   segmentation its rows are objects of by asking the ownership rather than
   guessing from the step graph.
+- **Reviewing an association** — an "Associations" tab in the Object
+  Explorer: the run's summary, and the links the method was least sure about
+  worst first with their probability, margin and runner-up. Selecting one
+  puts both objects on the image in different colours. A correction is a
+  choice between the parents actually considered, plus "no parent", recorded
+  as `manual` with the answer it replaced — and a settled link stops coming
+  back in the list, since a person's decision is not a posterior. Decisions
+  are kept on the session and re-applied after every association run, so
+  tuning the parameters and re-running corrects the automated answers without
+  undoing the settled ones; the log says how many were kept. Save/Open write
+  the associations, corrections included, as JSON.
 - **Fixed-choice parameters are dropdowns** — a step function annotating a
   parameter `Literal["many_to_one", "one_to_one"]` gets a combo box rather
   than a text field, read from the annotation text (vtea-core's hints are

@@ -34,9 +34,10 @@ from pathlib import Path
 from typing import Any
 
 # 2 added `unassigned`: children that were considered and deliberately left
-# without a parent. Version 1 files still load - the check below only refuses
-# a file newer than the reader.
-ASSOCIATION_FORMAT_VERSION = 2
+# without a parent. 3 added `edited`: the children a person reassigned or
+# unlinked by hand. Older files still load - the check below only refuses a
+# file newer than the reader.
+ASSOCIATION_FORMAT_VERSION = 3
 
 # How a link was arrived at, as opposed to by which algorithm.
 #
@@ -152,10 +153,15 @@ class AssociationSet:
         self,
         associations: list[Association] | None = None,
         unassigned: list[ObjectRef] | None = None,
+        edited: list[ObjectRef] | None = None,
     ):
         self._by_child: dict[ObjectRef, Association] = {}
         self._by_parent: dict[ObjectRef, list[Association]] = defaultdict(list)
         self._unassigned: list[ObjectRef] = []
+        # The children a person decided about. Kept separate from the links
+        # themselves so that "somebody looked at this one" survives even
+        # where the decision was to break the link entirely.
+        self._edited: set[ObjectRef] = set(edited or ())
         for association in associations or []:
             self.add(association)
         for child in unassigned or []:
@@ -183,6 +189,46 @@ class AssociationSet:
     @property
     def unassigned(self) -> list[ObjectRef]:
         return sorted(self._unassigned)
+
+    def set_parent(self, child: ObjectRef, parent: ObjectRef) -> Association:
+        """Reassign `child` by hand, and say so.
+
+        The link keeps the relationship it had and the alternatives the
+        algorithm offered - which is what lets a reviewer see afterwards what
+        the automated answer had been - but its method becomes `manual` and
+        its probability 1.0, because a person's decision is not a posterior.
+        The previous answer is recorded in `params` rather than discarded.
+        """
+        previous = self._by_child.get(child)
+        link = Association(
+            child=child,
+            parent=parent,
+            relationship=ASSIGNED if previous is None else previous.relationship,
+            probability=1.0,
+            method=MANUAL,
+            params={
+                "previous_method": "" if previous is None else previous.method,
+                "previous_parent": "" if previous is None else str(previous.parent),
+                "previous_probability": 0.0 if previous is None else previous.probability,
+            },
+            alternatives=[] if previous is None else list(previous.alternatives),
+        )
+        self.add(link)
+        self._edited.add(child)
+        return link
+
+    def unassign(self, child: ObjectRef) -> None:
+        """Break `child`'s link by hand: it belongs to nothing, and somebody
+        decided that rather than the evidence running out."""
+        self.add_unassigned(child)
+        self._edited.add(child)
+
+    @property
+    def edited_by_hand(self) -> list[ObjectRef]:
+        return sorted(self._edited)
+
+    def was_edited(self, child: ObjectRef) -> bool:
+        return child in self._edited
 
     def remove_child(self, child: ObjectRef) -> None:
         association = self._by_child.pop(child, None)
@@ -217,9 +263,15 @@ class AssociationSet:
     def uncertain(self, threshold: float = 0.9) -> list[Association]:
         """Links whose winning margin is below `threshold`, worst first -
         the ones worth a human's attention, which is the whole reason the
-        alternatives are kept."""
+        alternatives are kept.
+
+        A link somebody has already decided about is left out however close
+        the algorithm's call had been: a person's decision is not a
+        posterior, and a review list that keeps handing back the cases you
+        have already reviewed is one nobody will finish.
+        """
         return sorted(
-            (link for link in self if link.margin < threshold),
+            (link for link in self if link.margin < threshold and link.child not in self._edited),
             key=lambda link: link.margin,
         )
 
@@ -237,6 +289,8 @@ class AssociationSet:
             parts.append(f"{len(self._unassigned)} unassigned")
         if contested:
             parts.append(f"{contested} contested (margin < {threshold:g})")
+        if self._edited:
+            parts.append(f"{len(self._edited)} set by hand")
         pair = f"{'/'.join(sorted(children)) or '?'} -> {'/'.join(sorted(parents)) or '?'}"
         return f"{pair}: " + ", ".join(parts)
 
@@ -256,6 +310,7 @@ class AssociationSet:
             "vtea_association_version": ASSOCIATION_FORMAT_VERSION,
             "associations": [link.to_dict() for link in self],
             "unassigned": [ref.to_dict() for ref in self.unassigned],
+            "edited": [ref.to_dict() for ref in self.edited_by_hand],
         }
 
     @classmethod
@@ -269,6 +324,7 @@ class AssociationSet:
         return cls(
             [Association.from_dict(entry) for entry in data.get("associations", [])],
             [ObjectRef.from_dict(entry) for entry in data.get("unassigned", [])],
+            [ObjectRef.from_dict(entry) for entry in data.get("edited", [])],
         )
 
 
