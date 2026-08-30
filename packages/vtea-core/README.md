@@ -55,14 +55,26 @@ Phases 0-4 are done. Implemented and tested:
   the one hierarchy a cell spans, and `cell_features` turns one measurement
   table per segmentation into one row per cell, columns namespaced by role
   (`nuclei_1.mean_ch0`) and one-to-many roles aggregated (`lysosome_1.n`,
-  `lysosome_1.mean_count`)
+  `lysosome_1.mean_count`). `Ownership`/`distance_ownership` take the same
+  question down to the voxel: rather than one answer per voxel, the best *k*
+  owners and their probabilities, so a boundary the stain never resolved
+  reads as a coin toss instead of a confident split. `owners[0]` is the hard
+  label image and `probabilities[0]` the confidence map; `margin()` separates
+  "two cells claim this equally" from "one cell weakly claims it and nobody
+  contests"; `override()` gives a region to one owner and records that a
+  person said so
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
   (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
   max, threshold_mean), `extract_measurements_by_channel` (one segmentation
   against every channel as one flat table, intensity columns suffixed with
   the channel they were measured on: `mean_ch0`, `mean_ch2`, ...),
   `feature_matrix` (that table as the float array clustering and reduction
-  take as `data`), a physical `volume` column when the voxel size is known,
+  take as `data`), `weighted_measurements`/`weighted_measurements_by_channel`
+  (the same measurements over a probabilistic `Ownership` - a count becomes
+  the expected voxel count and a mean a probability-weighted mean, under the
+  same column names, so a protocol can swap a hard measurement for a weighted
+  one without every plot axis changing underneath), a physical `volume`
+  column when the voxel size is known,
   `threshold_mean`; `FeatureCatalog`/`FeatureDescriptor`
   (new) - what each column of the table is and how it was produced (what was
   measured, on which channel and segmentation, by which step with what
@@ -127,7 +139,8 @@ src/vtea_core/
   objects/          Association model: which object belongs to which, with the
                     posterior behind the link and how it was made, the scoring
                     and assignment that infer it between two independently
-                    segmented channels, and the cells those links compose into
+                    segmented channels, the cells those links compose into,
+                    and the per-voxel ownership underneath them
   measurements/     MeasurementStore (DuckDB) + regionprops-based extraction
   clustering/       KMeans, GMM, hierarchical, BIC-based automatic-k selection
   reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE

@@ -41,7 +41,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from vtea_core.measurements import FeatureCatalog, feature_matrix
-from vtea_core.objects import AssociationSet, CellSet
+from vtea_core.objects import AssociationSet, CellSet, Ownership
 from vtea_core.workflow import Pipeline, Step
 
 from vtea_napari.session import AnalysisSession, TableView, session_for
@@ -248,7 +248,11 @@ class ProtocolBuilderWidget(QWidget):
     "Run" button needs a layer to pull the initial volume from).
     """
 
-    PROCESSING_CATEGORIES = ("imageprocessing", "segmentation")
+    # "ownership" sits with the image steps rather than the analysis ones:
+    # it reads a label image and a mask and produces something
+    # image-shaped, next to the watershed_ownership it is the
+    # probabilistic counterpart of.
+    PROCESSING_CATEGORIES = ("imageprocessing", "segmentation", "ownership")
     # "classification" is deliberately absent. Its steps need `crops`,
     # `model`, `object_ids` and `class_labels` - none of which any step in a
     # protocol produces - so every one of them could only ever fail with
@@ -652,6 +656,8 @@ class ProtocolBuilderWidget(QWidget):
 
         if isinstance(result, np.ndarray) and result.ndim >= 2:
             self.show_step_result(step)
+        elif isinstance(result, Ownership):
+            self.show_ownership(step, result)
         elif isinstance(result, CellSet):
             # Same reason as an association: nothing to draw, and how many
             # cells are missing a part is the number worth seeing.
@@ -698,10 +704,24 @@ class ProtocolBuilderWidget(QWidget):
             if step.output_key != "measurements" or not step.name:
                 continue
             frame = self.last_context.get(step.name)
-            role = step.input_keys.get("labels", "")
+            role = self._segmentation_measured_by(step)
             if isinstance(frame, pd.DataFrame) and role:
                 tables[role] = frame
         context["measurement_tables"] = tables
+
+    def _segmentation_measured_by(self, step: Step) -> str:
+        """Which segmentation a measurement step's rows are objects of.
+
+        Usually the step the `labels` input points at. A weighted step reads
+        an ownership instead, and the ids in that ownership belong to the
+        markers it was built from - which the ownership itself records, so
+        the answer does not depend on guessing from the step graph.
+        """
+        labels = step.input_keys.get("labels", "")
+        if labels:
+            return labels
+        ownership = self.last_context.get(step.input_keys.get("ownership", ""))
+        return ownership.segmentation if isinstance(ownership, Ownership) else ""
 
     def available_features(self) -> list[str]:
         """Every numeric feature a clustering or reduction step could be
@@ -722,7 +742,7 @@ class ProtocolBuilderWidget(QWidget):
         """
         catalog = self.session.feature_catalog
         function = f"{step.category}.{step.function_name}"
-        segmentation = step.input_keys.get("labels", "")
+        segmentation = self._segmentation_measured_by(step)
         if step.output_key == "measurements":
             catalog.record_measured(
                 columns,
@@ -746,7 +766,7 @@ class ProtocolBuilderWidget(QWidget):
         recorded on a derived feature, whose own step never names it."""
         for step in self.analysis_pipeline.steps:
             if step.output_key == "measurements":
-                return step.input_keys.get("labels", "")
+                return self._segmentation_measured_by(step)
         return ""
 
     def _merge_into_measurements(self, step: Step, result) -> None:
@@ -861,6 +881,29 @@ class ProtocolBuilderWidget(QWidget):
 
         self._order_dims_for_z()
         self.status_label.setText(f"Added layer '{name}'")
+
+    def show_ownership(self, step: Step, ownership) -> None:
+        """Show a probabilistic ownership as two layers: who won, and how
+        sure that was.
+
+        The hard argmax on its own is indistinguishable from a watershed -
+        which is the problem the confidence map exists to solve. Seeing the
+        two together is what makes a boundary the method was unsure about
+        visible instead of merely present, so both go on at once.
+        """
+        self.status_label.setText(f"{step.result_key}: {ownership.summary()}")
+        if self.viewer is None:
+            return
+        for suffix, array, adder in (
+            ("", ownership.hard().astype(np.int32), self.viewer.add_labels),
+            (" confidence", ownership.confidence(), self.viewer.add_image),
+        ):
+            name = f"{step.result_key}{suffix}"
+            for existing in list(self.viewer.layers):
+                if existing.name == name:
+                    self.viewer.layers.remove(existing)
+            adder(self.align_to_source(array), name=name)
+        self._order_dims_for_z()
 
     def results_table(self) -> pd.DataFrame | None:
         """The per-object "data" table: the measurements, with every

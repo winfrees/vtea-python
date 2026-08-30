@@ -143,11 +143,24 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("cells", "cell_features"): StepIO(
         ("cells", "measurement_tables"), "cell_table", channel_mode=CHANNEL_NONE
     ),
+    # A posterior over owners per voxel rather than one answer. `segmentation`
+    # names the markers the ids belong to, taken from the wiring.
+    ("ownership", "distance_ownership"): StepIO(
+        ("labels", "mask", "spacing"),
+        "ownership",
+        channel_mode=CHANNEL_NONE,
+        names_from=(("segmentation", "labels"),),
+    ),
     ("measurements", "extract_measurements"): StepIO(
         ("labels", "intensity", "spacing"), "measurements"
     ),
     ("measurements", "extract_measurements_by_channel"): StepIO(
         ("labels", "intensity", "channel_axis", "spacing"),
+        "measurements",
+        channel_mode=CHANNEL_ARGUMENT,
+    ),
+    ("measurements", "weighted_measurements_by_channel"): StepIO(
+        ("ownership", "intensity", "channel_axis", "spacing"),
         "measurements",
         channel_mode=CHANNEL_ARGUMENT,
     ),

@@ -22,12 +22,17 @@ from vtea_core.imageprocessing import (
     median_filter,
     subtract_background,
 )
-from vtea_core.measurements import extract_measurements, extract_measurements_by_channel
+from vtea_core.measurements import (
+    extract_measurements,
+    extract_measurements_by_channel,
+    weighted_measurements_by_channel,
+)
 from vtea_core.objects import (
     associate_by_identity,
     associate_objects,
     build_cells,
     cell_features,
+    distance_ownership,
     merge_associations,
 )
 from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne
@@ -79,6 +84,9 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
         # nucleus <- cytoplasm and cytoplasm <- lysosome.
         "merge_associations": merge_associations,
     },
+    "ownership": {
+        "distance_ownership": distance_ownership,
+    },
     "cells": {
         "build_cells": build_cells,
         "cell_features": cell_features,
@@ -86,6 +94,10 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
     "measurements": {
         "extract_measurements": extract_measurements,
         "extract_measurements_by_channel": extract_measurements_by_channel,
+        # Measures a probabilistic ownership instead of a hard label
+        # image: a count becomes an expected volume and a mean a
+        # probability-weighted mean.
+        "weighted_measurements_by_channel": weighted_measurements_by_channel,
     },
     "clustering": {
         "kmeans": kmeans,

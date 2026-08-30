@@ -5,9 +5,8 @@ cell: a nucleus with its envelope and cytosol, a cytoplasm assigned to one
 nucleus, organelles belonging to that cytoplasm — and an honest account of
 what happens where the evidence runs out.
 
-Phases 0 to 3 are built; each phase below records what it actually turned
-out to be, including where the plan was wrong. Phases 4 and 5 are still
-a plan.
+Phases 0 to 4 are built; each phase below records what it actually turned
+out to be, including where the plan was wrong. Phase 5 is still a plan.
 
 ## What is actually being asked
 
@@ -233,7 +232,7 @@ which is where a cell's id points anyway.
 **Still to do:** recording the role on each column in the `FeatureCatalog`,
 so the data dictionary says which association a per-cell column came from.
 
-### Phase 4 — Pixel-level ownership *(large)*
+### Phase 4 — Pixel-level ownership *(large)* — **done**
 
 The genuinely hard one, and the one I would most like to keep small.
 
@@ -243,27 +242,46 @@ The genuinely hard one, and the one I would most like to keep small.
   many datasets it is enough. Everything below builds on having it already.
   What it does not do is say a division was a close call — it answers every
   voxel with the same confidence, which is exactly the gap this phase fills.
-- `distance_ownership`: per contested voxel, a posterior over nearby
-  cells from spacing-aware distance with a tunable falloff.
-- Optionally `membrane_ownership`, where a membrane channel raises the cost
-  of crossing a boundary.
-- **Representation is the design decision.** A dense cell × voxel posterior
-  is out of the question: 2,000 cells over a 2048×2048×24 volume is ~10¹¹
-  floats. Store instead the top-*k* (k=2 or 3) owner ids and probabilities
-  per voxel — about four times the size of the label image, and it captures
-  essentially all real ambiguity, since a voxel contested by four cells is
-  rare and not usefully resolved anyway. Plus a scalar confidence map
-  (max posterior) for display.
-- **Weighted measurements**: with soft ownership, `mean` becomes a
-  probability-weighted mean and `count` becomes an expected volume
-  (Σp). `regionprops_table` cannot do this, so it needs our own reducer
-  alongside the existing one — a real piece of work, not a parameter.
-- napari: the hard argmax as a Labels layer, the confidence map as an Image
-  layer, so contested regions are visible.
+- `distance_ownership` is built: each marker's claim on a voxel falls off as
+  `exp(-d / falloff)` from that marker's own surface, physical wherever the
+  voxel size is known, with `reach` (four falloffs by default) bounding the
+  candidates. `falloff` is therefore the width of the zone of doubt — the one
+  number that says how much of a boundary to treat as genuinely ambiguous.
+  Cost follows the objects, not the volume times the markers: each marker is
+  evaluated inside its own bounding box grown by `reach`.
+- `membrane_ownership` is **not** built. It was optional in this plan and
+  nothing needed it yet; the shape of `distance_ownership` is what a
+  cost-weighted variant would slot into.
+- **Representation was the design decision, and it went as planned.**
+  `Ownership` stores the top-*k* (k=2 by default) owner ids and probabilities
+  per voxel. `owners[0]` *is* the hard label image and `probabilities[0]` the
+  confidence map, so nothing needs a separate copy of either. `margin()`
+  distinguishes the two kinds of doubt that look alike in a single number: a
+  voxel two cells claim equally is a coin toss, while a voxel one cell weakly
+  claims and nobody contests is not.
+- **Weighted measurements** are `vtea_core.measurements.weighted`: `count` is
+  the expected voxel count (Σp), `volume` scales it physically, and `mean`,
+  `sum` and `stddev` are probability-weighted. `min`/`max` are deliberately
+  *not* weighted — an extreme is an extreme, and scaling it would report a
+  value occurring nowhere in the image. The column names match the
+  unweighted table's, so a protocol can swap a hard measurement for a
+  weighted one without every plot axis and gate changing name underneath, and
+  a test pins that a *certain* ownership measures identically to
+  `extract_measurements` — the weighted reducer has to be a generalisation of
+  the ordinary one, not a different statistic that resembles it.
+- napari shows both at once: the hard argmax as a Labels layer and the
+  confidence map as an Image layer beside it. The argmax alone is
+  indistinguishable from a watershed, which is the problem the confidence map
+  exists to solve.
 
-**Risk:** this is where scope grows without bound. The deterministic
-baseline is the hedge — if the soft version proves not worth its cost on
-real data, Phase 4 still delivered something usable.
+`override()` gives a region to one owner outright and records that a person
+said so, in a `manual` map that survives saving — a correction that becomes
+indistinguishable from an inference is worse than no correction, because
+nobody reading the result later can tell what was reviewed.
+
+An `Ownership` saves as compressed npz with its provenance beside it; JSON
+would be the wrong container for image-sized data, and the point of the
+top-*k* form is that it is small enough to keep at all.
 
 ### Phase 5 — QC, editing and persistence *(medium)*
 

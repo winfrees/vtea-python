@@ -86,6 +86,16 @@ widget and run it):
   (`cell_id` rather than `object_id`), the segmentation a gate on it should
   light up on the image, and its own gates, since a polygon drawn over cell
   features selects nothing among objects.
+- **Probabilistic ownership** — an `ownership` processing category
+  (`distance_ownership`) beside the segmentation steps, since it reads a
+  label image and a mask and produces something image-shaped. Its result goes
+  on as two layers at once — the hard answer as Labels, the confidence as an
+  Image — because the argmax alone is indistinguishable from a watershed,
+  which is exactly the problem the confidence map exists to solve, and the
+  log reports how much of the field was contested. A
+  `weighted_measurements_by_channel` step measures it, and knows which
+  segmentation its rows are objects of by asking the ownership rather than
+  guessing from the step graph.
 - **Fixed-choice parameters are dropdowns** — a step function annotating a
   parameter `Literal["many_to_one", "one_to_one"]` gets a combo box rather
   than a text field, read from the annotation text (vtea-core's hints are

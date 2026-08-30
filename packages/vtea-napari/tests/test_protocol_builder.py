@@ -86,7 +86,9 @@ class TestAddStep:
         processing = self._categories(widget.processing_stack)
         analysis = self._categories(widget.analysis_stack)
 
-        assert processing == {"imageprocessing", "segmentation"}
+        # "ownership" is a processing category: it reads a label image and
+        # a mask and produces something image-shaped.
+        assert processing == {"imageprocessing", "segmentation", "ownership"}
         # No "classification": its steps need crops, a model and training
         # labels, none of which any protocol step produces, so every one of
         # them could only ever fail with "needs context key(s) [...]".
@@ -2417,3 +2419,190 @@ class TestCellsFromTheBuilder:
         context = {}
         widget._seed_measurement_tables(context)
         assert set(context["measurement_tables"]) == {nuclei.name, cytoplasm.name}
+
+
+class TestProbabilisticOwnership:
+    """A boundary the stain never resolved: which cell owns the voxels
+    between two nuclei, and how sure the answer is."""
+
+    def _builder(self, qtbot):
+        import numpy as np
+
+        viewer = _model_viewer()
+        volume = np.zeros((2, 16, 40))
+        volume[0, 3:13, 2:38] = 200.0  # one connected cytoplasm
+        volume[1, 7:9, 6:9] = 200.0  # two nuclei inside it
+        volume[1, 7:9, 31:34] = 200.0
+        viewer.add_image(volume, name="two channel")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.channel_axis_combo.setCurrentIndex(1)
+        return widget
+
+    def _pieces(self, widget):
+        from vtea_core.workflow import Step
+
+        cytoplasm = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "threshold_mask",
+                params={"method": "fixed", "value": 50.0},
+                channel=0,
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(cytoplasm)
+        nuclei_mask = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "threshold_mask",
+                params={"method": "fixed", "value": 50.0},
+                channel=1,
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(nuclei_mask)
+        nuclei = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "label_components",
+                available=set(widget.last_context),
+                name="nuclei",
+                taken_names=widget.step_names(),
+            )
+        )
+        nuclei.input_keys["mask"] = nuclei_mask.name
+        widget.run_single_step(nuclei)
+        return cytoplasm, nuclei
+
+    def _own(self, widget, cytoplasm, nuclei, falloff=6.0):
+        from vtea_core.workflow import Step
+
+        ownership = widget.pipeline.add_step(
+            Step.for_function(
+                "ownership",
+                "distance_ownership",
+                available=set(widget.last_context) | {"spacing"},
+                params={"falloff": falloff},
+                taken_names=widget.step_names(),
+            )
+        )
+        ownership.input_keys["labels"] = nuclei.name
+        ownership.input_keys["mask"] = cytoplasm.name
+        widget.run_single_step(ownership)
+        return ownership
+
+    def test_ownership_is_offered_in_the_processing_menu(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.processing_stack
+        stack.category_combo.setCurrentText("ownership")
+        offered = {stack.function_combo.itemText(i) for i in range(stack.function_combo.count())}
+        assert "distance_ownership" in offered
+
+    def test_it_divides_the_region_between_the_two_nuclei(self, qtbot):
+        import numpy as np
+
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+        step = self._own(widget, cytoplasm, nuclei)
+
+        ownership = widget.last_context[step.name]
+        assert set(np.unique(ownership.hard())) == {0, 1, 2}
+        assert ownership.hard()[8, 7] != ownership.hard()[8, 32]
+
+    def test_the_midline_comes_out_as_a_close_call(self, qtbot):
+        """The point of the whole phase: the voxel a watershed hands to one
+        cell without comment is reported as a coin toss."""
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+        step = self._own(widget, cytoplasm, nuclei)
+
+        ownership = widget.last_context[step.name]
+        assert ownership.confidence()[8, 20] < 0.7
+        assert ownership.confidence()[8, 7] > 0.95
+
+    def test_the_ids_are_the_segmentation_it_was_built_from(self, qtbot):
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+        step = self._own(widget, cytoplasm, nuclei)
+        assert widget.last_context[step.name].segmentation == nuclei.name
+
+    def test_it_adds_both_the_answer_and_the_confidence_as_layers(self, qtbot):
+        """The hard argmax on its own is indistinguishable from a watershed,
+        which is the problem the confidence map exists to solve."""
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+        step = self._own(widget, cytoplasm, nuclei)
+
+        names = [layer.name for layer in widget.viewer.layers]
+        assert step.name in names
+        assert f"{step.name} confidence" in names
+
+    def test_the_log_says_how_much_was_contested(self, qtbot):
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+        self._own(widget, cytoplasm, nuclei)
+        assert "contested" in widget.status_label.toPlainText()
+
+    def test_a_weighted_measurement_step_runs_on_it(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+        step = self._own(widget, cytoplasm, nuclei)
+
+        measure = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "measurements",
+                "weighted_measurements_by_channel",
+                available=set(widget.last_context),
+                taken_names=widget.step_names(),
+            )
+        )
+        measure.input_keys["ownership"] = step.name
+        widget.run_single_step(measure)
+
+        table = widget.last_context[measure.name]
+        assert list(table["object_id"]) == [1, 2]
+        assert "mean_ch0" in table.columns
+        # An expected volume, so the contested middle is split between them
+        # rather than counted twice or given wholly to one.
+        assert table["count"].sum() < (widget.last_context[cytoplasm.name] != 0).sum() + 1
+
+    def test_the_weighted_table_knows_which_segmentation_it_measured(self, qtbot):
+        """Its rows are objects of the markers the ownership was built from,
+        and the ownership records that - so a per-cell table can line it up
+        with the rest without guessing from the step graph."""
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+        step = self._own(widget, cytoplasm, nuclei)
+
+        measure = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "measurements",
+                "weighted_measurements_by_channel",
+                available=set(widget.last_context),
+                taken_names=widget.step_names(),
+            )
+        )
+        measure.input_keys["ownership"] = step.name
+        widget.run_single_step(measure)
+
+        context = {}
+        widget._seed_measurement_tables(context)
+        assert nuclei.name in context["measurement_tables"]
+
+    def test_a_wider_falloff_leaves_more_of_the_field_contested(self, qtbot):
+        widget = self._builder(qtbot)
+        cytoplasm, nuclei = self._pieces(widget)
+
+        # Each step is run before its result is looked up: running one
+        # rebinds `last_context` to a new dict rather than mutating it.
+        sharp_step = self._own(widget, cytoplasm, nuclei, falloff=1.0)
+        sharp = widget.last_context[sharp_step.name]
+        broad_step = self._own(widget, cytoplasm, nuclei, falloff=10.0)
+        broad = widget.last_context[broad_step.name]
+        assert sharp.contested(0.9).sum() < broad.contested(0.9).sum()

@@ -47,6 +47,14 @@ from vtea_core.objects.cells import (
     save_cells,
 )
 from vtea_core.objects.identity import associate_by_identity
+from vtea_core.objects.ownership import (
+    DISTANCE,
+    OWNERSHIP_FORMAT_VERSION,
+    WATERSHED,
+    Ownership,
+    distance_ownership,
+    load_ownership,
+)
 from vtea_core.objects.scoring import (
     BOUNDARY_DISTANCE,
     CENTROID_DISTANCE,
@@ -71,10 +79,13 @@ __all__ = [
     "CONTAINMENT",
     "DEFAULT_AGGREGATIONS",
     "DERIVED",
+    "DISTANCE",
     "MANUAL",
     "MANY_TO_ONE",
     "ONE_TO_ONE",
+    "OWNERSHIP_FORMAT_VERSION",
     "SCORING_METHODS",
+    "WATERSHED",
     "Association",
     "AssociationSet",
     "CandidateScores",
@@ -82,6 +93,7 @@ __all__ = [
     "CellSet",
     "Match",
     "ObjectRef",
+    "Ownership",
     "Posterior",
     "assign",
     "associate_by_identity",
@@ -91,8 +103,10 @@ __all__ = [
     "centroid_distance",
     "cell_features",
     "containment",
+    "distance_ownership",
     "load_associations",
     "load_cells",
+    "load_ownership",
     "merge_associations",
     "posterior",
     "save_associations",
