@@ -28,6 +28,9 @@ docs/OBJECT_ASSOCIATION.md
                        Plan for associating segmentations into cells -
                        derived masks, probabilistic parentage, contested
                        voxels (planned, under review)
+docs/LARGE_IMAGES.md   Strategy for datasets larger than RAM - memory
+                       budgets, tiling, and the rules for objects a tile
+                       boundary cuts in half (planned, under review)
 tests/golden/          Golden-dataset parity fixtures (Java vs. Python outputs)
 packages/vtea-core/    Headless analysis library
 packages/vtea-napari/  napari plugin GUI
