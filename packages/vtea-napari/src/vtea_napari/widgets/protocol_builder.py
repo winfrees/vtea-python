@@ -189,7 +189,7 @@ class EditStepDialog(QDialog):
             )
             layout.addWidget(self.feature_select, 1)
         else:
-            source = QLabel("Reads the measured feature table, not the image.")
+            source = QLabel("No channel to choose: this step reads a label image or a table.")
             source.setStyleSheet("color: gray;")
             source.setWordWrap(True)
             layout.addWidget(source)
@@ -254,7 +254,7 @@ class ProtocolBuilderWidget(QWidget):
     # "needs context key(s) [...]". The functions stay in vtea_core and work
     # from a script; putting them back in this menu needs a crop-extraction
     # step and a way to label training objects, neither of which exists yet.
-    ANALYSIS_CATEGORIES = ("measurements", "clustering", "reduction", "gates")
+    ANALYSIS_CATEGORIES = ("measurements", "association", "clustering", "reduction", "gates")
 
     def __init__(
         self,
@@ -345,7 +345,10 @@ class ProtocolBuilderWidget(QWidget):
             self.PROCESSING_CATEGORIES,
             self.pipeline,
             title="Processing",
-            seed_keys={"volume", "intensity"},
+            # "spacing" is here because the derived segmentation steps take
+            # a physical thickness: without it they would wire up happily
+            # and silently work in voxels.
+            seed_keys={"volume", "intensity", "spacing"},
             n_channels_provider=lambda: self.n_channels(),
             results_provider=lambda: self.last_context,
             default_channel_provider=lambda: self.default_channel(),
@@ -494,9 +497,14 @@ class ProtocolBuilderWidget(QWidget):
         watershed_split_2" - with two segmentations in a protocol, the shared
         "labels" key holds whichever ran last, which isn't a choice.
         """
-        choices = [argument]
+        # An association step's inputs are named for their role
+        # ("child_labels", "parent_labels"), not for the context key they
+        # read, so they are offered every segmentation rather than only the
+        # steps that happen to write a key of that name.
+        produces = "labels" if argument.endswith("labels") else argument
+        choices = [produces]
         for step in self.all_steps():
-            if step.name and step.output_key == argument and step.name not in choices:
+            if step.name and step.output_key == produces and step.name not in choices:
                 choices.append(step.name)
         return choices
 

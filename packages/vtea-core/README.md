@@ -24,7 +24,20 @@ Phases 0-4 are done. Implemented and tested:
 - **io**: `read_tiff`/`write_tiff`/`read_zarr`/`write_zarr`/`open_volume`
 - **segmentation**: `threshold_mask`, `label_components`, `watershed_split`,
   `filter_by_size`, `labels_from_points`, `import_labels`,
-  `cellpose_segmentation`
+  `cellpose_segmentation`; plus the derived segmentations (new), which build
+  one label image out of another by morphology rather than by intensity -
+  `expand_labels`, `label_ring` (a cytosol band around a nucleus),
+  `label_shell` (a nuclear envelope straddling the boundary),
+  `subtract_labels`, `restrict_labels_to`. Each preserves label identity, and
+  each takes a `Spacing`, so a 2 µm band is 2 µm in the specimen rather than
+  2 voxels in an anisotropic stack
+- **objects** (new): `ObjectRef`/`Association`/`AssociationSet` - which object
+  of one segmentation belongs to which object of another, keeping the whole
+  posterior (`alternatives`) rather than only the winner, along with how the
+  link was made (`relationship`, `method`, `params`);
+  `save_associations`/`load_associations` as versioned JSON.
+  `associate_by_identity` covers the exact case: a derived segmentation keeps
+  its parent's ids, so every link is certain by construction
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
   (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
   max, threshold_mean), `extract_measurements_by_channel` (one segmentation
@@ -91,6 +104,10 @@ src/vtea_core/
                     formats via bioio are not implemented yet)
   segmentation/     threshold -> label -> (optional watershed split) -> size
                     filter, plus cellpose_segmentation (deep-learning-based)
+                    and the identity-preserving derived segmentations
+                    (expand/ring/shell/subtract/restrict)
+  objects/          Association model: which object belongs to which, with the
+                    posterior behind the link and how it was made
   measurements/     MeasurementStore (DuckDB) + regionprops-based extraction
   clustering/       KMeans, GMM, hierarchical, BIC-based automatic-k selection
   reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE

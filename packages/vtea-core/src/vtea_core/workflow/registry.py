@@ -23,12 +23,18 @@ from vtea_core.imageprocessing import (
     subtract_background,
 )
 from vtea_core.measurements import extract_measurements, extract_measurements_by_channel
+from vtea_core.objects import associate_by_identity
 from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne
 from vtea_core.segmentation import (
     cellpose_segmentation,
+    expand_labels,
     filter_by_size,
     label_components,
+    label_ring,
+    label_shell,
     labels_from_points,
+    restrict_labels_to,
+    subtract_labels,
     threshold_mask,
     watershed_split,
 )
@@ -47,6 +53,17 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
         "filter_by_size": filter_by_size,
         "labels_from_points": labels_from_points,
         "cellpose_segmentation": cellpose_segmentation,
+        # Derived from another segmentation by morphology, keeping its ids -
+        # a nuclear envelope, a cytosol band - so the association between
+        # them is exact rather than inferred.
+        "expand_labels": expand_labels,
+        "label_ring": label_ring,
+        "label_shell": label_shell,
+        "subtract_labels": subtract_labels,
+        "restrict_labels_to": restrict_labels_to,
+    },
+    "association": {
+        "associate_by_identity": associate_by_identity,
     },
     "measurements": {
         "extract_measurements": extract_measurements,

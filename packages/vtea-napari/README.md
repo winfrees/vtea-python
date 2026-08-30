@@ -56,7 +56,18 @@ widget and run it):
   produces a `data` key, so without the widget seeding it those steps could
   not be run from the GUI at all - and each step narrows it to its own
   chosen features.
-- **Analysis categories** — measurements, clustering, reduction and gates.
+- **Derived segmentations and association** — the segmentation menu carries
+  the morphology-only steps (`label_ring` for cytosol, `label_shell` for a
+  nuclear envelope, `expand_labels`, `subtract_labels`,
+  `restrict_labels_to`), and the analysis pane carries an `association`
+  category whose `associate_by_identity` step records which derived object
+  belongs to which parent. Because those steps read a label image rather than
+  an intensity image, their cards say "no channel" and their Edit dialog
+  offers none; their `labels`/`other`/`child_labels`/`parent_labels` inputs
+  are pickable by segmentation *name*, so nucleus → ring → association is
+  wired by choosing steps from a menu.
+- **Analysis categories** — measurements, association, clustering, reduction
+  and gates.
   Not classification: its steps need `crops`, a `model`, `object_ids` and
   `class_labels`, none of which any protocol step produces, so every one of
   them could only ever fail with "needs context key(s) [...]". The functions

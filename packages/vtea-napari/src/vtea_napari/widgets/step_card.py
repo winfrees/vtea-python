@@ -41,7 +41,9 @@ def summarize_channel(step: Step) -> str:
             return "all features"
         return f"{len(step.features)} feature(s)"
     if not step.channel_applies:
-        return "feature table"
+        # A label image or a per-object table: single-channel either way, so
+        # there is nothing to pick.
+        return "no channel"
     return "all channels" if step.channel is None else f"channel {step.channel}"
 
 

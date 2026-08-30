@@ -83,6 +83,26 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("segmentation", "filter_by_size"): StepIO(("labels",), "labels"),
     ("segmentation", "labels_from_points"): StepIO(("points", "shape"), "labels"),
     ("segmentation", "cellpose_segmentation"): StepIO(("volume", "model"), "labels"),
+    # Derived segmentations. They consume a label image, so a channel choice
+    # is meaningless; thicknesses are physical when a spacing is available.
+    ("segmentation", "expand_labels"): StepIO(
+        ("labels", "spacing"), "labels", channel_mode=CHANNEL_NONE
+    ),
+    ("segmentation", "label_ring"): StepIO(
+        ("labels", "spacing"), "labels", channel_mode=CHANNEL_NONE
+    ),
+    ("segmentation", "label_shell"): StepIO(
+        ("labels", "spacing"), "labels", channel_mode=CHANNEL_NONE
+    ),
+    ("segmentation", "subtract_labels"): StepIO(
+        ("labels", "other"), "labels", channel_mode=CHANNEL_NONE
+    ),
+    ("segmentation", "restrict_labels_to"): StepIO(
+        ("labels", "mask"), "labels", channel_mode=CHANNEL_NONE
+    ),
+    ("association", "associate_by_identity"): StepIO(
+        ("child_labels", "parent_labels"), "associations", channel_mode=CHANNEL_NONE
+    ),
     ("measurements", "extract_measurements"): StepIO(
         ("labels", "intensity", "spacing"), "measurements"
     ),

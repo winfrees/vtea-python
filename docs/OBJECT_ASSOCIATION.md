@@ -113,28 +113,33 @@ typed there outlives switching between layers. It threads into the run
 context beside `channel_axis`, and `extract_measurements*` add a physical
 `volume` column when — and only when — the spacing is actually known.
 
-### Phase 1 — The model, and derived segmentation *(small–medium)*
+### Phase 1 — The model, and derived segmentation *(small–medium)* — **done**
 
 The cheap, high-value half of the problem.
 
-- `vtea_core.objects.association`: `ObjectRef`, `Association`,
-  `AssociationSet`, JSON I/O, provenance.
-- `vtea_core.segmentation.derived`, all identity-preserving so association
-  is exact: `expand_labels` (skimage's, which grows each label into
-  background and stops where two meet), `label_shell` (an annulus of given
-  inner/outer thickness — nuclear envelope), `label_ring` (expand minus
-  original — cytosol), `subtract_labels`, `restrict_labels_to` (mask one
-  segmentation by another).
-- An `association` step category with `associate_by_identity` for this case.
-- GUI: the new steps appear in the segmentation menu; nothing else changes.
+`vtea_core.objects` holds `ObjectRef`, `Association` and `AssociationSet`
+as described above, with versioned JSON I/O and the same
+newer-format-refused check the gates use. `vtea_core.segmentation.derived`
+adds `expand_labels`, `label_ring` (cytosol), `label_shell` (nuclear
+envelope, with independent inward and outward thicknesses),
+`subtract_labels` and `restrict_labels_to` — every one of them preserving
+label identity, which is what makes `associate_by_identity` exact rather
+than inferred. Association is its own step category, and the derived steps
+sit in the segmentation menu; the Edit dialog resolves `child_labels` and
+`parent_labels` to named segmentations the way `labels` already was.
 
-**Done when** a protocol can produce nucleus → envelope → cytosol from one
-DAPI channel, measure each, and say which envelope belongs to which nucleus.
+The anticipated risk was real: skimage's `expand_labels` takes no
+`sampling`, so this is our own distance transform
+(`distance_transform_edt(..., sampling=spacing)`) and every thickness is
+physical when the spacing is known and in voxels when it is not. The
+inward half of `label_shell` measures from `find_boundaries(mode="inner")`
+rather than from background, so two touching nuclei each keep an envelope
+on the face they share — a distance-to-background would have dropped it.
+The processing pane's seeded context gained `spacing` alongside it, since
+a `label_ring` added there would otherwise have silently run in voxels.
 
-**Risk:** thickness is in physical units via Phase 0, but `expand_labels`
-works in voxels; it needs an anisotropy-aware wrapper, and skimage's
-implementation doesn't take spacing. Likely a small distance-transform of
-our own rather than a call-through.
+**Done:** a protocol produces nucleus → envelope → cytosol from one DAPI
+channel, measures each, and says which envelope belongs to which nucleus.
 
 ### Phase 2 — Probabilistic association between independent segmentations *(medium)*
 

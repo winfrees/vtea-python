@@ -15,16 +15,28 @@ model inference are deferred.
 """
 
 from vtea_core.segmentation.deep import cellpose_segmentation
+from vtea_core.segmentation.derived import (
+    expand_labels,
+    label_ring,
+    label_shell,
+    restrict_labels_to,
+    subtract_labels,
+)
 from vtea_core.segmentation.labeling import filter_by_size, label_components, watershed_split
 from vtea_core.segmentation.manual import import_labels, labels_from_points
 from vtea_core.segmentation.threshold import threshold_mask
 
 __all__ = [
     "cellpose_segmentation",
+    "expand_labels",
     "filter_by_size",
     "import_labels",
     "label_components",
+    "label_ring",
+    "label_shell",
     "labels_from_points",
+    "restrict_labels_to",
+    "subtract_labels",
     "threshold_mask",
     "watershed_split",
 ]

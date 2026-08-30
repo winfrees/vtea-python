@@ -90,7 +90,13 @@ class TestAddStep:
         # No "classification": its steps need crops, a model and training
         # labels, none of which any protocol step produces, so every one of
         # them could only ever fail with "needs context key(s) [...]".
-        assert analysis == {"measurements", "clustering", "reduction", "gates"}
+        assert analysis == {
+            "measurements",
+            "association",
+            "clustering",
+            "reduction",
+            "gates",
+        }
         assert processing.isdisjoint(analysis)
 
     def test_classification_is_not_offered(self, qtbot):
@@ -1605,13 +1611,16 @@ class TestTabularStepsShowNoChannel:
         step.features = ["mean_ch0", "mean_ch1", "count"]
         assert summarize_channel(step) == "3 feature(s)"
 
-    def test_a_classification_step_still_says_feature_table(self, qtbot):
-        """It has no channel and no feature selection either."""
+    def test_a_step_with_no_channel_and_no_features_says_no_channel(self, qtbot):
+        """A gate reads a table and a derived segmentation reads a label
+        image; neither has a channel, and neither reads "the feature
+        table" in the sense the clustering steps do."""
         from vtea_core.workflow import Step
 
         from vtea_napari.widgets.step_card import summarize_channel
 
-        assert summarize_channel(Step.for_function("gates", "polygon_gate")) == "feature table"
+        assert summarize_channel(Step.for_function("gates", "polygon_gate")) == "no channel"
+        assert summarize_channel(Step.for_function("segmentation", "label_ring")) == "no channel"
 
     def test_a_clustering_step_runs_on_the_feature_table_from_every_channel(self, qtbot):
         """The end of the chain: features measured on three channels feed
@@ -1837,3 +1846,133 @@ class TestFeatureProvenanceIsRecorded:
         """So the explorer sees it, and so it survives a pane closing."""
         widget = _measured_multichannel(qtbot)
         assert widget.feature_catalog() is widget.session.feature_catalog
+
+
+class TestDerivedSegmentationWorkflow:
+    """The half of cell association that needs no inference: a nucleus, an
+    envelope derived from it, a cytosol band outside that, and an exact
+    statement of which belongs to which."""
+
+    def _builder(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        volume = np.zeros((16, 16))
+        volume[3:7, 3:7] = 200.0
+        volume[10:14, 10:14] = 200.0
+        viewer.add_image(volume, name="dapi", scale=(0.5, 0.5))
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        widget.pipeline.add_step(
+            Step.for_function("segmentation", "label_components", available={"mask"})
+        )
+        return widget
+
+    def test_the_derived_steps_are_offered_alongside_the_others(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.processing_stack
+        stack.category_combo.setCurrentText("segmentation")
+        offered = {stack.function_combo.itemText(i) for i in range(stack.function_combo.count())}
+        assert {"expand_labels", "label_ring", "label_shell"} <= offered
+
+    def test_association_is_its_own_analysis_category(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText("association")
+        offered = {stack.function_combo.itemText(i) for i in range(stack.function_combo.count())}
+        assert "associate_by_identity" in offered
+
+    def test_a_derived_step_gets_no_channel_and_the_spacing(self, qtbot):
+        widget = self._builder(qtbot)
+        widget.run_processing()
+        stack = widget.processing_stack
+        stack.category_combo.setCurrentText("segmentation")
+        stack.function_combo.setCurrentText("label_ring")
+        _click_button(qtbot, stack, "Add Step")
+
+        step = widget.pipeline.steps[-1]
+        assert step.channel_applies is False
+        assert step.channel is None
+        assert "spacing" in step.input_keys
+
+    def test_a_cytosol_ring_runs_and_keeps_its_parent_s_ids(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        widget.run_processing()
+        nuclei = widget.last_context["labels"]
+
+        ring = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "label_ring",
+                available=set(widget.last_context) | {"spacing"},
+                params={"thickness": 1.0},
+            )
+        )
+        widget.run_single_step(ring)
+
+        rings = widget.last_context[ring.name]
+        assert set(np.unique(rings)) == set(np.unique(nuclei))
+        assert (rings[nuclei != 0] == 0).all()
+
+    def test_the_association_step_links_them_by_name(self, qtbot):
+        from vtea_core.objects import ObjectRef
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        widget.run_processing()
+        nuclei_step = widget.pipeline.steps[-1]
+
+        ring = widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "label_ring",
+                available=set(widget.last_context) | {"spacing"},
+                params={"thickness": 1.0},
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_single_step(ring)
+
+        associate = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "association",
+                "associate_by_identity",
+                available=set(widget.last_context),
+                params={"child_name": ring.name, "parent_name": nuclei_step.name},
+                taken_names=widget.step_names(),
+            )
+        )
+        associate.input_keys["child_labels"] = ring.name
+        associate.input_keys["parent_labels"] = nuclei_step.name
+        widget.run_single_step(associate)
+
+        associations = widget.last_context[associate.name]
+        assert len(associations) == 2
+        assert associations.parent_of(ObjectRef(ring.name, 1)) == ObjectRef(nuclei_step.name, 1)
+        assert all(link.is_certain for link in associations)
+
+    def test_an_association_step_offers_every_segmentation_for_its_inputs(self, qtbot):
+        """Its inputs are named for their role, not for a context key, so
+        they still need the by-name picker measurement steps get."""
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        widget.pipeline.add_step(
+            Step.for_function("segmentation", "label_ring", taken_names=widget.step_names())
+        )
+        candidates = widget.input_candidates("child_labels")
+        assert "label_components_1" in candidates
+        assert "label_ring_1" in candidates
