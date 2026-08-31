@@ -50,6 +50,12 @@ from vtea_core.blocked.budget import (
     gpu_free_bytes,
     parse_size,
 )
+from vtea_core.blocked.cells import (
+    CellMembership,
+    build_cells_blocked,
+    cell_features_blocked,
+    single_roles_from_links,
+)
 from vtea_core.blocked.contract import (
     ACCUMULATE,
     APPROXIMATE,
@@ -165,6 +171,7 @@ __all__ = [
     "BudgetTooSmall",
     "Calibration",
     "Cancelled",
+    "CellMembership",
     "EstimatorChoice",
     "Fragment",
     "HaloExceeded",
@@ -192,8 +199,10 @@ __all__ = [
     "boundary_distance_blocked",
     "boxes_blocked",
     "boxes_from_ledger",
+    "build_cells_blocked",
     "calibrate",
     "calibrated_voxels",
+    "cell_features_blocked",
     "centroid_distance_table",
     "centroids_blocked",
     "cgroup_limit_bytes",
@@ -232,6 +241,7 @@ __all__ = [
     "score_candidates_blocked",
     "segment_blocked",
     "should_bin",
+    "single_roles_from_links",
     "step_costs",
     "tsne_scaled",
 ]

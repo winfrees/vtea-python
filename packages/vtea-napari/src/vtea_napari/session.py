@@ -27,7 +27,7 @@ from qtpy.QtCore import QObject, Signal
 from vtea_core.data import Spacing
 from vtea_core.gates import GateSet
 from vtea_core.measurements import FeatureCatalog
-from vtea_core.objects import AssociationSet, CellSet, ObjectRef
+from vtea_core.objects import AssociationSet, CellCollection, ObjectRef
 from vtea_core.workflow import Pipeline
 
 OBJECT_TABLE = "Objects"
@@ -192,11 +192,18 @@ class AnalysisSession(QObject):
             if isinstance(value, AssociationSet) and key != "associations"
         }
 
-    def cell_sets(self) -> dict[str, CellSet]:
+    def cell_sets(self) -> dict[str, CellCollection]:
+        """The cell results this run produced, by step name.
+
+        `CellCollection` rather than `CellSet`: a blocked run composes its
+        cells as a membership table rather than as an object graph, and
+        everything here only asks a cell result how many cells there are and
+        which segmentation identifies them - see vtea_core.objects.cells.
+        """
         return {
             key: value
             for key, value in self.context.items()
-            if isinstance(value, CellSet) and key != "cells"
+            if isinstance(value, CellCollection) and key != "cells"
         }
 
     def record_manual_link(self, child: ObjectRef, parent: ObjectRef | None) -> None:

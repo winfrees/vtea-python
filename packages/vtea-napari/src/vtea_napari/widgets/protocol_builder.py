@@ -41,7 +41,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from vtea_core.measurements import FeatureCatalog, feature_matrix
-from vtea_core.objects import AssociationSet, CellSet, Ownership
+from vtea_core.objects import AssociationSet, CellCollection, Ownership
 from vtea_core.workflow import Pipeline, Step
 
 from vtea_napari.session import AnalysisSession, TableView, session_for
@@ -833,7 +833,7 @@ class ProtocolBuilderWidget(QWidget):
             self.show_step_result(step)
         elif isinstance(result, Ownership):
             self.show_ownership(step, result)
-        elif isinstance(result, CellSet):
+        elif isinstance(result, CellCollection):
             # Same reason as an association: nothing to draw, and how many
             # cells are missing a part is the number worth seeing.
             self.status_label.setText(f"{step.result_key}: {result.summary()}")
@@ -1185,7 +1185,7 @@ class ProtocolBuilderWidget(QWidget):
             if not isinstance(frame, pd.DataFrame) or frame.empty:
                 continue
             cells = self.last_context.get(step.input_keys.get("cells", ""))
-            root = cells.root_segmentation if isinstance(cells, CellSet) else ""
+            root = cells.root_segmentation if isinstance(cells, CellCollection) else ""
             tables[step.name] = TableView(
                 frame=frame,
                 id_column="cell_id",

@@ -970,7 +970,7 @@ Changed elsewhere, and deliberately little:
 | **L3 — Labels across tiles** **done** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
-| **L6 — Objects at scale** *(ownership and association done; cells outstanding — see "Finishing L6–L8", item 5)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
+| **L6 — Objects at scale** **done** | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** **done** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** *(lazy source, budget control, the blocked run path, cancellation off the GUI thread and seam review done; ROI preview outstanding — item 6)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
@@ -1022,10 +1022,11 @@ by at least that much. Anisotropically: eight microns of reach is four
 voxels along a 2 µm z-step and sixteen in x at 0.5, so a scalar check would
 pass on z and be wrong in x.
 
-L6's association half is built too (item 4 below). What is outstanding in
-L6 is `build_cells`/`cell_features` through DuckDB rather than pandas —
-which scales with object count rather than with voxels, a different problem
-with a different ceiling.
+L6's other two halves are built too (items 4 and 5 below). The table side —
+association scoring and cell composition — scales with object count rather
+than with voxels, which is a different problem with a different ceiling,
+and it is answered with the two shapes a database is for: additive counting
+and a recursive join.
 
 L5 completes the reconciliation: `RESEGMENT` is built, so a learned
 segmenter can be tiled rather than refused, and the tests show the
@@ -1043,7 +1044,7 @@ concentrated.
 
 ## Finishing L6–L8
 
-Two items are outstanding, plus two things that can only be checked on
+One item is outstanding, plus two things that can only be checked on
 hardware this was not built on. Scoped against the code rather than against
 the phase headings, they are smaller and more separable than "three
 unfinished phases" suggests — and two of them are much smaller than the
@@ -1214,7 +1215,7 @@ two id sets, so `associate_ids` takes the sets and the blocked form hands
 it ids it got without reading a voxel. The executor now runs the whole
 `association` category rather than refusing it as OBJECT_LOCAL.
 
-### 5. Cells through DuckDB *(≈2–3 weeks — the largest)*
+### 5. Cells through DuckDB — **done**
 
 `build_cells` walks the association graph and builds a `Cell` object per
 cell with an `ObjectRef` per part. At ten million cells that graph is
@@ -1240,8 +1241,40 @@ fields. And a cell missing a part gets NaN and a count of 0 rather than
 being dropped, which is a `LEFT JOIN` and an explicit role list rather than
 whatever the data brings.
 
-Keep `CellSet` as the in-memory path and choose by row count, as everything
-else here does.
+Built as `vtea_core.blocked.cells`. `CellMembership` holds the membership
+table and answers everything a cell result is asked to report; `CellSet`
+holds the object graph. Both are `CellCollection`, which is what the GUI
+now checks for, so a blocked run's cells behave like any other in the panes
+that only want to say how many cells there are and how many are missing a
+part. `CellMembership.to_cell_set()` materializes the graph for a result
+small enough to want one, and is deliberately explicit — it is exactly the
+materialization the table form exists to avoid.
+
+The per-cell table comes back *identical* to the in-memory one: same
+values, same column names, same column order, same dtypes, pinned with
+`assert_frame_equal`. Two things had to be made to agree for that to be
+true, and both are worth naming. DuckDB returns a missing integer
+measurement as `<NA>` in a nullable column where pandas gives `NaN` in a
+float one, so the blocked path converts — a column whose dtype depends on
+which code path produced it cannot be pooled with one that did not. And the
+in-memory path had a latent wart in the same place: mapping objects to
+cells produces NaN for the ones in no cell, which made the join key a float
+and quietly turned `cell_id` into `1.0` whenever any object was unclaimed.
+Fixed there rather than reproduced here.
+
+Cycles are refused as they were, but found differently. Following links out
+from the roots cannot see a loop that goes back through the root
+segmentation, which is the very case the in-memory form catches, so the
+check is made up front and on the whole link table: a child has at most one
+parent, so the links are a functional graph, and following every child's
+parent pointer a bounded number of times at once settles whether any chain
+is still climbing. Vectorized and keyed on integers rather than on tuples,
+because it runs on the same ten million links everything else here is
+shaped around.
+
+A measurement table may be a Parquet file rather than a DataFrame, which is
+what makes this worth doing in a database at all: the join reads the table
+as the query needs it instead of loading ten million rows to group them.
 
 ### 6. ROI preview *(≈1–1.5 weeks)*
 
@@ -1281,13 +1314,12 @@ Not code, and not optional before anyone trusts this with real data.
 | 2 | Worker thread and cancel | **done** | A run nobody can cancel is a run nobody starts |
 | 3 | Seam review | **done** | Makes L3's ledger reachable |
 | 4 | Association partitioned | **done** | Unblocks the table forms item 5 needs |
-| 5 | Cells through DuckDB | 2–3 wk | Largest; depends on 4's association table |
+| 5 | Cells through DuckDB | **done** | Depended on 4's association table |
 | 6 | ROI preview | 1–1.5 wk | A convenience, and the only one |
 | 7 | Hardware validation | — | Gating for production use, not for merging |
 
-**Roughly 3–4 engineer-weeks remain.** Items 1–3 and 6 are `vtea-napari`;
-4 and 5 are `vtea-core` and are the ones that need the invariance testing
-the earlier phases got.
+**Roughly 1–1.5 engineer-weeks remain**, all of it item 6, plus the
+hardware validation in item 7 that this environment cannot do.
 
 ## Open questions
 

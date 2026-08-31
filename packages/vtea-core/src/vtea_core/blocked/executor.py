@@ -419,6 +419,8 @@ class BlockedPipeline:
             return self._run_ownership(step, context, progress=progress)
         if step.category == "association":
             return self._run_association(step, context, progress=progress)
+        if step.category == "cells":
+            return self._run_cells(step, context)
         if scaling.needs_reconciliation:
             return self._run_reconciled(
                 step, context, progress=progress, should_stop=should_stop
@@ -574,6 +576,44 @@ class BlockedPipeline:
                 **params,
             )
         return BlockedResult(array=None, plan=self.plan, table=links)
+
+    def _run_cells(self, step: Any, context: Mapping[str, Any]) -> BlockedResult:
+        """Composing cells, and measuring them, as SQL.
+
+        Following the links out from the roots is a recursive join and the
+        per-cell table is a join and a group-by, so both go to DuckDB, which
+        spills them - see `vtea_core.blocked.cells`. The root object ids
+        come from the ledger of the segmentation that identifies a cell
+        where this run made one, because a root nothing was assigned to is
+        still a cell and dropping it biases every statistic that follows.
+        """
+        from vtea_core.blocked.associate import object_ids_blocked
+        from vtea_core.blocked.cells import build_cells_blocked, cell_features_blocked
+
+        sources, params = self._split_inputs(step, context)
+        if step.function_name == "cell_features":
+            membership = params.pop("cells", None)
+            tables = params.pop("measurement_tables", None) or self.tables
+            return BlockedResult(
+                array=None,
+                plan=self.plan,
+                table=cell_features_blocked(membership, tables, **params),
+            )
+
+        root = params.pop("root", "") or step.input_keys.get("root_labels", "")
+        root_ids = params.pop("root_labels", None)
+        if root_ids is None and "root_labels" in sources:
+            ledger = self.ledgers.get(step.input_keys.get("root_labels", ""))
+            root_ids = (
+                np.asarray(ledger.object_ids, dtype=np.int64)
+                if ledger is not None
+                else object_ids_blocked(sources["root_labels"], plan=self.plan)
+            )
+        return BlockedResult(
+            array=None,
+            plan=self.plan,
+            table=build_cells_blocked(params.pop("associations"), root_ids, root=root, **params),
+        )
 
     def _ledger_ids(self, step: Any, argument: str):
         """Every object id of one of this step's inputs, when a blocked

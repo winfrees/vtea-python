@@ -102,7 +102,44 @@ class Cell:
         )
 
 
-class CellSet:
+class CellCollection:
+    """What any form of a cell result can answer.
+
+    There are two forms and they are the same result at two scales. A
+    `CellSet` holds a `Cell` object per cell, which is the readable thing
+    and the right one for the tens of thousands of cells a field produces.
+    `vtea_core.blocked.cells.CellMembership` holds the same facts as a
+    `(cell_id, role, object_id)` table, because at ten million cells the
+    object graph is several gigabytes before a single measurement is joined
+    to it.
+
+    Everything that only wants to *report* on a result - how many cells, how
+    many are missing a part, which segmentation identifies them - goes
+    through this, so it does not have to know which form it has.
+    """
+
+    @property
+    def root_segmentation(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def single_roles(self) -> frozenset[str]:
+        raise NotImplementedError
+
+    def roles(self) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    def part_roles(self) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    def summary(self) -> str:
+        raise NotImplementedError
+
+    def __len__(self) -> int:
+        raise NotImplementedError
+
+
+class CellSet(CellCollection):
     """The cells of one field, plus what did not make it into one.
 
     `unclaimed` holds objects that are linked to something but whose chain
@@ -412,7 +449,11 @@ def cell_features(
         }
         rows = table.copy()
         rows["__cell"] = rows[id_column].map(owner)
+        # Cast back to an integer once the objects in no cell are out: the
+        # map produces NaN for those, which makes the column float, and a
+        # float index quietly turns `cell_id` into 1.0 in the joined table.
         rows = rows[rows["__cell"].notna()]
+        rows["__cell"] = rows["__cell"].astype("int64")
         columns = _numeric_columns(table, id_column)
 
         if role in cells.single_roles:

@@ -294,6 +294,76 @@ class AssociationSet:
         pair = f"{'/'.join(sorted(children)) or '?'} -> {'/'.join(sorted(parents)) or '?'}"
         return f"{pair}: " + ", ".join(parts)
 
+    def to_frame(self):
+        """The links as a table: one row per child, parent null where none.
+
+        The form everything at scale wants. Composing ten million objects
+        into cells is following links out from the roots until nothing new
+        joins, which is what `WITH RECURSIVE` is for and what a graph of
+        Python objects is not - see `vtea_core.blocked.cells`. It is also
+        the honest thing to diff two runs with, and to save beside the
+        measurements.
+
+        Unassigned children are rows with a null parent rather than absent
+        rows, for the same reason they are kept on the set at all: a result
+        that silently omits the children nothing claimed looks exactly like
+        one where everything was claimed.
+        """
+        import pandas as pd
+
+        rows = [
+            {
+                "child_segmentation": link.child.segmentation,
+                "child_id": int(link.child.object_id),
+                "parent_segmentation": link.parent.segmentation,
+                "parent_id": int(link.parent.object_id),
+                "relationship": link.relationship,
+                "probability": float(link.probability),
+                "method": link.method,
+                # How the link was made, which is what decides the shape of
+                # a per-cell table: a derived part is one per parent by
+                # construction and a one-to-one assignment says so. Carried
+                # on the row because composing cells from a table has to be
+                # able to answer it without the params dict.
+                "at_most_one": link.relationship == DERIVED
+                or link.params.get("mode") == "one_to_one",
+            }
+            for link in self
+        ]
+        rows += [
+            {
+                "child_segmentation": child.segmentation,
+                "child_id": int(child.object_id),
+                "parent_segmentation": None,
+                "parent_id": None,
+                "relationship": "",
+                "probability": 0.0,
+                "method": "",
+                # Not a link, so it says nothing about the role's shape -
+                # see `single_roles_from_links`, which reads only the rows
+                # that are links.
+                "at_most_one": False,
+            }
+            for child in self.unassigned
+        ]
+        frame = pd.DataFrame(
+            rows,
+            columns=[
+                "child_segmentation",
+                "child_id",
+                "parent_segmentation",
+                "parent_id",
+                "relationship",
+                "probability",
+                "method",
+                "at_most_one",
+            ],
+        )
+        # Nullable rather than float: an object id that came back as 12.0
+        # would join against nothing, and would look like a rounding
+        # question rather than a type one.
+        return frame.astype({"child_id": "int64", "parent_id": "Int64"})
+
     def __iter__(self):
         return iter(self._by_child.values())
 
