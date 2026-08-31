@@ -8,6 +8,22 @@ Java code - right-click a gate -> "Gallery View..." opens exactly this: a
 grid of per-object crops around each object's centroid, click one to
 highlight it back on the scatter plot. Ported with the same behavior: a
 fixed-radius crop around each object's centroid, max-projected to 2D.
+
+**This is the cheapest access pattern a chunked store has**, and the only
+view in VTEA that gets *faster* on large data rather than slower: a crop is
+a bounding-box read, so a gallery of forty objects reads forty small blocks
+whatever the volume weighs. Three things are needed to keep that true, and
+all three are about not accidentally touching the whole array:
+
+- Nothing is materialized but the crop. The volume may be a Zarr or Dask
+  array that would not fit in memory; `np.asarray` belongs on the result of
+  the slice, never on the thing being sliced.
+- A pyramid level is chosen per crop. A 64-pixel thumbnail of a 400-pixel
+  region does not need level 0 - reading it there is sixteen times the I/O
+  for the same picture, and the coarse levels exist precisely for this.
+- The z range is cropped like the others. Max-projecting a 2,000-slice
+  stack is a reduction over the whole volume wearing a thumbnail's clothes;
+  what a thumbnail should show is the object, which is a few slices deep.
 """
 
 from __future__ import annotations
@@ -20,6 +36,11 @@ from qtpy.QtWidgets import QGridLayout, QLabel, QScrollArea, QVBoxLayout, QWidge
 from vtea_napari.widgets.thumbnail import array_to_pixmap, max_projection
 
 _COLUMNS = 6
+
+# Below this, a coarser level would throw away detail the thumbnail can
+# still show. Chosen against the thumbnail's own size rather than a fixed
+# number of voxels, since that is what decides whether detail survives.
+_LEVEL_MARGIN = 1.5
 
 # Yellow, and thick enough to read against a bright crop: a thin outline in
 # a mid tone disappears into the very cells the gallery is showing.
@@ -76,7 +97,7 @@ class GalleryWidget(QWidget):
 
     def show_objects(
         self,
-        volume: np.ndarray,
+        volume,
         frame: pd.DataFrame,
         object_ids,
         *,
@@ -84,6 +105,7 @@ class GalleryWidget(QWidget):
         thumbnail_size: int = 64,
         id_column: str = "object_id",
         prefix: str = "",
+        z_radius: int | None = None,
     ) -> None:
         """`volume` is an intensity array whose last two axes are (row,
         col); `frame` has an id column and `centroid-*` columns (see
@@ -91,10 +113,23 @@ class GalleryWidget(QWidget):
         centroid columns are always the array's own (row, col) axes,
         whether the source volume was 2D or 3D.
 
+        `volume` may be a list of arrays, napari's multiscale convention,
+        finest level first. Given one, each crop is read from the coarsest
+        level that still has the detail the thumbnail can show.
+
+        It may also be anything that slices like an array - a Zarr or Dask
+        array larger than memory included. Only the crop is materialized.
+
         A per-cell table names its columns for the segmentation each came
         from (`nuclei_1.centroid-0`), so `prefix` says which of them to crop
         around - the segmentation the cells are rooted on, which is where
         their id points anyway.
+
+        `z_radius` crops the depth around the object as well, instead of
+        projecting every slice. `None` keeps the ported behaviour of
+        projecting the whole stack, which is right for the twenty-slice
+        acquisitions the Java original was written for and wrong for a
+        thousand.
         """
         while self._grid.count():
             item = self._grid.takeAt(0)
@@ -117,11 +152,31 @@ class GalleryWidget(QWidget):
             # show crops of the wrong things.
             return
 
+        levels = pyramid_levels(volume)
+        level = choose_level(levels, crop_radius, thumbnail_size)
+        source = levels[level]
+        scale = level_scale(levels, level)
+        depth_column = centroid_columns[-3] if len(centroid_columns) >= 3 else None
+
         for position, object_id in enumerate(object_ids):
             if object_id not in indexed.index:
                 continue
-            row_center, col_center = (round(indexed.loc[object_id, c]) for c in spatial_columns)
-            crop = _crop_2d(volume, row_center, col_center, crop_radius)
+            row_center, col_center = (
+                round(indexed.loc[object_id, column] / scale) for column in spatial_columns
+            )
+            depth = (
+                round(indexed.loc[object_id, depth_column] / scale)
+                if depth_column is not None
+                else None
+            )
+            crop = crop_around(
+                source,
+                row_center,
+                col_center,
+                radius=max(1, round(crop_radius / scale)),
+                depth=depth,
+                z_radius=None if z_radius is None else max(1, round(z_radius / scale)),
+            )
             if crop.size == 0:
                 continue
             pixmap = array_to_pixmap(max_projection(crop), size=thumbnail_size)
@@ -142,7 +197,70 @@ class GalleryWidget(QWidget):
         self.object_selected.emit(object_id)
 
 
-def _crop_2d(volume: np.ndarray, row_center: int, col_center: int, radius: int) -> np.ndarray:
+def pyramid_levels(volume) -> list:
+    """`volume` as a list of levels, finest first.
+
+    napari hands a multiscale layer's data over as a list of arrays; a
+    single array is a pyramid of one, so callers need no special case.
+    """
+    if isinstance(volume, (list, tuple)):
+        return list(volume)
+    return [volume]
+
+
+def level_scale(levels: list, level: int) -> float:
+    """How many level-0 voxels one voxel of `level` covers.
+
+    Measured from the arrays rather than assumed to be a power of two: a
+    store written by another tool is entitled to downsample by three, or by
+    different factors per axis, and a centroid divided by the wrong number
+    crops the wrong place.
+    """
+    if level <= 0 or not levels:
+        return 1.0
+    return float(levels[0].shape[-1]) / float(levels[level].shape[-1])
+
+
+def choose_level(levels: list, crop_radius: int, thumbnail_size: int) -> int:
+    """The coarsest level whose crop still fills the thumbnail.
+
+    A 40-pixel crop shown at 64 pixels wants level 0. A 400-pixel crop shown
+    at the same 64 wants a level about four times coarser, and reading it
+    from level 0 is sixteen times the I/O for a picture nobody can tell
+    apart. Stops before the crop gets smaller than the thumbnail, since
+    scaling a 16-pixel crop up to 64 is visibly worse and saves nothing that
+    matters.
+    """
+    chosen = 0
+    for level in range(1, len(levels)):
+        scale = level_scale(levels, level)
+        if (2 * crop_radius) / scale < thumbnail_size * _LEVEL_MARGIN:
+            break
+        chosen = level
+    return chosen
+
+
+def crop_around(
+    volume,
+    row_center: int,
+    col_center: int,
+    *,
+    radius: int,
+    depth: int | None = None,
+    z_radius: int | None = None,
+) -> np.ndarray:
+    """One object's neighbourhood, materialized and nothing else.
+
+    The slice happens on whatever was passed - Zarr, Dask, NumPy - and
+    `np.asarray` is applied to the result, so a volume larger than memory
+    costs one bounding-box read rather than a load.
+    """
     row0, row1 = max(0, row_center - radius), row_center + radius
     col0, col1 = max(0, col_center - radius), col_center + radius
-    return volume[..., row0:row1, col0:col1]
+    window: tuple = (slice(row0, row1), slice(col0, col1))
+    if z_radius is not None and depth is not None and len(volume.shape) >= 3:
+        window = (slice(max(0, depth - z_radius), depth + z_radius), *window)
+        leading = len(volume.shape) - 3
+    else:
+        leading = len(volume.shape) - 2
+    return np.asarray(volume[(slice(None),) * max(leading, 0) + window])

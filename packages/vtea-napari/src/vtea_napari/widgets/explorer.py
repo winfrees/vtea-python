@@ -52,6 +52,11 @@ from qtpy.QtWidgets import (
 from vtea_napari.session import AnalysisSession, session_for
 from vtea_napari.widgets.association_review import AssociationReviewWidget
 from vtea_napari.widgets.gallery import GalleryWidget
+
+# How many slices either side of an object's centroid the gallery projects.
+# Wide enough to hold a nucleus at ordinary z-steps, and bounded so the cost
+# of a thumbnail does not grow with the depth of the acquisition.
+GALLERY_Z_RADIUS = 8
 from vtea_napari.widgets.gate_manager import GateManagerWidget
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.plot import ScatterPlotWidget
@@ -480,16 +485,30 @@ class ExplorerWidget(QWidget):
         if intensity is None or self.frame is None:
             return
         # The gallery crops in (row, col), so a channel axis has to go first.
+        # Sliced rather than np.take: `take` on a Zarr array reads the whole
+        # channel into memory, which for a stored volume is the one thing
+        # the gallery is careful not to do. A plain index works lazily on
+        # Zarr and Dask alike and is the same operation on NumPy.
         channel_axis = self.session.channel_axis
-        if channel_axis is not None and intensity.ndim > 2 and channel_axis < intensity.ndim:
-            intensity = np.take(intensity, 0, axis=channel_axis)
+        ndim = len(intensity.shape)
+        if channel_axis is not None and ndim > 2 and channel_axis < ndim:
+            intensity = intensity[(slice(None),) * channel_axis + (0,)]
         view = self.session.table_view()
         # A per-cell table's centroids are namespaced by the segmentation
         # they were measured on, so crop around the one the cells are rooted
         # on - the same objects their ids name.
         prefix = f"{view.labels_key}." if view is not None and view.id_column != "object_id" else ""
         self.gallery.show_objects(
-            intensity, self.frame, gated_ids, id_column=self.id_column, prefix=prefix
+            intensity,
+            self.frame,
+            gated_ids,
+            id_column=self.id_column,
+            prefix=prefix,
+            # Crop the depth as well as the plane. Projecting every slice of
+            # a thousand-slice stack is a reduction over the volume rather
+            # than a thumbnail of an object, and the object is a few slices
+            # deep.
+            z_radius=GALLERY_Z_RADIUS,
         )
 
     def _on_object_selected(self, object_id: int) -> None:

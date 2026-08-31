@@ -971,7 +971,7 @@ Changed elsewhere, and deliberately little:
 | **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** *(ownership done; association and cells outstanding — see "Finishing L6–L8", items 4 and 5)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
-| **L7 — Analysis and explorer** *(estimators and binned scatter done; gallery from the pyramid outstanding — item 1)* | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
+| **L7 — Analysis and explorer** **done** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** *(lazy source, budget control and the blocked run path done; worker thread, seam review and ROI preview outstanding — items 2, 3 and 6)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
 L0-L4 are built. A protocol of blur, Otsu threshold, connected components
@@ -1050,7 +1050,7 @@ plan implied, because the existing code already does most of the work.
 
 Ordered by what a user gets soonest, not by phase number.
 
-### 1. The gallery reads crops rather than volumes *(≈1 week)*
+### 1. The gallery reads crops rather than volumes — **done**
 
 `GalleryWidget._crop_2d` already slices `volume[..., r0:r1, c0:c1]` — a
 bounding-box read, which is what a chunked store is best at. Almost nothing
@@ -1206,7 +1206,7 @@ Not code, and not optional before anyone trusts this with real data.
 
 | # | Item | Est. | Why here |
 | --- | --- | --- | --- |
-| 1 | Gallery from the pyramid | 1 wk | Smallest; makes a large result lookable at |
+| 1 | Gallery from the pyramid | **done** | Smallest; makes a large result lookable at |
 | 2 | Worker thread and cancel | 1–1.5 wk | A run nobody can cancel is a run nobody starts |
 | 3 | Seam review | 1 wk | Makes L3's ledger reachable; mostly already there |
 | 4 | Association partitioned | 1.5–2 wk | Unblocks the table forms item 5 needs |
