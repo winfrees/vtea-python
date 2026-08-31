@@ -701,6 +701,10 @@ class ProtocolBuilderWidget(QWidget):
             self.status_label.setText("Select an image layer to run on.")
             return context
         context.update(seed)
+        # An in-memory run has no seams. Clearing here rather than on
+        # success keeps a failed run from publishing the previous run's
+        # ledger against this run's table.
+        self.blocked_ledgers = {}
         try:
             self.last_context = self.pipeline.run(context)
         except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
@@ -1143,7 +1147,26 @@ class ProtocolBuilderWidget(QWidget):
             z_axis=self.z_axis,
         )
         self.session.set_spacing(self.spacing_control.spacing())
+        self.session.set_ledger(self.measurement_ledger())
         self.session.set_context(self.last_context, self.results_table(), self.cell_tables())
+
+    def measurement_ledger(self):
+        """The seam ledger behind the published measurement table, if any.
+
+        There is one ledger per blocked segmentation, so which one belongs
+        to the table is the one for the labels that table was measured on.
+        `None` for an in-memory run, which is how the explorer knows there
+        are no seams to review.
+        """
+        if not self.blocked_ledgers:
+            return None
+        for step in self.pipeline.steps:
+            if step.output_key != "measurements":
+                continue
+            key = step.input_keys.get("labels", "labels")
+            if key in self.blocked_ledgers:
+                return self.blocked_ledgers[key]
+        return self.blocked_ledgers.get("labels")
 
     def cell_tables(self) -> dict:
         """The per-cell tables this protocol produced, ready to plot.

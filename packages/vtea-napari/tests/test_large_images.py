@@ -196,6 +196,64 @@ class TestMemoryControl:
         assert dialog.budget().total_bytes == detect_memory_budget().total_bytes
 
 
+class TestSeamLedgerReachesTheExplorer:
+    """A blocked segmentation records how it joined each object across its
+    tile boundaries. That record is only worth keeping if it arrives where
+    somebody can look at it, which is the shared session."""
+
+    def protocol(self, widget):
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "threshold_mask",
+                params={"method": "otsu"},
+                available={"volume"},
+            )
+        )
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.pipeline.add_step(Step.for_function("measurements", "extract_measurements"))
+
+    def test_a_blocked_run_publishes_its_ledger(self, builder):
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        self.protocol(widget)
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(400_000))
+        widget.run_processing()
+
+        assert widget.session.ledger is not None, widget.status_label.text()
+        assert widget.session.ledger.n_objects > 0
+        frame = widget.session.results_table()
+        assert "seam_confidence" in frame.columns
+        widget._close_scratch()
+
+    def test_an_in_memory_run_publishes_none(self, builder):
+        """No seams, and saying so is what keeps the review pane from
+        offering to review an empty condition."""
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        self.protocol(widget)
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(8 * GIB))
+        widget.run_processing()
+        assert widget.session.ledger is None
+
+    def test_an_in_memory_run_after_a_blocked_one_clears_it(self, builder):
+        """The stale ledger would describe objects this table has not got."""
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        self.protocol(widget)
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(400_000))
+        widget.run_processing()
+        assert widget.session.ledger is not None
+
+        widget.memory_control.set_budget(MemoryBudget(8 * GIB))
+        widget.last_context = {}
+        widget.run_processing()
+        assert widget.session.ledger is None
+
+
 class TestBlockedRun:
     def protocol(self, widget):
         widget.pipeline.add_step(

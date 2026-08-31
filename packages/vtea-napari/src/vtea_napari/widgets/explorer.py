@@ -48,19 +48,25 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from vtea_core.gates import SEAM_GATE_COLOR, has_seam_columns, seam_gate
 
 from vtea_napari.session import AnalysisSession, session_for
 from vtea_napari.widgets.association_review import AssociationReviewWidget
 from vtea_napari.widgets.gallery import GalleryWidget
+from vtea_napari.widgets.gate_manager import GateManagerWidget
+from vtea_napari.widgets.log_view import LogView
+from vtea_napari.widgets.plot import ScatterPlotWidget
+from vtea_napari.widgets.plot_style import PlotStylePanel
+from vtea_napari.widgets.seam_review import SeamReviewWidget
 
 # How many slices either side of an object's centroid the gallery projects.
 # Wide enough to hold a nucleus at ordinary z-steps, and bounded so the cost
 # of a thumbnail does not grow with the depth of the acquisition.
 GALLERY_Z_RADIUS = 8
-from vtea_napari.widgets.gate_manager import GateManagerWidget
-from vtea_napari.widgets.log_view import LogView
-from vtea_napari.widgets.plot import ScatterPlotWidget
-from vtea_napari.widgets.plot_style import PlotStylePanel
+
+# What the seam tab is called, and where it sits: after the review panes a
+# user reaches for on every run, since most runs have no seams at all.
+SEAM_TAB_NAME = "Seams"
 
 # The plot is the point of this pane; the gate manager beside it is
 # controls. Same 2:1 split the protocol builder used before this moved here.
@@ -206,6 +212,15 @@ class ExplorerWidget(QWidget):
         self.review.link_selected.connect(self._on_link_selected)
         self.review.associations_changed.connect(self._on_associations_changed)
 
+        # And a fourth: the objects a tile boundary cut, when the run was a
+        # blocked one. The tab only exists when there is something in it -
+        # an in-memory run has no seams, and a permanently empty tab reads
+        # as a broken feature rather than an absent condition.
+        self.seam_review = SeamReviewWidget()
+        self.seam_review.object_selected.connect(self._on_object_selected)
+        self.seam_review.objects_rejected.connect(self._on_objects_rejected)
+        self.seam_review.gate_requested.connect(self.add_seam_gate)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self.results_splitter, "Plot")
         self.tabs.addTab(self.gallery, "Gallery")
@@ -268,6 +283,8 @@ class ExplorerWidget(QWidget):
         try:
             self._refresh_table_choices()
             self.review.set_sources(self.session.associations())
+            self.seam_review.set_source(self.session.results_table(), self.session.ledger)
+            self._refresh_seam_tab()
             self.gate_manager.gate_set = self.session.gate_set
             frame = self.session.results_table()
             if frame is None:
@@ -307,6 +324,51 @@ class ExplorerWidget(QWidget):
                 np.where(labels == ref.object_id, labels, 0).astype(np.int32), name=name
             )
             _apply_gate_color(layer, _solid_label_colormap([ref.object_id], colour))
+
+    def _refresh_seam_tab(self) -> None:
+        """Show the seam tab exactly when the current table has seams."""
+        frame = self.session.results_table()
+        wanted = frame is not None and has_seam_columns(frame)
+        index = self.tabs.indexOf(self.seam_review)
+        if wanted and index < 0:
+            self.tabs.addTab(self.seam_review, SEAM_TAB_NAME)
+        elif not wanted and index >= 0:
+            self.tabs.removeTab(index)
+            # removeTab reparents the page to nothing but keeps it alive, so
+            # the same widget goes back on the next blocked run with its
+            # threshold and its selection intact.
+            self.seam_review.setParent(self)
+            self.seam_review.hide()
+
+    def _on_objects_rejected(self, object_id) -> None:
+        """A reviewer excluded a seam object. Recorded on the ledger by the
+        review pane itself; here it only has to be said out loud."""
+        ledger = self.session.ledger
+        excluded = len(ledger.dropped) if ledger is not None else 0
+        self.status_label.setText(
+            f"Object {object_id} excluded; {excluded} excluded in total."
+        )
+
+    def add_seam_gate(self, threshold: float) -> object:
+        """Put the seam objects on the plot as an ordinary gate.
+
+        Switches the axes to the pair the gate is drawn over, because a gate
+        whose outline is invisible on the axes in front of you is indistinguishable
+        from one that was never added.
+        """
+        frame = self.frame
+        if frame is None or not has_seam_columns(frame):
+            return None
+        gate = seam_gate(frame, threshold=threshold, parent_id=self._parent_gate_id())
+        gate.color = SEAM_GATE_COLOR
+        self.gate_manager.gate_set.add(gate)
+        self.gate_manager.selected_gate_id = gate.id
+        self.plot.set_data(frame, gate.x_axis, gate.y_axis)
+        self.gate_manager.refresh()
+        self._on_gates_changed()
+        self._on_gate_selected(gate.id)
+        self.tabs.setCurrentWidget(self.results_splitter)
+        return gate
 
     def _on_associations_changed(self) -> None:
         """A hand-made decision: remember it on the session so re-running the

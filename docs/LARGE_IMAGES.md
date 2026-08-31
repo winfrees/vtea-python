@@ -972,7 +972,7 @@ Changed elsewhere, and deliberately little:
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** *(ownership done; association and cells outstanding — see "Finishing L6–L8", items 4 and 5)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** **done** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
-| **L8 — GUI** *(lazy source, budget control and the blocked run path done; worker thread, seam review and ROI preview outstanding — items 2, 3 and 6)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
+| **L8 — GUI** *(lazy source, budget control, the blocked run path, cancellation off the GUI thread and seam review done; ROI preview outstanding — item 6)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
 L0-L4 are built. A protocol of blur, Otsu threshold, connected components
 and per-object measurement now runs entirely out of core, returning the same
@@ -991,8 +991,9 @@ divided the data into ("216 tiles of 384x384x384", with what bounded it in
 the tooltip), and opens a dialog to change it — because a user who cannot
 see that number cannot tell a slow run from a stuck one, and one who cannot
 change it cannot trade time for memory on the machine they actually have.
-Outstanding there: the ROI preview driven by `corner_pixels`, cancellation
-on a worker thread, and the seam-review view over `seam_confidence`.
+L8's remaining outstanding item is the ROI preview driven by
+`corner_pixels`; cancellation off the GUI thread and the seam-review view
+over `seam_confidence` are built (items 2 and 3 below).
 
 One environment note for whoever runs these tests: napari's `add_image`
 tears down through a vispy path that needs a GL context, so the viewer
@@ -1042,7 +1043,7 @@ concentrated.
 
 ## Finishing L6–L8
 
-Six items are outstanding, plus two things that can only be checked on
+Three items are outstanding, plus two things that can only be checked on
 hardware this was not built on. Scoped against the code rather than against
 the phase headings, they are smaller and more separable than "three
 unfinished phases" suggests — and two of them are much smaller than the
@@ -1106,7 +1107,7 @@ the button's feedback is applied by the pump loop, which is on the GUI
 thread by construction. Qt does not merely misbehave when a widget is
 touched from the wrong thread, it segfaults, which is how that was found.
 
-### 3. Seam review *(≈1 week — and mostly already there)*
+### 3. Seam review — **done**
 
 The plan claimed this would need "no new UI at all", and checking that
 against the code, it is nearly true: `LabelLedger.to_frame` already joins
@@ -1128,6 +1129,28 @@ What is missing is the shortcut and the record:
   a table operation, recorded in `LabelLedger.dropped` beside the objects
   the policy dropped. Say so in the interface, so nobody looks for an edit
   tool that is deliberately absent.
+
+Built as `vtea_core.gates.seam` and `SeamReviewWidget`. `seam_gate(frame)`
+returns an ordinary `Gate` over `seam_confidence` against `n_fragments` —
+deliberately a gate rather than a selection mode, so a reviewer can
+intersect it with a size or brightness gate and open the gallery on what
+survives. Its fragment ceiling is read from the data rather than fixed,
+because the vessel that ended up in nine tiles is exactly the object worth
+looking at and a constant would silently miss it; and its lower edge starts
+below zero, so an object no tile contained (confidence 0.0) falls inside
+the gate rather than on its boundary.
+
+The pane itself lists the objects worst-first with the rule that decided
+each, and offers one action: reject. A rejection is written to
+`LabelLedger.dropped` with a reason naming a person, the same distinction
+`Association.MANUAL` draws and for the same reason — a correction
+indistinguishable from an inference is worse than no correction. The tab
+appears only when the table has seam columns, since an in-memory run has no
+tile boundaries and a permanently empty tab reads as a broken feature
+rather than an absent condition. The ledger reaches it through the session
+(`set_ledger`), so a seam can be reviewed with the builder closed, and an
+in-memory run clears it rather than leaving the previous run's ledger
+describing objects this table has not got.
 
 ### 4. Association, spatially partitioned *(≈1.5–2 weeks)*
 
@@ -1223,16 +1246,15 @@ Not code, and not optional before anyone trusts this with real data.
 | --- | --- | --- | --- |
 | 1 | Gallery from the pyramid | **done** | Smallest; makes a large result lookable at |
 | 2 | Worker thread and cancel | **done** | A run nobody can cancel is a run nobody starts |
-| 3 | Seam review | 1 wk | Makes L3's ledger reachable; mostly already there |
+| 3 | Seam review | **done** | Makes L3's ledger reachable |
 | 4 | Association partitioned | 1.5–2 wk | Unblocks the table forms item 5 needs |
 | 5 | Cells through DuckDB | 2–3 wk | Largest; depends on 4's association table |
 | 6 | ROI preview | 1–1.5 wk | A convenience, and the only one |
 | 7 | Hardware validation | — | Gating for production use, not for merging |
 
-**Roughly 8–10 engineer-weeks**, and the first three are three weeks that
-each land on their own. Items 1–3 and 6 are `vtea-napari`; 4 and 5 are
-`vtea-core` and are the ones that need the invariance testing the earlier
-phases got.
+**Roughly 5–7 engineer-weeks remain.** Items 1–3 and 6 are `vtea-napari`;
+4 and 5 are `vtea-core` and are the ones that need the invariance testing
+the earlier phases got.
 
 ## Open questions
 
