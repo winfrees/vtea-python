@@ -349,6 +349,11 @@ class BlockedPipeline:
         # Per step name, and per context key, so that a later step can find
         # the ledger belonging to the labels it was pointed at.
         self.ledgers: dict[str, Any] = {}
+        # Measurement tables by the labels key they were measured on. An
+        # association scored by centroid distance needs centroids, and a
+        # run that has already measured them should not read the image
+        # again to recompute what is sitting in a table.
+        self.tables: dict[str, Any] = {}
 
     def __enter__(self) -> BlockedPipeline:  # noqa: PYI034 - typing.Self needs Python 3.11+, this package supports 3.10
         if self.scratch is None:
@@ -402,6 +407,8 @@ class BlockedPipeline:
                 self.ledgers[step.output_key] = result.ledger
                 if step.name:
                     self.ledgers[step.name] = result.ledger
+            if step.category == "measurements" and result.table is not None:
+                self.tables[step.input_keys.get("labels", "labels")] = result.table
         return working
 
     def _run_one(
@@ -410,6 +417,8 @@ class BlockedPipeline:
         scaling = _scaling_of(step)
         if step.category == "ownership":
             return self._run_ownership(step, context, progress=progress)
+        if step.category == "association":
+            return self._run_association(step, context, progress=progress)
         if scaling.needs_reconciliation:
             return self._run_reconciled(
                 step, context, progress=progress, should_stop=should_stop
@@ -516,6 +525,65 @@ class BlockedPipeline:
         return BlockedResult(
             array=filtered.array, plan=filtered.plan, ledger=filtered.ledger
         )
+
+    def _run_association(
+        self, step: Any, context: Mapping[str, Any], *, progress
+    ) -> BlockedResult:
+        """A step that links the objects of two segmentations.
+
+        The output is a set of links rather than an array, and every method
+        that produces it is either additive over tiles, object-local, or a
+        table operation that touches no voxels at all - see
+        `vtea_core.blocked.associate`. So this reads images a tile or a
+        window at a time and then runs exactly the same posterior, the same
+        assignment and the same record as the in-memory path.
+
+        `merge_associations` is here for completeness rather than for
+        scale: it joins two sets of links and never had an image to read.
+        """
+        from vtea_core.blocked.associate import (
+            associate_by_identity_blocked,
+            associate_objects_blocked,
+        )
+
+        sources, params = self._split_inputs(step, context)
+        if step.function_name == "merge_associations":
+            return BlockedResult(array=None, plan=self.plan, table=step.function(**params))
+
+        block_progress = (
+            (lambda done, total: progress(done, total)) if progress is not None else None
+        )
+        common = {
+            "plan": self.plan,
+            "child_ids": self._ledger_ids(step, "child_labels"),
+            "parent_ids": self._ledger_ids(step, "parent_labels"),
+            "progress": block_progress,
+        }
+        if step.function_name == "associate_by_identity":
+            links = associate_by_identity_blocked(
+                sources["child_labels"], sources["parent_labels"], **common, **params
+            )
+        else:
+            links = associate_objects_blocked(
+                sources["child_labels"],
+                sources["parent_labels"],
+                spacing=params.pop("spacing", self.spacing),
+                child_table=self.tables.get(step.input_keys.get("child_labels")),
+                parent_table=self.tables.get(step.input_keys.get("parent_labels")),
+                **common,
+                **params,
+            )
+        return BlockedResult(array=None, plan=self.plan, table=links)
+
+    def _ledger_ids(self, step: Any, argument: str):
+        """Every object id of one of this step's inputs, when a blocked
+        segmentation in this run already knows them.
+
+        `None` otherwise, which means the scorer scans for them - correct
+        either way, and the difference is one pass over the data.
+        """
+        ledger = self.ledgers.get(step.input_keys.get(argument, argument))
+        return None if ledger is None else np.asarray(ledger.object_ids, dtype=np.int64)
 
     def _run_measurement(
         self, step: Any, context: Mapping[str, Any], *, progress

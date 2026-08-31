@@ -970,7 +970,7 @@ Changed elsewhere, and deliberately little:
 | **L3 — Labels across tiles** **done** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
-| **L6 — Objects at scale** *(ownership done; association and cells outstanding — see "Finishing L6–L8", items 4 and 5)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
+| **L6 — Objects at scale** *(ownership and association done; cells outstanding — see "Finishing L6–L8", item 5)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** **done** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** *(lazy source, budget control, the blocked run path, cancellation off the GUI thread and seam review done; ROI preview outstanding — item 6)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
@@ -1022,10 +1022,10 @@ by at least that much. Anisotropically: eight microns of reach is four
 voxels along a 2 µm z-step and sixteen in x at 0.5, so a scalar check would
 pass on z and be wrong in x.
 
-What is outstanding in L6 is the *table* side — `associate_objects`
-spatially partitioned, and `build_cells`/`cell_features` through DuckDB
-rather than pandas. Those scale with object count rather than with voxels,
-which is a different problem with a different ceiling.
+L6's association half is built too (item 4 below). What is outstanding in
+L6 is `build_cells`/`cell_features` through DuckDB rather than pandas —
+which scales with object count rather than with voxels, a different problem
+with a different ceiling.
 
 L5 completes the reconciliation: `RESEGMENT` is built, so a learned
 segmenter can be tiled rather than refused, and the tests show the
@@ -1043,7 +1043,7 @@ concentrated.
 
 ## Finishing L6–L8
 
-Three items are outstanding, plus two things that can only be checked on
+Two items are outstanding, plus two things that can only be checked on
 hardware this was not built on. Scoped against the code rather than against
 the phase headings, they are smaller and more separable than "three
 unfinished phases" suggests — and two of them are much smaller than the
@@ -1152,7 +1152,7 @@ rather than an absent condition. The ledger reaches it through the session
 in-memory run clears it rather than leaving the previous run's ledger
 describing objects this table has not got.
 
-### 4. Association, spatially partitioned *(≈1.5–2 weeks)*
+### 4. Association, spatially partitioned — **done**
 
 Three scoring methods with three different answers, and one of them needs
 no image at all:
@@ -1180,6 +1180,39 @@ candidates each, the dictionary *is* the ceiling. So:
   dictionaries. The block decomposition itself is already right, and it is
   what keeps the O(n³) Hungarian solve tractable; only its input
   representation changes.
+
+Built as `vtea_core.blocked.associate`, with the representation change in
+`objects/scoring.py` and `objects/assignment.py`. `Posterior` moved to the
+same three arrays for the same reason — it is one number per candidate pair
+too, so leaving it as a dict of dicts would have moved the ceiling by one
+step and no further. `posterior()` is now one `bincount` and one
+elementwise division, with no per-child Python loop at all.
+
+The trap, found by a test and worth stating because any COO structure with
+a sorted id list has it: sorting the ids while accepting index arrays the
+caller built against *their* order silently points every pair at a
+different object. Indices are remapped through the sort, and the common
+path — ids from `np.unique`, already sorted — costs nothing. A second one
+in the same family: `searchsorted` on a label that is not in the id list
+returns the slot it would occupy, which belongs to some other object, so a
+mismatched id list produced a plausible wrong answer rather than an error.
+The blocked scorers check rather than trust, because the ids and the labels
+genuinely come from different places — a ledger, a table, a scan — and only
+have to agree.
+
+Three invariance claims, each pinned at one tile and at many: containment
+is bit-identical because overlap counts and child totals are integer sums;
+centroid distance is identical because it is the same centroids and the
+same arithmetic, read from the measurement table the run already produced;
+boundary distance is identical because a parent's window already holds
+everything within reach of it. Where a blocked segmentation is in the same
+run, the object ids and the bounding boxes come from its `LabelLedger`
+rather than from a scan — the ledger already knows both.
+
+`associate_by_identity` came along for a small price: it only ever compared
+two id sets, so `associate_ids` takes the sets and the blocked form hands
+it ids it got without reading a voxel. The executor now runs the whole
+`association` category rather than refusing it as OBJECT_LOCAL.
 
 ### 5. Cells through DuckDB *(≈2–3 weeks — the largest)*
 
@@ -1247,12 +1280,12 @@ Not code, and not optional before anyone trusts this with real data.
 | 1 | Gallery from the pyramid | **done** | Smallest; makes a large result lookable at |
 | 2 | Worker thread and cancel | **done** | A run nobody can cancel is a run nobody starts |
 | 3 | Seam review | **done** | Makes L3's ledger reachable |
-| 4 | Association partitioned | 1.5–2 wk | Unblocks the table forms item 5 needs |
+| 4 | Association partitioned | **done** | Unblocks the table forms item 5 needs |
 | 5 | Cells through DuckDB | 2–3 wk | Largest; depends on 4's association table |
 | 6 | ROI preview | 1–1.5 wk | A convenience, and the only one |
 | 7 | Hardware validation | — | Gating for production use, not for merging |
 
-**Roughly 5–7 engineer-weeks remain.** Items 1–3 and 6 are `vtea-napari`;
+**Roughly 3–4 engineer-weeks remain.** Items 1–3 and 6 are `vtea-napari`;
 4 and 5 are `vtea-core` and are the ones that need the invariance testing
 the earlier phases got.
 
