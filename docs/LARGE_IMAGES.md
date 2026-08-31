@@ -924,6 +924,9 @@ vtea_core/blocked/
     analysis.py    Scaled estimators, and the record of which one ran
 ```
 
+In `vtea-napari`, `widgets/memory_control.py`: the budget and the tile plan
+it implies, as a button beside the voxel size.
+
 The Parquet/DuckDB-backed table originally listed here as `blocked/table.py`
 went into `measurements/store.py` instead. `MeasurementStore` is already the
 store, already DuckDB, and already the thing every consumer talks to; a
@@ -969,7 +972,7 @@ Changed elsewhere, and deliberately little:
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** *(ownership done; association and cells outstanding)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** *(estimators and binned scatter done; gallery from the pyramid outstanding)* | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
-| **L8 — GUI** | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
+| **L8 — GUI** *(lazy source, budget control and the blocked run path done; ROI preview and seam review outstanding)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
 L0-L4 are built. A protocol of blur, Otsu threshold, connected components
 and per-object measurement now runs entirely out of core, returning the same
@@ -977,6 +980,25 @@ objects voxel for voxel and the same measurement table column for column as
 the in-memory run - at one tile and at sixteen. Only `stddev` differs, by
 about one part in 10^13, because it comes from a sum of squares rather than
 a second pass over the values.
+
+L8's first half is built. `active_image()` no longer materializes a lazily
+loaded layer — `source_data()` hands the protocol the array as the layer
+holds it, and `run_processing` decides from the plan: data that fits runs
+in memory as it always has, and data that does not runs a tile at a time
+through `vtea_core.blocked`, with the results staying in the scratch store.
+A `MemoryControl` beside the voxel-size button shows the budget and what it
+divided the data into ("216 tiles of 384x384x384", with what bounded it in
+the tooltip), and opens a dialog to change it — because a user who cannot
+see that number cannot tell a slow run from a stuck one, and one who cannot
+change it cannot trade time for memory on the machine they actually have.
+Outstanding there: the ROI preview driven by `corner_pixels`, cancellation
+on a worker thread, and the seam-review view over `seam_confidence`.
+
+One environment note for whoever runs these tests: napari's `add_image`
+tears down through a vispy path that needs a GL context, so the viewer
+tests here use `add_labels`, as the rest of this package's viewer tests
+already do. The builder reads `layer.data` and does not care which kind of
+layer produced it.
 
 L7's estimator half is built. The pattern there is `EstimatorChoice`: every
 scaled fit returns which method ran, how many rows it was fitted on, and
