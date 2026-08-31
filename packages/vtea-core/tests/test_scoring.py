@@ -274,5 +274,5 @@ class TestSparsity:
     def test_an_empty_child_image_scores_nothing(self):
         _children, parents = two_cells()
         scores = containment(np.zeros_like(parents), parents)
-        assert scores.child_ids == ()
+        assert len(scores.child_ids) == 0
         assert scores.n_candidates == 0

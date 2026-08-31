@@ -149,17 +149,24 @@ class TestOneToOne:
         """Which is what makes the O(n^3) solve affordable: two clusters that
         cannot compete are two small problems, not one large one."""
         far_apart = {1: {7: 0.9, 9: 0.5}, 2: {7: 0.8}, 3: {21: 0.9}, 4: {21: 0.4, 23: 0.7}}
-        assert len(_blocks(far_apart)) == 2
+        assert len(_blocks(posterior(scores(far_apart)))) == 2
 
     def test_the_blocks_cover_every_child_exactly_once(self):
         far_apart = {1: {7: 0.9, 9: 0.5}, 2: {7: 0.8}, 3: {21: 0.9}, 4: {21: 0.4, 23: 0.7}}
-        covered = [child for children, _parents in _blocks(far_apart) for child in children]
+        blocks = _blocks(posterior(scores(far_apart)))
+        covered = [child for children, _parents in blocks for child in children]
         assert sorted(covered) == [1, 2, 3, 4]
 
     def test_a_chain_of_shared_candidates_stays_one_block(self):
         """1 and 3 never compete directly, but both compete with 2."""
         chained = {1: {7: 0.9}, 2: {7: 0.5, 9: 0.5}, 3: {9: 0.9}}
-        assert len(_blocks(chained)) == 1
+        assert len(_blocks(posterior(scores(chained)))) == 1
+
+    def test_a_block_carries_the_parents_its_children_compete_for(self):
+        chained = {1: {7: 0.9}, 2: {7: 0.5, 9: 0.5}, 3: {9: 0.9}}
+        (children, parents), = _blocks(posterior(scores(chained)))
+        assert children == [1, 2, 3]
+        assert parents == [7, 9]
 
     def test_blocking_does_not_change_the_answer(self):
         two_clusters = posterior(
