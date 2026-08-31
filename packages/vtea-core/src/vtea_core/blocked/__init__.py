@@ -11,6 +11,18 @@ still a function that takes a NumPy mask and returns a NumPy label array;
 this package decides which NumPy arrays it gets handed.
 """
 
+from vtea_core.blocked.analysis import (
+    EstimatorChoice,
+    binned_scatter,
+    gaussian_mixture_scaled,
+    hierarchical_scaled,
+    isomap_scaled,
+    kmeans_scaled,
+    laplacian_eigenmap_scaled,
+    pca_scaled,
+    should_bin,
+    tsne_scaled,
+)
 from vtea_core.blocked.budget import (
     CGROUP,
     DETECTED,
@@ -140,6 +152,7 @@ __all__ = [
     "BlockedResult",
     "BudgetTooSmall",
     "Calibration",
+    "EstimatorChoice",
     "Fragment",
     "HaloExceeded",
     "HaloSpec",
@@ -161,6 +174,7 @@ __all__ = [
     "ZarrScratch",
     "apply_blocked",
     "available_bytes",
+    "binned_scatter",
     "calibrate",
     "calibrated_voxels",
     "cgroup_limit_bytes",
@@ -168,10 +182,15 @@ __all__ = [
     "device_name",
     "filter_by_size_blocked",
     "format_bytes",
+    "gaussian_mixture_scaled",
     "gpu_free_bytes",
     "gpu_plan",
     "gpu_tile_voxels",
+    "hierarchical_scaled",
     "is_out_of_memory",
+    "isomap_scaled",
+    "kmeans_scaled",
+    "laplacian_eigenmap_scaled",
     "load_calibration",
     "load_ledger",
     "load_sparse_ownership",
@@ -179,6 +198,7 @@ __all__ = [
     "otsu_threshold",
     "ownership_blocked",
     "parse_size",
+    "pca_scaled",
     "percentile_threshold",
     "plan_for_steps",
     "plan_signature",
@@ -189,5 +209,7 @@ __all__ = [
     "save_ledger",
     "scan",
     "segment_blocked",
+    "should_bin",
     "step_costs",
+    "tsne_scaled",
 ]

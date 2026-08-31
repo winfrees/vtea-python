@@ -288,9 +288,9 @@ Six modes. The whole protocol classifies into them.
 | `gaussian_mixture` | Fit on a stratified subsample, `predict` over all rows in batches. Exact for the assignment given the fitted model |
 | `hierarchical` | O(n²) — **not feasible** above ~10⁵ objects and should say so rather than hang. Offer: fit on a subsample, assign the rest to the nearest cluster centroid, and label the column as what it is |
 | `auto_k_kmeans` | BIC over minibatch fits; the existing `_kmeans_bic` works on a subsample |
-| `pca` | `IncrementalPCA` over row batches — exact to floating point |
+| `pca` | `IncrementalPCA` over row batches. Close but *not* the same arithmetic: it merges a partial SVD per batch, so where two eigenvalues are nearly equal the subspace is right and the axes inside it can rotate. Measured on a case with one dominant direction, the leading component agrees to 1 − 2e−9 and the second to r = 0.94 |
 | `isomap` | Fit on a subsample; `Isomap.transform` extends to the rest |
-| `laplacian_eigenmap` | sklearn's `SpectralEmbedding` has no `transform`. Nyström extension, or plot the subsample and say so |
+| `laplacian_eigenmap` | sklearn's `SpectralEmbedding` has no `transform`, and inventing one is a research decision wearing an implementation's clothes. Rows outside the sample come back **NaN** — what "not embedded" honestly looks like, rather than a fabricated position a plot would treat as a measurement |
 | `tsne` | sklearn's `TSNE` has no `transform` either. Either add `openTSNE` as an optional dep (it does) or subsample honestly |
 | `polygon_gate` / `rectangle_gate` | Unchanged — a boolean over 10⁷ rows is 10 MB |
 | `class_map` | ELEMENTWISE block-wise remap through a lookup table |
@@ -921,6 +921,7 @@ vtea_core/blocked/
     gpu.py         The calibration probe, its cache, and GPU-sized plans
     resume.py      The append-only manifest that makes a long run restartable
     ownership.py   SparseOwnership, and building one a tile at a time
+    analysis.py    Scaled estimators, and the record of which one ran
 ```
 
 The Parquet/DuckDB-backed table originally listed here as `blocked/table.py`
@@ -967,7 +968,7 @@ Changed elsewhere, and deliberately little:
 | **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** *(ownership done; association and cells outstanding)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
-| **L7 — Analysis and explorer** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
+| **L7 — Analysis and explorer** *(estimators and binned scatter done; gallery from the pyramid outstanding)* | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
 L0-L4 are built. A protocol of blur, Otsu threshold, connected components
@@ -976,6 +977,17 @@ objects voxel for voxel and the same measurement table column for column as
 the in-memory run - at one tile and at sixteen. Only `stddev` differs, by
 about one part in 10^13, because it comes from a sum of squares rather than
 a second pass over the values.
+
+L7's estimator half is built. The pattern there is `EstimatorChoice`: every
+scaled fit returns which method ran, how many rows it was fitted on, and
+whether the result is the whole-table answer — because "k-means on ten
+million objects" and "k-means fitted on fifty thousand of them" are
+different claims, and a table that cannot tell them apart cannot be
+compared with one computed the other way. `exact` is deliberately strict:
+seeing every row is not the same as running the same algorithm, so
+`IncrementalPCA` reports as streamed however close it lands. Outstanding
+there: the gallery reading crops from the pyramid, which is a GUI concern
+and belongs with L8.
 
 L6's ownership half is built, which is the phase's headline: the largest
 thing a protocol produces now costs the same order as the image rather than
