@@ -23,7 +23,11 @@ from vtea_core.measurements.regionprops import (
     parse_feature_name,
     threshold_mean,
 )
-from vtea_core.measurements.store import MeasurementStore
+from vtea_core.measurements.store import (
+    MeasurementStore,
+    read_measurements,
+    write_measurements,
+)
 from vtea_core.measurements.weighted import (
     weighted_measurements,
     weighted_measurements_by_channel,
@@ -44,7 +48,9 @@ __all__ = [
     "feature_matrix",
     "is_feature_column",
     "parse_feature_name",
+    "read_measurements",
     "threshold_mean",
     "weighted_measurements",
     "weighted_measurements_by_channel",
+    "write_measurements",
 ]

@@ -402,13 +402,20 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("measurements", "extract_measurements"): StepIO(
         ("labels", "intensity", "spacing"),
         "measurements",
-        scaling=Scaling(mode=ACCUMULATE, bytes_per_voxel=12),
+        scaling=Scaling(
+            mode=ACCUMULATE,
+            bytes_per_voxel=32,
+            notes=(
+                "the accumulators are per object, but the pass needs float64 copies of "
+                "the tile: the intensities, their squares, and one axis of coordinates"
+            ),
+        ),
     ),
     ("measurements", "extract_measurements_by_channel"): StepIO(
         ("labels", "intensity", "channel_axis", "spacing"),
         "measurements",
         channel_mode=CHANNEL_ARGUMENT,
-        scaling=Scaling(mode=ACCUMULATE, bytes_per_voxel=16),
+        scaling=Scaling(mode=ACCUMULATE, bytes_per_voxel=40),
     ),
     ("measurements", "weighted_measurements_by_channel"): StepIO(
         ("ownership", "intensity", "channel_axis", "spacing"),

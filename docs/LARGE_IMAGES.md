@@ -276,8 +276,8 @@ Six modes. The whole protocol classifies into them.
 
 | Step | Mode | Notes |
 | --- | --- | --- |
-| `extract_measurements` | accumulate + exact second pass | See "Measuring an object that spans tiles" |
-| `extract_measurements_by_channel` | as above, per channel | |
+| `extract_measurements` | accumulate + a second streaming pass | See "Measuring an object that spans tiles" |
+| `extract_measurements_by_channel` | as above, per channel | Geometry appears once; every intensity column carries the channel it was measured on. One channel is read at a time, so a four-channel volume costs the same per tile as a one-channel one |
 | `weighted_measurements_by_channel` | accumulate | Weighted sums are additive by construction, so this one streams exactly with no second pass |
 
 ### Analysis
@@ -637,17 +637,29 @@ the union of bounding boxes. These compose across fragments exactly —
 of them with no error term. Roughly 100 bytes per object; ten million
 objects is a gigabyte, and it goes to Parquet if it has to.
 
-**Pass 2, only for objects the ledger says were cut.** Everything else is
-already exact. `threshold_mean` (its cutoff depends on the object's global
-intensity range), any percentile, and every shape feature —
-surface area, sphericity, skeleton length — are not additive and cannot be
-recovered from fragment values. So for those objects, read the union bbox
-back from the store and measure it directly. A single object's bbox fits in
-RAM by definition; there are typically a few thousand of them; the cost is
-minutes, and the result is exact rather than approximately-merged.
+**Pass 2, for the features that do not compose.** `threshold_mean` (its
+cutoff depends on the object's global intensity range), any percentile, and
+every shape feature — surface area, sphericity, skeleton length — cannot be
+recovered from fragment values.
 
-This two-pass split is the whole trick: **stream what composes, re-read what
-doesn't.** It is why the answer can be exact rather than nearly right.
+The plan originally proposed reading each cut object's bounding box back
+from the store for these. Building it corrected that for the case that
+actually exists today: **a second streaming pass is simpler and cheaper than
+random access, wherever the missing quantity is derivable from the
+accumulators.** `threshold_mean` is exactly that case — once every object's
+minimum and maximum are known, its cutoff is known, so a voxel counts if it
+clears the cutoff of the object it belongs to. One lookup per voxel, one
+masked `bincount` per tile, fully vectorized, no sorting and no per-object
+loop. Two sequential passes over the data, and a result identical to the
+whole-image call.
+
+Random access earns its place when shape features arrive, since no
+accumulator can hold a surface area — and the ledger already knows which
+objects would need it.
+
+So the trick is still **stream what composes**; what changed is that the
+second half is usually "stream it again" rather than "re-read what
+doesn't". It is why the answer is exact rather than nearly right.
 
 ### Deep learning, specifically
 
@@ -875,9 +887,16 @@ vtea_core/blocked/
     executor.py    BlockedPipeline: runs a Pipeline over a TilePlan; resume
     stats.py       The streaming statistics pass (histograms, min/max)
     reconcile.py   SeamPolicy, Fragment, LabelLedger, the rules, halo checks
-    measure.py     Accumulators, the exact second pass, table assembly
-    table.py       Parquet/DuckDB-backed feature table
+    measure.py     Accumulators, the second streaming pass, table assembly
 ```
+
+The Parquet/DuckDB-backed table originally listed here as `blocked/table.py`
+went into `measurements/store.py` instead. `MeasurementStore` is already the
+store, already DuckDB, and already the thing every consumer talks to; a
+second parallel store would have been two of everything for one new method.
+`register_parquet` points a table at a file rather than holding a DataFrame,
+and the SQL is identical either way — which is the point, since nothing
+downstream should need to know which kind of table it is looking at.
 
 Plus two new modules that are not about blocking as such, but that the
 decisions above require:
@@ -897,7 +916,10 @@ Changed elsewhere, and deliberately little:
 - `io/tiff.py`, `io/zarr_io.py` — a lazy TIFF path; the direct `zarr` and
   `da.from_zarr` calls move behind `io/store.py`.
 - `objects/ownership.py` — the sparse, mask-restricted representation.
-- `measurements/store.py` — the Parquet-backed registration.
+- `measurements/store.py` — `write_measurements`/`read_measurements` and the
+  Parquet-backed registration. Written through DuckDB rather than pandas,
+  which would pull in `pyarrow` — a hundred megabytes of dependency for a
+  format the database already in this package reads and writes natively.
 - `vtea_napari` — lazy `active_image()`, the budget control, ROI preview,
   the progress/cancel worker, seam review in the association review widget.
 
@@ -909,18 +931,22 @@ Changed elsewhere, and deliberately little:
 | **L1 — Lazy I/O and the store** **done** | `io/store.py` as the single zarr seam, `Axes`, OME-NGFF 0.4 read/write with pyramids and a 5D `TCZYX` layout, lazy TIFF, ingest, `ZarrScratch`, lazy napari layers | 2–3 wk |
 | **L2 — The executor: elementwise, neighborhood, global stats** **done** | Covers all of `imageprocessing` and `threshold_mask`. Padding, halo trimming, and the "single tile equals whole image" test | 2–3 wk |
 | **L3 — Labels across tiles** **done** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
-| **L4 — Measurements at scale** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
+| **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
-L0-L3 are built. A protocol of blur, Otsu threshold, connected components
-and size filter now runs entirely out of core and returns the same objects,
-voxel for voxel, as the in-memory run - at one tile and at sixteen. L5's
-`RESEGMENT` is the piece of the reconciliation still outstanding, and until
-it exists a learned segmenter is refused rather than tiled, since every
-strategy that picks between tile copies keeps a wrong mask for one.
+L0-L4 are built. A protocol of blur, Otsu threshold, connected components
+and per-object measurement now runs entirely out of core, returning the same
+objects voxel for voxel and the same measurement table column for column as
+the in-memory run - at one tile and at sixteen. Only `stddev` differs, by
+about one part in 10^13, because it comes from a sum of squares rather than
+a second pass over the values.
+
+L5's `RESEGMENT` is the piece of the reconciliation still outstanding, and
+until it exists a learned segmenter is refused rather than tiled, since
+every strategy that picks between tile copies keeps a wrong mask for one.
 
 **Total: roughly 18–28 engineer-weeks.** L0–L2 are worth landing on their
 own — they make a large dataset *openable and preprocessable*, which is

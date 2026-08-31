@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 from vtea_core.blocked.contract import (
+    ACCUMULATE,
     APPROXIMATE,
     ELEMENTWISE,
     GLOBAL_STAT,
@@ -87,6 +88,8 @@ class BlockedResult:
 
     array: Any
     plan: TilePlan
+    # Present when this step produced rows rather than voxels.
+    table: Any = None
     stats: ImageStats | None = None
     resolved_params: dict[str, Any] = field(default_factory=dict)
     # Present when this step produced objects rather than pixels: how every
@@ -356,9 +359,10 @@ class BlockedPipeline:
             )
             result = self._run_one(step, working, progress=step_progress)
             self.results[step.name or step.function_name] = result
-            working[step.output_key] = result.array
+            produced = result.table if result.table is not None else result.array
+            working[step.output_key] = produced
             if step.name:
-                working[step.name] = result.array
+                working[step.name] = produced
             if result.ledger is not None:
                 self.ledgers[step.output_key] = result.ledger
                 if step.name:
@@ -366,8 +370,11 @@ class BlockedPipeline:
         return working
 
     def _run_one(self, step: Any, context: Mapping[str, Any], *, progress) -> BlockedResult:
-        if _scaling_of(step).needs_reconciliation:
+        scaling = _scaling_of(step)
+        if scaling.needs_reconciliation:
             return self._run_reconciled(step, context, progress=progress)
+        if scaling.mode == ACCUMULATE:
+            return self._run_measurement(step, context, progress=progress)
         sources, params = self._split_inputs(step, context)
 
         scaling = _scaling_of(step)
@@ -465,6 +472,56 @@ class BlockedPipeline:
         )
         return BlockedResult(
             array=filtered.array, plan=filtered.plan, ledger=filtered.ledger
+        )
+
+    def _run_measurement(
+        self, step: Any, context: Mapping[str, Any], *, progress
+    ) -> BlockedResult:
+        """A step that turns voxels into one row per object.
+
+        Streamed rather than tiled: the per-object accumulators are the
+        output, and they are the same size whether the image was one tile or
+        four thousand. See vtea_core.blocked.measure.
+        """
+        from vtea_core.blocked.measure import (
+            measure_blocked,
+            measure_blocked_by_channel,
+            with_seam_columns,
+        )
+
+        if step.function_name == "weighted_measurements_by_channel":
+            raise NotBlockableYet(
+                f"'{step.category}.{step.function_name}' measures a probabilistic "
+                f"ownership rather than a label image, and the out-of-core form of "
+                f"Ownership - sparse, restricted to the mask, rather than dense over "
+                f"the volume - is Phase L6. See docs/LARGE_IMAGES.md."
+            )
+
+        sources, params = self._split_inputs(step, context)
+        labels = sources["labels"]
+        intensity = sources.get("intensity", labels)
+        ledger = self.ledgers.get(step.input_keys.get("labels", "labels"))
+        n_objects = ledger.n_objects if ledger is not None else int(np.asarray(labels).max())
+
+        common = {
+            "plan": self.plan,
+            "n_objects": n_objects,
+            "spacing": params.get("spacing", self.spacing),
+            "progress": progress,
+        }
+        if step.function_name == "extract_measurements_by_channel":
+            frame = measure_blocked_by_channel(
+                labels,
+                intensity,
+                channel_axis=params.get("channel_axis"),
+                channel=params.get("channel"),
+                **common,
+            )
+        else:
+            frame = measure_blocked(labels, intensity, **common)
+
+        return BlockedResult(
+            array=None, plan=self.plan, table=with_seam_columns(frame, ledger), ledger=ledger
         )
 
     def _split_inputs(
