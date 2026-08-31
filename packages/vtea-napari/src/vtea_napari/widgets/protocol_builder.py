@@ -49,6 +49,7 @@ from vtea_napari.widgets.feature_select import FeatureSelectWidget
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.memory_control import MemoryControl
 from vtea_napari.widgets.param_form import ParameterForm
+from vtea_napari.widgets.run_control import RunControl
 from vtea_napari.widgets.spacing_control import SpacingControl
 from vtea_napari.widgets.step_stack import StepStackWidget
 
@@ -347,6 +348,12 @@ class ProtocolBuilderWidget(QWidget):
         self.memory_control = MemoryControl()
         self.memory_control.budget_changed.connect(lambda _budget: self.refresh_plan())
         top_row.addWidget(self.memory_control)
+
+        # Only visible while an out-of-core run is going. A run measured in
+        # hours has to be stoppable, and a window that has stopped
+        # repainting is indistinguishable from one that has crashed.
+        self.run_control = RunControl(self)
+        top_row.addWidget(self.run_control.widget())
 
         top_row.addStretch()
 
@@ -713,7 +720,7 @@ class ProtocolBuilderWidget(QWidget):
         away. napari renders the stored arrays the same way it renders any
         other chunked layer.
         """
-        from vtea_core.blocked import BlockedPipeline, ZarrScratch
+        from vtea_core.blocked import BlockedPipeline, Cancelled, ZarrScratch
 
         data = self.source_data()
         if data is None:
@@ -728,15 +735,35 @@ class ProtocolBuilderWidget(QWidget):
         if spacing is not None:
             seed["spacing"] = spacing
 
+        if self.run_control.busy:
+            self.status_label.setText("A run is already in progress.")
+            return context
+
         self.status_label.setText(f"Running out of core: {plan.describe()}")
         self._close_scratch()
         self._scratch = ZarrScratch()
+        runner = BlockedPipeline(
+            self.pipeline, plan=plan, scratch=self._scratch, spacing=spacing
+        )
         try:
-            runner = BlockedPipeline(
-                self.pipeline, plan=plan, scratch=self._scratch, spacing=spacing
+            # Off the Qt thread, with the event loop pumped meanwhile - see
+            # RunControl. Nothing here touches a napari layer; publishing
+            # happens below, back on the thread that called this.
+            self.last_context = self.run_control.run(
+                lambda should_stop: runner.run(
+                    seed, progress=self._on_block_progress, should_stop=should_stop
+                )
             )
-            self.last_context = runner.run(seed, progress=self._on_block_progress)
             self.blocked_ledgers = dict(runner.ledgers)
+        except Cancelled:
+            # A cancelled run has a partial result in the scratch store,
+            # which must not be published as a finished one. It is kept
+            # rather than deleted: paired with a manifest it is the start of
+            # a resume, and either way it is the user's to discard.
+            self.status_label.setText(
+                f"Cancelled - {plan.n_tiles:,} tiles planned, partial result not published."
+            )
+            return self.last_context
         except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
             self._close_scratch()
             self.status_label.setText(f"{type(exc).__name__}: {exc}")

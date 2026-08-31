@@ -72,6 +72,18 @@ class NotBlockableYet(NotImplementedError):
     """A step whose blocked form is a later phase."""
 
 
+class Cancelled(RuntimeError):
+    """A run a caller asked to stop.
+
+    Its own exception type rather than a quiet return, because a cancelled
+    run has a *partial* result in the scratch store and nothing downstream
+    should mistake it for a finished one. What a caller does with the
+    partial result is its business - paired with a manifest it is the start
+    of a resume, and paired with nothing it is something to throw away -
+    but it has to be told the difference.
+    """
+
+
 def numpy_pad_mode(scipy_mode: str) -> str:
     """The numpy.pad name for a scipy.ndimage boundary mode."""
     try:
@@ -118,6 +130,7 @@ def apply_blocked(
     dtype: Any = None,
     pad_mode: str = DEFAULT_PAD_MODE,
     progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Any:
     """Run a shape-preserving function over `plan`'s tiles.
 
@@ -142,6 +155,10 @@ def apply_blocked(
 
     total = plan.n_tiles
     for index, tile in enumerate(plan.tiles()):
+        # Between tiles, not inside one: a tile is the smallest unit of work
+        # that leaves the output in a consistent state, and interrupting one
+        # halfway would leave a partly-written region that looks finished.
+        _check_cancelled(should_stop)
         blocks = {
             name: read_block(array, tile, pad_mode) for name, array in sources.items()
         }
@@ -159,6 +176,11 @@ def apply_blocked(
         if progress is not None:
             progress(index + 1, total)
     return target
+
+
+def _check_cancelled(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise Cancelled("the run was cancelled")
 
 
 def read_block(array: Any, tile: Tile, pad_mode: str | None = DEFAULT_PAD_MODE) -> np.ndarray:
@@ -201,6 +223,7 @@ def run_step_blocked(
     params: Mapping[str, Any] | None = None,
     pad_mode: str = DEFAULT_PAD_MODE,
     progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> BlockedResult:
     """Run one `vtea_core.workflow.Step` over a plan.
 
@@ -239,6 +262,7 @@ def run_step_blocked(
         target=target,
         pad_mode=pad_mode,
         progress=progress,
+        should_stop=should_stop,
     )
     return BlockedResult(array=array, plan=plan, stats=stats, resolved_params=resolved)
 
@@ -341,23 +365,34 @@ class BlockedPipeline:
         context: Mapping[str, Any],
         *,
         progress: Callable[[str, int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Run every step, threading stored arrays through a context.
 
         The context holds arrays that are read a tile at a time rather than
         held, so it looks exactly like `Pipeline.run`'s and costs a
         different amount.
+
+        `should_stop` is polled between tiles and between steps, and raises
+        `Cancelled` when it answers yes. A run measured in hours has to be
+        stoppable, and the place to stop is a tile boundary: it is the
+        smallest unit that leaves the output consistent. Paired with a
+        manifest (see `vtea_core.blocked.resume`) a cancelled run is the
+        start of a resume rather than wasted work.
         """
         if self.scratch is None:
             raise RuntimeError("use BlockedPipeline as a context manager, or pass a scratch store")
         working = dict(context)
         for step in self.pipeline.steps:
+            _check_cancelled(should_stop)
             step_progress = (
                 (lambda done, total, name=step.name: progress(name, done, total))
                 if progress is not None
                 else None
             )
-            result = self._run_one(step, working, progress=step_progress)
+            result = self._run_one(
+                step, working, progress=step_progress, should_stop=should_stop
+            )
             self.results[step.name or step.function_name] = result
             produced = result.table if result.table is not None else result.array
             working[step.output_key] = produced
@@ -369,12 +404,16 @@ class BlockedPipeline:
                     self.ledgers[step.name] = result.ledger
         return working
 
-    def _run_one(self, step: Any, context: Mapping[str, Any], *, progress) -> BlockedResult:
+    def _run_one(
+        self, step: Any, context: Mapping[str, Any], *, progress, should_stop=None
+    ) -> BlockedResult:
         scaling = _scaling_of(step)
         if step.category == "ownership":
             return self._run_ownership(step, context, progress=progress)
         if scaling.needs_reconciliation:
-            return self._run_reconciled(step, context, progress=progress)
+            return self._run_reconciled(
+                step, context, progress=progress, should_stop=should_stop
+            )
         if scaling.mode == ACCUMULATE:
             return self._run_measurement(step, context, progress=progress)
         sources, params = self._split_inputs(step, context)
@@ -396,11 +435,12 @@ class BlockedPipeline:
             params=params,
             pad_mode=self.pad_mode,
             progress=progress,
+            should_stop=should_stop,
         )
 
 
     def _run_reconciled(
-        self, step: Any, context: Mapping[str, Any], *, progress
+        self, step: Any, context: Mapping[str, Any], *, progress, should_stop=None
     ) -> BlockedResult:
         """A step whose objects have to be joined across tile boundaries.
 
@@ -440,6 +480,7 @@ class BlockedPipeline:
             spacing=self.spacing,
             name=_scratch_name(step),
             progress=progress,
+            should_stop=should_stop,
         )
         return BlockedResult(
             array=labels.array, plan=labels.plan, ledger=labels.ledger

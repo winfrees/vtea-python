@@ -1071,7 +1071,7 @@ has to change in it; what has to change is around it.
 Small, self-contained, and the thing that makes a large result *lookable
 at*. Do it first.
 
-### 2. A run you can cancel, off the GUI thread *(≈1–1.5 weeks)*
+### 2. A run you can cancel, off the GUI thread — **done**
 
 `run_processing` blocks Qt for the length of the run. That was tolerable
 when a run was seconds; it is not when the status line says "tile 340 of
@@ -1079,9 +1079,13 @@ when a run was seconds; it is not when the status line says "tile 340 of
 
 - `BlockedPipeline.run` gains a `should_stop` callable checked between
   tiles. Small, and in the core rather than the GUI so a script can use it.
-- The builder runs it on a `thread_worker`, with the existing
-  `_on_block_progress` as the progress signal and a Cancel button beside the
-  Run button.
+- The builder runs it on a background thread and pumps the Qt event loop
+  while it waits, rather than on a `thread_worker`. A worker would make
+  `run_processing` asynchronous and every caller that treats it as a
+  function returning a result would have to change; this keeps the return
+  value, keeps napari repainting, and makes Cancel a button that can
+  actually be clicked. NumPy and scipy release the GIL for the heavy
+  operations, so the two threads genuinely overlap.
 - **Cancellation composes with L5's manifest**: a cancelled run has written
   every tile it finished, so pointing the same manifest at it resumes rather
   than restarts. That is worth wiring deliberately rather than discovering —
@@ -1089,7 +1093,18 @@ when a run was seconds; it is not when the status line says "tile 340 of
 
 The one design point: a cancelled run leaves a partial label array in
 scratch. It must not be published as a result. Publish on completion only,
-and say what was cancelled.
+and say what was cancelled — `Cancelled` is its own exception type for
+exactly that, so nothing downstream can mistake a partial result for a
+finished one. The scratch store is kept rather than deleted: it is the
+user's to discard, and with a manifest it is the start of a resume.
+
+Two things pumping the event loop makes possible that a worker would not,
+and both are guarded. A user can click Run again mid-run, so a run in
+progress refuses to start another. And `cancel()` can arrive from any
+thread — a timer, a worker — so it sets the flag and touches no widget;
+the button's feedback is applied by the pump loop, which is on the GUI
+thread by construction. Qt does not merely misbehave when a widget is
+touched from the wrong thread, it segfaults, which is how that was found.
 
 ### 3. Seam review *(≈1 week — and mostly already there)*
 
@@ -1207,7 +1222,7 @@ Not code, and not optional before anyone trusts this with real data.
 | # | Item | Est. | Why here |
 | --- | --- | --- | --- |
 | 1 | Gallery from the pyramid | **done** | Smallest; makes a large result lookable at |
-| 2 | Worker thread and cancel | 1–1.5 wk | A run nobody can cancel is a run nobody starts |
+| 2 | Worker thread and cancel | **done** | A run nobody can cancel is a run nobody starts |
 | 3 | Seam review | 1 wk | Makes L3's ledger reachable; mostly already there |
 | 4 | Association partitioned | 1.5–2 wk | Unblocks the table forms item 5 needs |
 | 5 | Cells through DuckDB | 2–3 wk | Largest; depends on 4's association table |

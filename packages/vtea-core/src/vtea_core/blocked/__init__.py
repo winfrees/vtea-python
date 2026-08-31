@@ -58,6 +58,7 @@ from vtea_core.blocked.contract import (
 from vtea_core.blocked.executor import (
     BlockedPipeline,
     BlockedResult,
+    Cancelled,
     NotBlockableYet,
     apply_blocked,
     numpy_pad_mode,
@@ -152,6 +153,7 @@ __all__ = [
     "BlockedResult",
     "BudgetTooSmall",
     "Calibration",
+    "Cancelled",
     "EstimatorChoice",
     "Fragment",
     "HaloExceeded",

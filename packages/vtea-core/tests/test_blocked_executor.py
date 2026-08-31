@@ -399,3 +399,120 @@ class TestBlockedPipeline:
         blocked = BlockedPipeline(self.steps(), plan=plan)
         with pytest.raises(RuntimeError, match="context manager"):
             blocked.run({"volume": volume})
+
+
+class TestCancellation:
+    """A run measured in hours has to be stoppable, and the place to stop
+    is a tile boundary - the smallest unit that leaves the output
+    consistent."""
+
+    def test_it_stops_between_tiles(self, volume):
+        from vtea_core.blocked import Cancelled
+
+        plan = tiled_plan(volume.shape, 27)
+        seen = {"n": 0}
+
+        def stop_after_three():
+            seen["n"] += 1
+            return seen["n"] > 3
+
+        with pytest.raises(Cancelled):
+            apply_blocked(
+                threshold_mask,
+                {"volume": volume},
+                plan=plan,
+                params={"method": "fixed", "value": 1500},
+                should_stop=stop_after_three,
+            )
+        assert seen["n"] < plan.n_tiles, "it ran every tile before noticing"
+
+    def test_a_run_nobody_stops_is_unaffected(self, volume):
+        expected = threshold_mask(volume, method="fixed", value=1500)
+        result = apply_blocked(
+            threshold_mask,
+            {"volume": volume},
+            plan=tiled_plan(volume.shape, 8),
+            params={"method": "fixed", "value": 1500},
+            should_stop=lambda: False,
+        )
+        np.testing.assert_array_equal(result, expected)
+
+    def test_a_pipeline_stops_between_steps_too(self, volume):
+        from vtea_core.blocked import Cancelled
+
+        pipeline = Pipeline(
+            [
+                Step.for_function("imageprocessing", "gaussian_blur", params={"sigma": 1.0}),
+                Step.for_function(
+                    "segmentation",
+                    "threshold_mask",
+                    params={"method": "otsu"},
+                    available={"volume"},
+                ),
+            ]
+        )
+        plan = plan_for_steps(pipeline.steps, volume.shape, budget=MemoryBudget(4 * 1024**2))
+        with BlockedPipeline(pipeline, plan=plan) as blocked:
+            with pytest.raises(Cancelled):
+                blocked.run({"volume": volume}, should_stop=lambda: True)
+
+    def test_a_segmentation_stops_between_tiles(self, volume):
+        from vtea_core.blocked import Cancelled, ZarrScratch, segment_blocked
+        from vtea_core.segmentation import label_components
+
+        mask = volume > 2500
+        plan = tiled_plan(volume.shape, 27, halo=4, bytes_per_voxel=10)
+        seen = {"n": 0}
+
+        def stop_after_two():
+            seen["n"] += 1
+            return seen["n"] > 2
+
+        with ZarrScratch() as scratch:
+            with pytest.raises(Cancelled):
+                segment_blocked(
+                    label_components,
+                    {"mask": mask},
+                    plan=plan,
+                    scratch=scratch,
+                    should_stop=stop_after_two,
+                )
+
+    def test_cancelling_leaves_the_finished_tiles_for_a_resume(self, volume, tmp_path):
+        # The synergy with L5's manifest: a cancelled run has written every
+        # tile it finished, so the same manifest resumes rather than
+        # restarts. Cancel becomes "stop for now", not "throw away an hour".
+        from vtea_core.blocked import Cancelled, ZarrScratch, segment_blocked
+        from vtea_core.blocked.resume import RunManifest
+        from vtea_core.segmentation import label_components
+
+        mask = volume > 2500
+        plan = tiled_plan(volume.shape, 27, halo=4, bytes_per_voxel=10)
+        manifest = tmp_path / "run.jsonl"
+        seen = {"n": 0}
+
+        scratch = ZarrScratch(root=str(tmp_path), keep=True)
+        with pytest.raises(Cancelled):
+            segment_blocked(
+                label_components,
+                {"mask": mask},
+                plan=plan,
+                scratch=scratch,
+                manifest=manifest,
+                should_stop=lambda: seen.__setitem__("n", seen["n"] + 1) or seen["n"] > 3,
+            )
+        done = RunManifest.load(manifest).n_completed
+        assert 0 < done < plan.n_tiles
+
+        resumed = ZarrScratch.reopen(scratch.path)
+        result = segment_blocked(
+            label_components,
+            {"mask": mask},
+            plan=tiled_plan(volume.shape, 27, halo=4, bytes_per_voxel=10),
+            scratch=resumed,
+            manifest=manifest,
+        )
+        assert RunManifest.load(manifest).n_completed == plan.n_tiles
+        assert result.n_objects > 0
+        resumed.keep = False
+        resumed.close()
