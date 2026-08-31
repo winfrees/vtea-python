@@ -970,9 +970,9 @@ Changed elsewhere, and deliberately little:
 | **L3 — Labels across tiles** **done** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
-| **L6 — Objects at scale** *(ownership done; association and cells outstanding)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
-| **L7 — Analysis and explorer** *(estimators and binned scatter done; gallery from the pyramid outstanding)* | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
-| **L8 — GUI** *(lazy source, budget control and the blocked run path done; ROI preview and seam review outstanding)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
+| **L6 — Objects at scale** *(ownership done; association and cells outstanding — see "Finishing L6–L8", items 4 and 5)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
+| **L7 — Analysis and explorer** *(estimators and binned scatter done; gallery from the pyramid outstanding — item 1)* | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
+| **L8 — GUI** *(lazy source, budget control and the blocked run path done; worker thread, seam review and ROI preview outstanding — items 2, 3 and 6)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
 L0-L4 are built. A protocol of blur, Otsu threshold, connected components
 and per-object measurement now runs entirely out of core, returning the same
@@ -1039,6 +1039,185 @@ device, so the probe's `torch` path awaits hardware.
 own — they make a large dataset *openable and preprocessable*, which is
 most of the day-to-day pain — and L3 is where the intellectual risk is
 concentrated.
+
+## Finishing L6–L8
+
+Six items are outstanding, plus two things that can only be checked on
+hardware this was not built on. Scoped against the code rather than against
+the phase headings, they are smaller and more separable than "three
+unfinished phases" suggests — and two of them are much smaller than the
+plan implied, because the existing code already does most of the work.
+
+Ordered by what a user gets soonest, not by phase number.
+
+### 1. The gallery reads crops rather than volumes *(≈1 week)*
+
+`GalleryWidget._crop_2d` already slices `volume[..., r0:r1, c0:c1]` — a
+bounding-box read, which is what a chunked store is best at. Almost nothing
+has to change in it; what has to change is around it.
+
+- `show_objects` is typed `volume: np.ndarray` and its callers hand it a
+  materialized array. Take whatever the layer holds, and `np.asarray` the
+  *crop* rather than the volume.
+- **Pick a pyramid level.** A 64-pixel thumbnail from a 40-pixel crop wants
+  level 0; a thumbnail of a 400-pixel region wants level 2, and reading
+  level 0 for it is sixteen times the I/O for the same picture. Read
+  `MultiscaleInfo` and choose the level where the crop is about the
+  thumbnail's size.
+- **Crop z as well.** `max_projection` over the full depth of a 2,000-slice
+  stack is not a thumbnail, it is a reduction over the whole volume. Add a
+  `z_radius` around the object's own centroid.
+
+Small, self-contained, and the thing that makes a large result *lookable
+at*. Do it first.
+
+### 2. A run you can cancel, off the GUI thread *(≈1–1.5 weeks)*
+
+`run_processing` blocks Qt for the length of the run. That was tolerable
+when a run was seconds; it is not when the status line says "tile 340 of
+4,096".
+
+- `BlockedPipeline.run` gains a `should_stop` callable checked between
+  tiles. Small, and in the core rather than the GUI so a script can use it.
+- The builder runs it on a `thread_worker`, with the existing
+  `_on_block_progress` as the progress signal and a Cancel button beside the
+  Run button.
+- **Cancellation composes with L5's manifest**: a cancelled run has written
+  every tile it finished, so pointing the same manifest at it resumes rather
+  than restarts. That is worth wiring deliberately rather than discovering —
+  it turns Cancel from "throw away an hour" into "stop for now".
+
+The one design point: a cancelled run leaves a partial label array in
+scratch. It must not be published as a result. Publish on completion only,
+and say what was cancelled.
+
+### 3. Seam review *(≈1 week — and mostly already there)*
+
+The plan claimed this would need "no new UI at all", and checking that
+against the code, it is nearly true: `LabelLedger.to_frame` already joins
+`seam_confidence` onto the measurement table, and `ExplorerWidget` already
+gates on any column and shows a gallery of what a gate selects. So drawing
+a gate on low confidence and looking at the crops works today.
+
+What is missing is the shortcut and the record:
+
+- A one-click "show seam objects" preset — a gate on
+  `seam_confidence < threshold`, so a reviewer does not have to know the
+  column exists.
+- A seam table beside the association review: object, `n_fragments`,
+  `seam_rule`, `seam_confidence`, sorted by confidence.
+- **Reject, do not edit.** Correcting a seam decision means rewriting voxels
+  in a label array that may be 33 GB, which is the random-access editing
+  problem this document explicitly puts out of scope (chunk write
+  amplification, undo). What a reviewer can do is *exclude* an object —
+  a table operation, recorded in `LabelLedger.dropped` beside the objects
+  the policy dropped. Say so in the interface, so nobody looks for an edit
+  tool that is deliberately absent.
+
+### 4. Association, spatially partitioned *(≈1.5–2 weeks)*
+
+Three scoring methods with three different answers, and one of them needs
+no image at all:
+
+- **`containment` is already additive.** It is a `bincount` over paired
+  label arrays: per-(child, parent) overlap counts sum across tiles, and so
+  do the per-child totals. It is the `ACCUMULATE` pattern exactly — one
+  streaming pass, exact, no halo.
+- **`centroid_distance` needs no voxels.** The centroids are already in the
+  measurement table. Read them, build one kd-tree, done — this is a table
+  operation that has been reading images out of habit.
+- **`boundary_distance` is already object-local**: `find_objects` then an
+  EDT per parent within its window. Blocked, it reads each parent's bounding
+  box grown by `max_distance` from the store. Exact given that window.
+
+The real scaling work is neither of those. `CandidateScores` holds a
+`dict[int, dict[int, float]]`, which is roughly 200 bytes per candidate
+against 16 for the same thing in three arrays; at 10⁷ children with a few
+candidates each, the dictionary *is* the ceiling. So:
+
+- A COO-backed `CandidateScores` — `child_index`, `parent_index`, `score`
+  arrays — keeping the existing accessors so `posterior` and `assign` do not
+  change.
+- `assignment._blocks` walks that with union-find instead of traversing
+  dictionaries. The block decomposition itself is already right, and it is
+  what keeps the O(n³) Hungarian solve tractable; only its input
+  representation changes.
+
+### 5. Cells through DuckDB *(≈2–3 weeks — the largest)*
+
+`build_cells` walks the association graph and builds a `Cell` object per
+cell with an `ObjectRef` per part. At ten million cells that graph is
+several gigabytes of Python objects before any measurement is joined to it.
+
+- **Associations become a table** (`child_segmentation`, `child_id`,
+  `parent_segmentation`, `parent_id`, `probability`, `relationship`) —
+  `AssociationSet.to_frame`, which is useful on its own for saving and
+  diffing.
+- **`build_cells` becomes a recursive CTE.** Following links out from the
+  roots until nothing new joins is what `WITH RECURSIVE` is for, and DuckDB
+  spills it. The output is a `(cell_id, role, object_id)` mapping table
+  rather than an object graph.
+- **`cell_features` becomes a join and a group-by**, which is the operation
+  DuckDB exists to do and pandas does in memory.
+
+Two things must survive the port exactly, and they are the parts worth
+testing hardest. `single_roles` decides whether a role's columns are
+`nuclei.mean` or `lysosomes.n` + `lysosomes.mean_mean`, and it comes from
+how the association was made rather than from what this field happens to
+contain — a shape that varied with the data could not be pooled across
+fields. And a cell missing a part gets NaN and a count of 0 rather than
+being dropped, which is a `LEFT JOIN` and an explicit role list rather than
+whatever the data brings.
+
+Keep `CellSet` as the in-memory path and choose by row count, as everything
+else here does.
+
+### 6. ROI preview *(≈1–1.5 weeks)*
+
+`layer.corner_pixels` gives the extent currently on screen, which is the
+hook for running a step over what the user is looking at instead of over
+forty gigabytes. Tuning a threshold any other way on data this size is not
+usable.
+
+Left until last deliberately: it is a convenience, and every item above it
+is either a correctness gap or the difference between a feature being
+reachable and not. Three things it needs — the displayed pyramid level (not
+level 0), a preview layer named so it cannot be mistaken for a committed
+result, and debouncing so panning does not queue a hundred runs.
+
+### 7. Validation this environment cannot do
+
+Not code, and not optional before anyone trusts this with real data.
+
+- **The GPU probe on real hardware.** `device_name()` and
+  `torch.cuda.mem_get_info` have never run against a device here; everything
+  around them is tested against injected ones. One run on a CUDA box, and a
+  cached calibration checked against what the card actually manages.
+- **The strategy comparison on real tissue.** The open question below asks
+  how often centroid and overlap matching disagree, and on what. The ledger
+  was built to make that a query rather than a study; it needs tissue with
+  vessels and tubules in it, not only nuclei.
+- **`napari.add_image` under a headless runner.** It tears down through a
+  vispy path needing a GL context, which is why the viewer tests here use
+  `add_labels`. Worth checking against a napari release with a display
+  attached before assuming it is only a test-environment quirk.
+
+### Order and total
+
+| # | Item | Est. | Why here |
+| --- | --- | --- | --- |
+| 1 | Gallery from the pyramid | 1 wk | Smallest; makes a large result lookable at |
+| 2 | Worker thread and cancel | 1–1.5 wk | A run nobody can cancel is a run nobody starts |
+| 3 | Seam review | 1 wk | Makes L3's ledger reachable; mostly already there |
+| 4 | Association partitioned | 1.5–2 wk | Unblocks the table forms item 5 needs |
+| 5 | Cells through DuckDB | 2–3 wk | Largest; depends on 4's association table |
+| 6 | ROI preview | 1–1.5 wk | A convenience, and the only one |
+| 7 | Hardware validation | — | Gating for production use, not for merging |
+
+**Roughly 8–10 engineer-weeks**, and the first three are three weeks that
+each land on their own. Items 1–3 and 6 are `vtea-napari`; 4 and 5 are
+`vtea-core` and are the ones that need the invariance testing the earlier
+phases got.
 
 ## Open questions
 
