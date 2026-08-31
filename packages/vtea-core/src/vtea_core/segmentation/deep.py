@@ -33,6 +33,7 @@ def cellpose_segmentation(
     diameter: float | None = None,
     flow_threshold: float = 0.4,
     cellprob_threshold: float = 0.0,
+    stitch_threshold: float = 0.0,
 ) -> np.ndarray:
     """Segments a single-channel intensity volume with Cellpose.
 
@@ -52,6 +53,17 @@ def cellpose_segmentation(
     Cellpose versions used). `volume` is replicated across a new trailing
     channel axis before being passed to the model, since single-channel
     fluorescence data has no real second/third channel to provide.
+
+    `do_3D` runs a genuine 3D model, which is the most faithful option and
+    the most memory-hungry: its cost grows faster than the volume, so it is
+    usually the first thing to give up on a large stack.
+    `stitch_threshold` is the alternative - segment each z-plane in 2D and
+    link the masks between planes by IoU, which is cellpose's own
+    `stitch3D`. It is deliberately not reimplemented here: linking objects
+    between adjacent planes is the same problem VTEA solves across tile
+    boundaries, and where the library already has an answer for one axis,
+    using it beats having two implementations that can disagree. Set one or
+    the other; with `do_3D=True` cellpose ignores it.
 
     Returns an integer label array the same shape as `volume` (0 =
     background), matching this module's other segmentation functions.
@@ -84,6 +96,9 @@ def cellpose_segmentation(
     }
     if do_3D:
         eval_kwargs["z_axis"] = 0
+    elif stitch_threshold > 0:
+        eval_kwargs["z_axis"] = 0
+        eval_kwargs["stitch_threshold"] = stitch_threshold
 
     masks, _flows, _styles = model.eval(stacked, **eval_kwargs)
     return np.asarray(masks)

@@ -39,16 +39,40 @@ def median_filter(volume: np.ndarray, radius: float | tuple[float, ...]) -> np.n
     return ndi.median_filter(volume, size=size)
 
 
-def enhance_contrast(volume: np.ndarray, *, method: str = "normalize") -> np.ndarray:
+def enhance_contrast(
+    volume: np.ndarray,
+    *,
+    method: str = "normalize",
+    kernel_size: int | tuple[int, ...] | None = None,
+    in_range: tuple[float, float] | str = "image",
+) -> np.ndarray:
     """Contrast enhancement. Replaces vtea.imageprocessing.builtin.EnhanceContrast.
 
     method="normalize": rescale intensities to fill the image's dtype range.
     method="equalize": adaptive histogram equalization (CLAHE).
+
+    `kernel_size` is the CLAHE tile size, in voxels, and applies to
+    method="equalize" only. Left unset, skimage derives it from the image -
+    an eighth of each axis - which is fine for one image and wrong the
+    moment the image is processed in pieces: the kernel would then be an
+    eighth of a *tile*, so the same data would be equalized differently
+    depending on how it was divided up. Setting it explicitly is what makes
+    the operation mean the same thing at any scale (see
+    docs/LARGE_IMAGES.md, and vtea_core.blocked.contract for how the tile
+    planner reads it).
+
+    `in_range` is the intensity range method="normalize" stretches from,
+    defaulting to the image's own. Same problem, same shape of answer: a
+    tile's own range is not the volume's, so rescaling tile by tile would
+    stretch each one differently. The blocked executor measures the range
+    in one streaming pass and passes it here, which is what makes the
+    tiled result identical to the whole-image one rather than merely
+    similar.
     """
     if method == "normalize":
-        return rescale_intensity(volume)
+        return rescale_intensity(volume, in_range=in_range)
     elif method == "equalize":
-        return equalize_adapthist(volume)
+        return equalize_adapthist(volume, kernel_size=kernel_size)
     else:
         raise ValueError(f"unknown method {method!r}, expected 'normalize' or 'equalize'")
 

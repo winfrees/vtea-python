@@ -20,6 +20,10 @@ dependencies = [
     "scikit-learn>=1.3",
     "pandas>=2.0",
     "duckdb>=0.10",
+    # Reads how much memory this machine actually has. The cgroup limit
+    # (what a container is really allowed) is read directly, since psutil
+    # reports the host - see vtea_core.blocked.budget.
+    "psutil>=5.9",
     "tifffile>=2024.1",
     "imagecodecs>=2024.1",
     "matplotlib>=3.8",
@@ -28,7 +32,17 @@ dependencies = [
 [project.optional-dependencies]
 bioformats = ["bioio>=1.0"]
 deeplearning = ["torch>=2.1", "cellpose>=3.0"]
-dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.16,<0.17", "mypy"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "ruff>=0.16,<0.17",
+    "mypy",
+    # Reads back what vtea_core.io.ome_zarr writes, in the interoperability
+    # test. Pinned below 0.11 because later releases require zarr 3 and
+    # vtea-core is on zarr 2 - see docs/LARGE_IMAGES.md. Test-only: nothing
+    # in the package imports it.
+    "ome-zarr>=0.9,<0.11",
+]
 
 # Entry-point groups mirror the SciJava extension points from the Java
 # vtea.services classes (Segmentation, Measurements, GateMath, ...).

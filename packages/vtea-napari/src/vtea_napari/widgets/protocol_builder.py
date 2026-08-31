@@ -47,6 +47,7 @@ from vtea_core.workflow import Pipeline, Step
 from vtea_napari.session import AnalysisSession, TableView, session_for
 from vtea_napari.widgets.feature_select import FeatureSelectWidget
 from vtea_napari.widgets.log_view import LogView
+from vtea_napari.widgets.memory_control import MemoryControl
 from vtea_napari.widgets.param_form import ParameterForm
 from vtea_napari.widgets.spacing_control import SpacingControl
 from vtea_napari.widgets.step_stack import StepStackWidget
@@ -292,6 +293,12 @@ class ProtocolBuilderWidget(QWidget):
         self.pipeline = self.session.processing_pipeline
         self.analysis_pipeline = self.session.analysis_pipeline
         self.last_context: dict = {}
+        # Set by an out-of-core run: the scratch store holding its results,
+        # and the ledger saying how each object a tile boundary cut was put
+        # back together. Both outlive the run because the results live in
+        # the store rather than in memory.
+        self._scratch = None
+        self.blocked_ledgers: dict = {}
         # Which axis is depth; used to present results as full z-stacks.
         self.z_axis: int | None = None
 
@@ -332,6 +339,14 @@ class ProtocolBuilderWidget(QWidget):
         self.spacing_control = SpacingControl()
         self.spacing_control.spacing_changed.connect(self._on_spacing_changed)
         top_row.addWidget(self.spacing_control)
+
+        # How much memory this run may use, and what that divides the data
+        # into. Shown rather than assumed: at a laptop's budget a large
+        # volume becomes hundreds of tiles, and a user who cannot see that
+        # cannot tell a slow run from a stuck one.
+        self.memory_control = MemoryControl()
+        self.memory_control.budget_changed.connect(lambda _budget: self.refresh_plan())
+        top_row.addWidget(self.memory_control)
 
         top_row.addStretch()
 
@@ -456,12 +471,73 @@ class ProtocolBuilderWidget(QWidget):
                     return layer
         return self.viewer.layers.selection.active
 
-    def active_image(self) -> np.ndarray | None:
-        """The chosen layer's data, or None when there's nothing to run on."""
+    def source_data(self):
+        """The chosen layer's data *as the layer holds it*.
+
+        Not materialized. napari renders a Dask- or Zarr-backed layer by
+        pulling the chunks it needs, and calling `np.asarray` here would
+        undo that at the moment a protocol runs - reading a 40 GB
+        acquisition into memory to decide whether it fits in memory. What
+        happens to it next is `run_processing`'s decision, and it depends on
+        the tile plan.
+        """
         layer = self.source_layer()
-        if layer is None:
+        return None if layer is None else layer.data
+
+    def active_image(self) -> np.ndarray | None:
+        """The chosen layer's data in memory, or None when there is nothing
+        to run on.
+
+        Materializes. Correct for data that fits, which is what the
+        in-memory path needs; `source_data` is the one to use when the
+        answer might be that it does not.
+        """
+        data = self.source_data()
+        return None if data is None else np.asarray(data)
+
+    def memory_budget(self):
+        """How much memory a run here may use - see MemoryControl."""
+        return self.memory_control.budget()
+
+    def spatial_axes(self, ndim: int) -> tuple[int, ...]:
+        """Which axes a tile plan may divide.
+
+        Everything but the channel axis. A tile holding one channel of a
+        four-channel volume would have to read the other three to get it,
+        since they interleave, and a step that measures every channel needs
+        them together anyway.
+        """
+        channel_axis = self.pipeline.channel_axis
+        return tuple(axis for axis in range(ndim) if axis != channel_axis)
+
+    def tile_plan(self):
+        """How this protocol divides this image, or None without one.
+
+        Computed from the steps rather than from the image alone: the tile
+        size is set by the protocol's heaviest step, which is why the
+        control can say *what* bounded it.
+        """
+        from vtea_core.blocked import plan_for_steps
+
+        data = self.source_data()
+        if data is None:
             return None
-        return np.asarray(layer.data)
+        try:
+            return plan_for_steps(
+                self.all_steps(),
+                tuple(data.shape),
+                budget=self.memory_budget(),
+                spacing=self.spacing_control.spacing(),
+                tiled_axes=self.spatial_axes(len(data.shape)),
+            )
+        except Exception:  # noqa: BLE001 - an unplannable protocol is not a crash
+            return None
+
+    def refresh_plan(self) -> None:
+        """Show what the current budget and protocol imply, before running."""
+        plan = self.tile_plan()
+        self.memory_control.set_plan(plan)
+        return plan
 
     def refresh_sources(self) -> None:
         """Repopulate the Image picker and the axis pickers from the viewer."""
@@ -600,8 +676,19 @@ class ProtocolBuilderWidget(QWidget):
 
     def run_processing(self) -> dict:
         """Run only the processing pipeline. Analysis steps are run
-        individually from their own cards - they are not a chain."""
+        individually from their own cards - they are not a chain.
+
+        The plan decides how. Data that fits the budget runs in memory,
+        which is what it has always done and is faster for the sizes that
+        allow it; data that does not runs a tile at a time through
+        `vtea_core.blocked`. The user sees which, because a run that takes
+        four hours should say why before it starts rather than after.
+        """
         context = dict(self.last_context) or {}
+        plan = self.refresh_plan()
+        if plan is not None and not plan.is_single_tile:
+            return self._run_processing_blocked(plan, context)
+
         seed = self.seed_context()
         if not seed:
             self.status_label.setText("Select an image layer to run on.")
@@ -616,6 +703,63 @@ class ProtocolBuilderWidget(QWidget):
         self._publish_results()
         self.status_label.setText("Processing finished.")
         return self.last_context
+
+    def _run_processing_blocked(self, plan, context: dict) -> dict:
+        """Run the protocol out of core, a tile at a time.
+
+        The results stay in the scratch store rather than being copied into
+        memory - that is the point - so the scratch store outlives this
+        call and is closed when the next run replaces it or the widget goes
+        away. napari renders the stored arrays the same way it renders any
+        other chunked layer.
+        """
+        from vtea_core.blocked import BlockedPipeline, ZarrScratch
+
+        data = self.source_data()
+        if data is None:
+            self.status_label.setText("Select an image layer to run on.")
+            return context
+        seed = {
+            "volume": data,
+            "intensity": data,
+            "channel_axis": self.pipeline.channel_axis,
+        }
+        spacing = self.spacing_control.spacing()
+        if spacing is not None:
+            seed["spacing"] = spacing
+
+        self.status_label.setText(f"Running out of core: {plan.describe()}")
+        self._close_scratch()
+        self._scratch = ZarrScratch()
+        try:
+            runner = BlockedPipeline(
+                self.pipeline, plan=plan, scratch=self._scratch, spacing=spacing
+            )
+            self.last_context = runner.run(seed, progress=self._on_block_progress)
+            self.blocked_ledgers = dict(runner.ledgers)
+        except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
+            self._close_scratch()
+            self.status_label.setText(f"{type(exc).__name__}: {exc}")
+            return self.last_context
+        self.refresh_steps()
+        self._publish_results()
+        self.status_label.setText(f"Processing finished - {plan.n_tiles:,} tiles.")
+        return self.last_context
+
+    def _on_block_progress(self, name: str, done: int, total: int) -> None:
+        """Say which step is running and how far in.
+
+        A blocked run is measured in tiles and can be measured in hours, so
+        the status line is the difference between a progress report and an
+        apparently frozen window.
+        """
+        self.status_label.setText(f"{name}: tile {done:,} of {total:,}")
+
+    def _close_scratch(self) -> None:
+        scratch = getattr(self, "_scratch", None)
+        if scratch is not None:
+            scratch.close()
+            self._scratch = None
 
     def run_single_step(self, step: Step) -> None:
         """Run one step against everything computed so far and show what it

@@ -48,6 +48,27 @@ class TestEnhanceContrast:
         with pytest.raises(ValueError, match="unknown method"):
             enhance_contrast(np.zeros((3, 3)), method="bogus")
 
+    def test_equalize_accepts_an_explicit_kernel_size(self):
+        volume = np.random.default_rng(0).random((32, 32))
+        result = enhance_contrast(volume, method="equalize", kernel_size=8)
+        assert result.shape == volume.shape
+
+    def test_an_explicit_kernel_makes_the_result_independent_of_the_field_of_view(self):
+        # skimage derives the CLAHE kernel from the image when none is
+        # given, so the same data equalizes differently depending on how
+        # much of it is passed at once. That is exactly what breaks when a
+        # volume is processed in tiles, and setting the kernel is the fix.
+        rng = np.random.default_rng(0)
+        volume = rng.random((64, 64))
+        half = volume[:32]
+        derived_whole = enhance_contrast(volume, method="equalize")[:32]
+        derived_half = enhance_contrast(half, method="equalize")
+        assert not np.allclose(derived_whole, derived_half)
+
+        fixed_whole = enhance_contrast(volume, method="equalize", kernel_size=16)[:16]
+        fixed_part = enhance_contrast(volume[:32], method="equalize", kernel_size=16)[:16]
+        assert np.allclose(fixed_whole, fixed_part, atol=0.05)
+
 
 class TestSubtractBackground:
     def test_result_is_nonnegative(self):
