@@ -78,9 +78,11 @@ MATCHINGS = (OVERLAP, CENTROID, TOUCHING, NO_MATCHING)
 # MERGE: the fragments are unioned into one object. The only honest
 #   resolution when nothing is complete anywhere.
 # FLAG: keep them distinct, link them, mark them contested, resolve nothing.
-# RESEGMENT: re-run the segmenter on a window centred on the seam. Belongs
-#   with the deep-learning work (Phase L5), where it is the default, and is
-#   declared here so a policy can name it.
+# RESEGMENT: re-run the segmenter on a window centred on the seam, so the
+#   object that was cut is interior and no tile boundary influenced it. The
+#   only honest answer when the segmenter is not translation-invariant,
+#   because then every tile's copy is shaped by a boundary that is not real
+#   and choosing between them keeps a wrong mask.
 OWN = "own"
 MERGE = "merge"
 FLAG = "flag"
@@ -128,6 +130,10 @@ class SeamPolicy:
     max_object_extent: float | None = None
     min_overlap: float = 0.5
     max_centroid_distance: float | None = None
+    # How much context a re-segmented window carries around the object.
+    # None takes the plan's halo, which is what the segmenter was already
+    # judged to need.
+    resegment_margin: int | None = None
     border_objects: str = KEEP
     drop_seam_objects: bool = False
     # No synthetic halo by default. A mirrored border invents objects at the
@@ -172,6 +178,16 @@ class SeamPolicy:
                 "'own' has to know which fragments are the same object before it can "
                 "keep one of them. Choose a matching, or use 'flag'."
             )
+        if self.resolution == RESEGMENT and self.matching == NO_MATCHING:
+            raise SeamPolicyError(
+                "'resegment' re-runs the segmenter on the objects a seam cut, so it has "
+                "to know which those are. Choose a matching."
+            )
+        if self.resolution == RESEGMENT and self.tiles != OVERLAPPING:
+            raise SeamPolicyError(
+                "'resegment' needs context on both sides of the seam to give an answer "
+                "the seam did not influence, and an abutting tiling has none to give."
+            )
 
     # -- the four a user picks from ------------------------------------
 
@@ -195,6 +211,24 @@ class SeamPolicy:
         """Abutting tiles - no redundant computation at all - merging
         fragments that meet across a seam plane."""
         return cls(tiles=ABUTTING, matching=TOUCHING, resolution=MERGE, **kwargs)
+
+    @classmethod
+    def resegment(cls, **kwargs: Any) -> SeamPolicy:
+        """For a segmenter that is not translation-invariant.
+
+        The strategies that pick between tiles' copies all assume at least
+        one copy is worth keeping. A learned segmenter breaks that: near a
+        tile edge its answer is computed from truncated context, so every
+        copy is shaped by a boundary that has nothing to do with the
+        specimen and the better of two wrong masks is still wrong. This
+        re-runs the segmenter on a window centred on the object instead, so
+        the object is interior and no boundary ran through it.
+
+        The default for Cellpose, and pointless for anything
+        translation-invariant, which gives the same answer wherever the
+        window is.
+        """
+        return cls(tiles=OVERLAPPING, matching=OVERLAP, resolution=RESEGMENT, **kwargs)
 
     @classmethod
     def no_merge(cls, *, drop_seam_objects: bool = True, **kwargs: Any) -> SeamPolicy:
@@ -241,6 +275,7 @@ class SeamPolicy:
             "tiles": self.tiles,
             "matching": self.matching,
             "resolution": self.resolution,
+            "resegment_margin": self.resegment_margin,
             "min_overlap": self.min_overlap,
             "max_centroid_distance": self.max_centroid_distance,
             "border_objects": self.border_objects,

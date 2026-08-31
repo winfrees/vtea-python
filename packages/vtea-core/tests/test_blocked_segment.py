@@ -365,9 +365,11 @@ class TestStrategies:
         assert len(ledger.dropped) == 1
         assert len(np.unique(result[result > 0])) == 1
 
-    def test_resegment_says_which_phase_it_belongs_to(self, mask):
-        with pytest.raises(NotImplementedError, match="L5"):
-            segment(mask, tiles=8, policy=SeamPolicy(resolution="resegment"))
+    def test_resegment_needs_a_matching_and_an_overlap(self):
+        with pytest.raises(SeamPolicyError, match="which those are"):
+            SeamPolicy(matching="none", resolution="resegment")
+        with pytest.raises(SeamPolicyError, match="none to give"):
+            SeamPolicy(tiles=ABUTTING, matching="touching", resolution="resegment")
 
 
 class TestHaloVerification:

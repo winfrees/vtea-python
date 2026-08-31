@@ -267,7 +267,9 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             notes=(
                 "not translation-invariant, so seam objects are re-segmented in a "
                 "seam-centred window rather than owned by one tile; sized against the "
-                "GPU budget, not the CPU one"
+                "GPU budget, not the CPU one. do_3D grows faster than the volume - "
+                "stitch_threshold segments plane-wise and links z with cellpose's own "
+                "stitch3D instead"
             ),
         ),
     ),

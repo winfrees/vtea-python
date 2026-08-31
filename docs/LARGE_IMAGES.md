@@ -504,7 +504,7 @@ under a merging strategy.
 Note what the table also says: **more memory is a merge strategy.** Doubling
 the tile edge roughly halves the number of objects any of this applies to.
 
-**`RESEGMENT_SEAM`** is a `resolution`, not a matching mode, and it is not
+**`RESEGMENT`** is a `resolution`, not a matching mode, and it is not
 based on overlap. The strategies above all assume at least one tile's answer
 is worth keeping or joining. When the segmenter is not translation-invariant
 — the deep-learning case — that is what fails: the flow field near a tile
@@ -517,6 +517,17 @@ which objects need it. Note the corollary for strategies 3 and 4 — abutting
 tiles give a learned segmenter *no* context at a seam, so that pairing is
 the least accurate available, and that is the price of the inference it
 saves.
+
+Two things building it added. A window larger than a tile is **declined
+rather than attempted**: it would need more memory than the plan was built
+for, which is the one thing the plan exists to prevent, and the stitched
+answer stands with the reason recorded. And a re-segmented object
+**absorbs any object lying wholly inside it**, where the window contains
+all of that object — because the re-segmentation is the better evidence,
+and a sliver a tile boundary left behind is a piece of the object rather
+than an object. Without that rule the count is inflated by exactly the
+fragments the strategy was supposed to fix, and they hold voxels the real
+object should own.
 
 **`FLAG_ONLY`** keeps everything, marks it contested, and resolves nothing.
 For QC, for a first look at unfamiliar data, and as the fallback when a
@@ -684,14 +695,33 @@ What the plan does about it:
   boundary influenced.
 - **Reuse cellpose's own z-stitching.** For a 2D-plane-wise run,
   `stitch_threshold` already links masks across z by IoU. Do not duplicate
-  it for the z axis; apply our rules to XY only.
+  it for the z axis; apply our rules to XY only. Linking objects between
+  adjacent planes is the same problem VTEA solves across tile boundaries,
+  and where the library already has an answer for one axis, using it beats
+  having two implementations that can disagree.
 - **GPU budget is its own budget**, from `torch.cuda.mem_get_info` plus the
   cached calibration probe, and it is usually far smaller than the CPU one.
-  The tile plan carries both.
+  The tile plan carries both. The probe doubles a synthetic tile until the
+  device refuses, then bisects once - which turns a factor-of-two answer
+  into a few-percent one for one extra attempt, and a factor of two in tile
+  volume is a factor of two in the number of inferences. It distinguishes
+  an out-of-memory refusal from every other failure: a broken driver
+  treated as "too big" would shrink the tile to nothing and blame the data.
+  A calibration records *how much of the card was free when it was taken*,
+  so that a measurement from an empty card is scaled down on a busy one
+  rather than believed - and never scaled up, since free memory is not
+  evidence the model would use it.
 - **Batch, and resume.** Inference over 4,096 tiles takes hours. Each tile's
   result is written to the label store as it completes and recorded in a
   manifest, so a crashed or cancelled run resumes rather than restarts.
-  Non-negotiable for a step measured in hours.
+  Non-negotiable for a step measured in hours. The manifest is append-only
+  JSON Lines rather than a file rewritten per tile: rewriting is quadratic
+  in the number of tiles, and a rewrite interrupted halfway is exactly the
+  failure it exists to survive. A torn final line costs one tile and keeps
+  the rest. It refuses to resume a run whose tile size, halo, policy or
+  segmenter differs, because those change which objects a seam cuts and a
+  manifest from a different plan describes different objects wearing the
+  same tile indices.
 - **`do_3D` is memory-hostile** and scales worse than the tile volume.
   Default to plane-wise plus `stitch_threshold` above a size threshold, and
   say which mode ran in the provenance, because they do not give the same
@@ -888,6 +918,8 @@ vtea_core/blocked/
     stats.py       The streaming statistics pass (histograms, min/max)
     reconcile.py   SeamPolicy, Fragment, LabelLedger, the rules, halo checks
     measure.py     Accumulators, the second streaming pass, table assembly
+    gpu.py         The calibration probe, its cache, and GPU-sized plans
+    resume.py      The append-only manifest that makes a long run restartable
 ```
 
 The Parquet/DuckDB-backed table originally listed here as `blocked/table.py`
@@ -932,7 +964,7 @@ Changed elsewhere, and deliberately little:
 | **L2 — The executor: elementwise, neighborhood, global stats** **done** | Covers all of `imageprocessing` and `threshold_mask`. Padding, halo trimming, and the "single tile equals whole image" test | 2–3 wk |
 | **L3 — Labels across tiles** **done** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
-| **L5 — Deep learning** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
+| **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
@@ -944,9 +976,14 @@ the in-memory run - at one tile and at sixteen. Only `stddev` differs, by
 about one part in 10^13, because it comes from a sum of squares rather than
 a second pass over the values.
 
-L5's `RESEGMENT` is the piece of the reconciliation still outstanding, and
-until it exists a learned segmenter is refused rather than tiled, since
-every strategy that picks between tile copies keeps a wrong mask for one.
+L5 completes the reconciliation: `RESEGMENT` is built, so a learned
+segmenter can be tiled rather than refused, and the tests show the
+difference it makes — against a stand-in segmenter that needs context, a
+strategy that picks between tile copies returns truncated objects where
+re-segmenting returns the whole-image answer exactly. The GPU calibration
+probe and the resume manifest are built and tested against injected
+devices and induced crashes; what cannot be exercised here is a real CUDA
+device, so the probe's `torch` path awaits hardware.
 
 **Total: roughly 18–28 engineer-weeks.** L0–L2 are worth landing on their
 own — they make a large dataset *openable and preprocessable*, which is

@@ -29,7 +29,7 @@ from typing import Any
 import dask.array as da
 import numpy as np
 
-from vtea_core.io import store
+from vtea_core.io import store as _io_store
 
 # Where scratch goes when nobody says. Honours TMPDIR, which is how a
 # cluster points jobs at node-local disk instead of a shared filesystem.
@@ -58,8 +58,27 @@ class ZarrScratch:
             Path(base).mkdir(parents=True, exist_ok=True)
         self.path = Path(tempfile.mkdtemp(prefix=prefix, dir=base))
         self.keep = keep
-        self._group = store.create_group(self.path, overwrite=True)
+        self._group = _io_store.create_group(self.path, overwrite=True)
         self._closed = False
+
+    @classmethod
+    def reopen(cls, path: str | os.PathLike, *, keep: bool = True) -> ZarrScratch:
+        """Open a scratch directory a previous run left behind.
+
+        What makes a resume possible across processes: the manifest records
+        what was segmented, and this is where the segmentation actually is.
+        Defaults to `keep=True`, because a store being reopened is by
+        definition one somebody wanted to survive - deleting it on the way
+        out of the resumed run would be a surprise, and the second one.
+        """
+        store = cls.__new__(cls)
+        store.path = Path(os.fspath(path))
+        if not store.path.is_dir():
+            raise FileNotFoundError(f"no scratch store at {store.path}")
+        store.keep = keep
+        store._group = _io_store.open_group(store.path, mode="a")
+        store._closed = False
+        return store
 
     def __enter__(self) -> ZarrScratch:  # noqa: PYI034 - typing.Self needs Python 3.11+, this package supports 3.10
         return self
@@ -84,16 +103,16 @@ class ZarrScratch:
         dtype: Any,
         chunks: tuple[int, ...] | None = None,
         axes: str = "CZYX",
-        compressor_name: str | None = store.DEFAULT_COMPRESSOR,
+        compressor_name: str | None = _io_store.DEFAULT_COMPRESSOR,
     ) -> Any:
         """An empty array to write a blocked result into, tile by tile."""
         self._check_open()
-        return store.create_array(
+        return _io_store.create_array(
             self._group,
             name,
             shape=tuple(shape),
             dtype=dtype,
-            chunks=tuple(chunks) if chunks else store.default_chunks(tuple(shape), axes),
+            chunks=tuple(chunks) if chunks else _io_store.default_chunks(tuple(shape), axes),
             compressor_name=compressor_name,
             overwrite=True,
         )
@@ -114,7 +133,7 @@ class ZarrScratch:
         """Write a whole array in, streaming rather than materializing it."""
         target = self.create(name, shape=array.shape, dtype=array.dtype, **kwargs)
         if isinstance(array, da.Array):
-            store.store_dask(array, target)
+            _io_store.store_dask(array, target)
         else:
             target[...] = array
         return target
@@ -126,7 +145,7 @@ class ZarrScratch:
         return self._group[name]
 
     def as_dask(self, name: str, chunks: str | tuple = "auto") -> da.Array:
-        return store.as_dask(self.open(name), chunks=chunks)
+        return _io_store.as_dask(self.open(name), chunks=chunks)
 
     def drop(self, name: str) -> None:
         """Delete an intermediate nothing needs any more.

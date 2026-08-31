@@ -34,6 +34,7 @@ region by region, like every other blocked output.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import product
@@ -115,6 +116,7 @@ def segment_blocked(
     params: Mapping[str, Any] | None = None,
     spacing: Any = None,
     name: str = "labels",
+    manifest: Any = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> BlockedLabels:
     """Segment a volume tile by tile and reconcile the objects across seams.
@@ -123,22 +125,33 @@ def segment_blocked(
     `watershed_split`, anything that takes arrays and returns an integer
     label image of the same shape. It is not told that it is being tiled and
     does not need to be.
+
+    `manifest` is a `vtea_core.blocked.resume.RunManifest` - or a path to
+    one - and makes the segmentation pass resumable: tiles already recorded
+    there are skipped, and each new one is recorded as it finishes. It needs
+    a scratch store that outlives the process (`ZarrScratch(keep=True)`),
+    since the manifest records what was done and the store holds it. Worth
+    the bookkeeping for an inference run measured in hours, and pointless
+    for one measured in seconds.
     """
-    if policy.resolution == RESEGMENT:
-        raise NotImplementedError(
-            "the 'resegment' resolution re-runs the segmenter on a window centred on "
-            "each seam, which lands with the deep-learning work in Phase L5 - it is the "
-            "default there and pointless anywhere else, since a translation-invariant "
-            "segmenter gives the same answer wherever the window is. Use 'own'."
-        )
     params = dict(params or {})
     effective_plan = _plan_for_policy(plan, policy)
 
-    provisional = scratch.create(
-        f"{name}__provisional", shape=effective_plan.shape, dtype=LABEL_DTYPE
+    manifest = _open_manifest(manifest, effective_plan, policy, function)
+    provisional = _scratch_array(
+        scratch, f"{name}__provisional", effective_plan, resuming=manifest is not None
     )
     fragments, tile_arrays = _segment_pass(
-        function, sources, effective_plan, policy, params, provisional, scratch, name, progress
+        function,
+        sources,
+        effective_plan,
+        policy,
+        params,
+        provisional,
+        scratch,
+        name,
+        progress,
+        manifest,
     )
     pairs = _match(
         scratch, fragments, tile_arrays, provisional, effective_plan, policy, spacing
@@ -147,10 +160,24 @@ def segment_blocked(
     array = _write_final(
         provisional, assignment, ledger, tile_arrays, effective_plan, policy, scratch, name
     )
+    if policy.resolution == RESEGMENT:
+        _resegment_cut_objects(
+            array, ledger, function, sources, params, effective_plan, policy, progress
+        )
     _check_exceeded(ledger, policy)
-    for tile_name in tile_arrays.values():
-        scratch.drop(tile_name)
-    scratch.drop(f"{name}__provisional")
+    if manifest is not None:
+        # A resumable run keeps its working arrays. The process can die
+        # between the segmentation pass and the matching that reads those
+        # arrays, and a resume that had thrown them away would have to
+        # re-run every inference to get them back - which is the cost the
+        # manifest exists to avoid. The caller owns the scratch store in
+        # that case (it had to pass `keep=True` to get here) and owns
+        # cleaning it up once the result is somewhere durable.
+        manifest.close()
+    else:
+        for tile_name in tile_arrays.values():
+            scratch.drop(tile_name)
+        scratch.drop(f"{name}__provisional")
     return BlockedLabels(array=array, ledger=ledger, plan=effective_plan, policy=policy)
 
 
@@ -172,16 +199,57 @@ def _plan_for_policy(plan: TilePlan, policy: SeamPolicy) -> TilePlan:
     return _replace(plan, halo=(0,) * plan.ndim)
 
 
+def _open_manifest(manifest: Any, plan: TilePlan, policy: SeamPolicy, function) -> Any:
+    """A manifest for this run, from one already open or from a path."""
+    if manifest is None:
+        return None
+    from vtea_core.blocked.resume import RunManifest, plan_signature
+
+    signature = plan_signature(plan, policy, getattr(function, "__name__", str(function)))
+    if isinstance(manifest, RunManifest):
+        if manifest.signature != signature:
+            from vtea_core.blocked.resume import ManifestMismatch, _describe_difference
+
+            raise ManifestMismatch(
+                f"this manifest records a different run: "
+                f"{_describe_difference(manifest.signature, signature)}"
+            )
+        return manifest
+    return RunManifest.start(manifest, signature)
+
+
+def _scratch_array(scratch: ZarrScratch, key: str, plan: TilePlan, *, resuming: bool) -> Any:
+    """The provisional label array, reused when resuming.
+
+    Creating it afresh would zero what a previous run had already written,
+    which is the one thing a resume must not do.
+    """
+    if resuming and key in scratch:
+        return scratch.open(key)
+    return scratch.create(key, shape=plan.shape, dtype=LABEL_DTYPE)
+
+
 def _segment_pass(
-    function, sources, plan, policy, params, provisional, scratch, name, progress
+    function, sources, plan, policy, params, provisional, scratch, name, progress, manifest=None
 ) -> tuple[list[Fragment], dict[tuple[int, ...], str]]:
     """Pass 1: segment every tile, number the objects so they cannot
     collide, and catalogue what each tile saw."""
     fragments: list[Fragment] = []
     tile_arrays: dict[tuple[int, ...], str] = {}
     next_id = 1
+    if manifest is not None:
+        fragments.extend(manifest.fragments())
+        next_id = manifest.next_id
 
     for index, tile in enumerate(plan.tiles()):
+        if policy.needs_tile_labels:
+            tile_arrays[tile.index] = f"{name}__tile{index}"
+        if manifest is not None and manifest.is_done(tile.index):
+            # Already segmented, its labels already in the provisional array
+            # and its fragments already read back from the manifest.
+            if progress is not None:
+                progress(index + 1, plan.n_tiles)
+            continue
         blocks = {
             key: read_block(array, tile, policy.pad_mode) for key, array in sources.items()
         }
@@ -203,11 +271,17 @@ def _segment_pass(
         offset = np.where(labels > 0, labels.astype(np.int64) + base, 0).astype(LABEL_DTYPE)
         inner = tile.inner if policy.pad_mode is not None else tile.inner_unpadded
         provisional[tile.core] = offset[inner]
-        fragments.extend(_catalogue(offset, tile, plan, base, local_max, inner))
+        catalogued = _catalogue(offset, tile, plan, base, local_max, inner)
+        fragments.extend(catalogued)
         if policy.needs_tile_labels:
-            tile_arrays[tile.index] = _store_tile(scratch, name, index, offset)
+            _store_tile(scratch, name, index, offset)
 
         next_id += local_max
+        if manifest is not None:
+            # After the data is written, never before: a manifest entry for
+            # a tile whose labels are not in the store would make a resumed
+            # run skip work it has not done.
+            manifest.record(tile.index, catalogued, next_id)
         if progress is not None:
             progress(index + 1, plan.n_tiles)
     return fragments, tile_arrays
@@ -656,6 +730,232 @@ def _block_extent(block: Any, fragment: Fragment, plan: TilePlan) -> tuple[slice
     origin = _origin_of(fragment, plan)
     return tuple(
         slice(start, start + size) for start, size in zip(origin, block.shape)
+    )
+
+
+def _resegment_cut_objects(
+    final: Any,
+    ledger: LabelLedger,
+    function: Callable[..., np.ndarray],
+    sources: Mapping[str, Any],
+    params: Mapping[str, Any],
+    plan: TilePlan,
+    policy: SeamPolicy,
+    progress: Callable[[int, int], None] | None,
+) -> None:
+    """Re-run the segmenter on every object a seam ran through.
+
+    The other resolutions choose between the tiles' copies of a cut object.
+    That is the right thing when the copies are the same copy - a
+    translation-invariant segmenter gives the same answer wherever the
+    window falls, so the choice is between duplicates. It is the wrong thing
+    for a learned segmenter, whose answer near a tile edge is computed from
+    truncated context: every copy is shaped by a boundary that has nothing
+    to do with the specimen, and picking the better of two wrong masks
+    leaves a wrong mask.
+
+    So this removes the thing being chosen between. Each cut object gets a
+    window centred on it, wide enough that the object is interior with
+    context all round, and whatever the segmenter says there replaces the
+    stitched version. One extra inference per cut object - which is why the
+    other strategies exist, and why this is the default only where nothing
+    else is honest.
+    """
+    margin = policy.resegment_margin
+    if margin is None:
+        margin = max(plan.halo) or 1
+    # A window larger than a tile would not have fitted in the budget the
+    # tiles were sized for, so it is the natural ceiling.
+    ceiling = math.prod(plan.padded_tile)
+
+    # Largest first, so that where two fragments turn out to be one object
+    # the substantial one claims the voxels and the sliver is the one left
+    # with none. Processing by id instead would hand precedence to whichever
+    # tile happened to be numbered first, which is not a reason.
+    candidates = sorted(
+        (
+            object_id
+            for object_id in ledger.object_ids
+            if object_id not in ledger.dropped and ledger.touches_seam(object_id)
+        ),
+        key=lambda object_id: (-ledger.size(object_id), object_id),
+    )
+    absorbed: list[int] = []
+    for index, object_id in enumerate(candidates):
+        window = _resegment_window(ledger.fragments[object_id], plan, margin)
+        if math.prod(_extent(window)) > ceiling:
+            # Bigger than a tile: re-segmenting it would need more memory
+            # than the plan was built for. Keep the stitched version and say
+            # the evidence is what it is.
+            ledger.decided_by[object_id] = f"{RESEGMENT}:too-large"
+            continue
+        remaining, swallowed = _resegment_one(
+            final, ledger, object_id, window, function, sources, params
+        )
+        absorbed.extend(swallowed)
+        if remaining == 0:
+            # Two fragments that failed to match can turn out to be one
+            # object once the segmenter sees the whole of it - the first to
+            # be re-segmented claims the voxels and the second is left with
+            # none. That is the reconciliation working, so the empty one is
+            # removed rather than reported as an object of size zero.
+            absorbed.append(object_id)
+        if progress is not None:
+            progress(index + 1, len(candidates))
+
+    for object_id in dict.fromkeys(absorbed):
+        ledger.fragments.pop(object_id, None)
+        ledger.decided_by.pop(object_id, None)
+        ledger.evidence.pop(object_id, None)
+        ledger.dropped[object_id] = "absorbed by a neighbour when re-segmented"
+
+
+def _resegment_one(
+    final: Any,
+    ledger: LabelLedger,
+    object_id: int,
+    window: tuple[slice, ...],
+    function: Callable[..., np.ndarray],
+    sources: Mapping[str, Any],
+    params: Mapping[str, Any],
+) -> tuple[int, list[int]]:
+    """Re-segment one object in its own window.
+
+    Returns how many voxels it has afterwards - zero meaning a neighbour
+    took them - and the ids it absorbed.
+    """
+    patch = np.asarray(final[window])
+    before = patch == object_id
+    if not before.any():
+        return 0, []
+
+    fresh = np.asarray(function(**{k: np.asarray(a[window]) for k, a in sources.items()}, **params))
+    chosen = _best_overlap(fresh, before)
+    if chosen == 0:
+        # The segmenter found nothing here the second time. That is a real
+        # disagreement rather than an error, and the stitched object stands
+        # - flagged, so a review can see it happened.
+        ledger.decided_by[object_id] = f"{RESEGMENT}:no-match"
+        ledger.evidence[object_id] = 0.0
+        return int(before.sum()), []
+
+    after = fresh == chosen
+    swallowed = _wholly_inside(patch, after, ledger, exclude=object_id)
+    patch[before] = 0
+    for other in swallowed:
+        patch[patch == other] = 0
+    # Only into space this object, one it absorbed, or nothing already held.
+    # A re-segmented window reaches over its neighbours, and overwriting a
+    # neighbour to improve this object would trade an error for an error.
+    patch[after & (patch == 0)] = object_id
+    final[window] = patch
+
+    kept = patch == object_id
+    remaining = int(kept.sum())
+    if remaining == 0:
+        return 0
+
+    ledger.decided_by[object_id] = RESEGMENT
+    ledger.evidence[object_id] = _iou(after, before)
+    ledger.fragments[object_id] = [
+        _fragment_for(kept, window, ledger.fragments[object_id][0])
+    ]
+    return remaining, swallowed
+
+
+def _wholly_inside(
+    patch: np.ndarray, mask: np.ndarray, ledger: LabelLedger, *, exclude: int
+) -> list[int]:
+    """Objects that lie entirely within a re-segmented object.
+
+    The re-segmentation is the better evidence: looking at the whole object
+    with context on every side, the segmenter says these voxels are one
+    thing. An id sitting wholly inside that answer was a piece of it that
+    the tiled pass failed to match - typically a sliver a tile boundary left
+    behind - and keeping it would both inflate the object count and hold
+    voxels the object should own.
+
+    Two conditions, and the second is what keeps this from swallowing
+    neighbours: the id must be entirely inside the new mask *within this
+    window*, and the window must contain all of it, so that "entirely
+    inside" is a statement about the object and not about the part of it
+    that happens to be visible here.
+    """
+    present = np.unique(patch[mask])
+    swallowed = []
+    for other in present:
+        other = int(other)
+        if other in (0, exclude) or other not in ledger.fragments:
+            continue
+        here = patch == other
+        visible = int(here.sum())
+        if visible == ledger.size(other) and not (here & ~mask).any():
+            swallowed.append(other)
+    return swallowed
+
+
+def _best_overlap(labels: np.ndarray, mask: np.ndarray) -> int:
+    """The new object that best corresponds to the old one.
+
+    A window centred on one object contains its neighbours too, so the
+    result has to be attributed rather than assumed.
+    """
+    inside = labels[mask]
+    inside = inside[inside > 0]
+    if not inside.size:
+        return 0
+    values, counts = np.unique(inside, return_counts=True)
+    return int(values[np.argmax(counts)])
+
+
+def _iou(left: np.ndarray, right: np.ndarray) -> float:
+    union = np.count_nonzero(left | right)
+    return float(np.count_nonzero(left & right) / union) if union else 0.0
+
+
+def _resegment_window(
+    fragments: Sequence[Fragment], plan: TilePlan, margin: int
+) -> tuple[slice, ...]:
+    """The object's extent, grown by `margin` and clipped to the volume."""
+    return tuple(
+        slice(
+            max(0, min(f.bbox[axis][0] for f in fragments) - margin),
+            min(plan.shape[axis], max(f.bbox[axis][1] for f in fragments) + margin),
+        )
+        for axis in range(plan.ndim)
+    )
+
+
+def _extent(window: Sequence[slice]) -> tuple[int, ...]:
+    return tuple(part.stop - part.start for part in window)
+
+
+def _fragment_for(
+    mask: np.ndarray, window: Sequence[slice], like: Fragment
+) -> Fragment:
+    """One fragment describing the re-segmented object.
+
+    The fragments it replaces described tiles' partial views of something
+    that no longer exists; leaving them would make `filter_by_size` filter
+    on a size the object no longer has.
+    """
+    positions = np.nonzero(mask)
+    bbox = tuple(
+        (int(axis.min()) + part.start, int(axis.max()) + 1 + part.start)
+        for axis, part in zip(positions, window)
+    )
+    voxels = int(mask.sum())
+    return Fragment(
+        tile=like.tile,
+        local_id=like.local_id,
+        provisional_id=like.provisional_id,
+        core_voxels=voxels,
+        block_voxels=voxels,
+        centroid=tuple(float(axis.mean()) + part.start for axis, part in zip(positions, window)),
+        bbox=bbox,
+        faces=like.faces,
+        at_dataset_border=like.at_dataset_border,
+        exceeded_halo=False,
     )
 
 
