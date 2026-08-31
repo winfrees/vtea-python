@@ -268,7 +268,7 @@ Six modes. The whole protocol classifies into them.
 | `associate_by_identity` | TABLE | Needs the set of ids per segmentation, which the ledger already holds. Cheap |
 | `associate_objects` | OBJECT_LOCAL + TABLE | Centroid scoring is a table op over a kd-tree. Boundary-distance scoring reads each candidate pair's bboxes from the store. Spatially partitioned with a halo of `max_distance`; the sparsity that `scoring.py` already relies on is what makes this work at 10⁷ objects |
 | `merge_associations` | TABLE | |
-| `distance_ownership` | OBJECT_LOCAL | Already windows per marker (`_insert_claim`). What changes is the output: a dense top-k array becomes **mask-restricted sparse** — coordinates and claims only where the mask is true. For a 5%-foreground volume that is 201 GB → 10 GB, and it is the only version that is usable at all |
+| `distance_ownership` | OBJECT_LOCAL | Already windows per marker (`_insert_claim`). What changes is the output: a dense top-k array becomes **mask-restricted sparse** — a sorted array of flat indices with owners and claims beside them, grouped by tile so a later pass finds one tile's voxels without searching. For a 5%-foreground volume that is 201 GB → about 13 GB, the same order as the image rather than six times it. Probabilities go to float32: a posterior meaningful to seven decimal places is not a posterior anybody has |
 | `build_cells` | TABLE | A graph over associations. Memory scales with object count; fine to ~10⁷, worth measuring beyond |
 | `cell_features` | TABLE | Grouped aggregation — push into DuckDB rather than pandas |
 
@@ -278,7 +278,7 @@ Six modes. The whole protocol classifies into them.
 | --- | --- | --- |
 | `extract_measurements` | accumulate + a second streaming pass | See "Measuring an object that spans tiles" |
 | `extract_measurements_by_channel` | as above, per channel | Geometry appears once; every intensity column carries the channel it was measured on. One channel is read at a time, so a four-channel volume costs the same per tile as a one-channel one |
-| `weighted_measurements_by_channel` | accumulate | Weighted sums are additive by construction, so this one streams exactly with no second pass |
+| `weighted_measurements_by_channel` | accumulate | Weighted sums are additive, and `min`/`max` are over every voxel an owner has a claim on, so unlike `threshold_mean` nothing depends on knowing the whole object first — one pass is the entire calculation |
 
 ### Analysis
 
@@ -920,6 +920,7 @@ vtea_core/blocked/
     measure.py     Accumulators, the second streaming pass, table assembly
     gpu.py         The calibration probe, its cache, and GPU-sized plans
     resume.py      The append-only manifest that makes a long run restartable
+    ownership.py   SparseOwnership, and building one a tile at a time
 ```
 
 The Parquet/DuckDB-backed table originally listed here as `blocked/table.py`
@@ -965,7 +966,7 @@ Changed elsewhere, and deliberately little:
 | **L3 — Labels across tiles** **done** | The ledger, the four selectable strategies (overlap, centroid, edge-touching, none) and the resolutions over them, halo verification, blocked connected components / watershed / derived segmentations. **The crux**; gated on the invariance test | 4–6 wk |
 | **L4 — Measurements at scale** **done** | Accumulators, the exact second pass, the Parquet/DuckDB table, the seam columns | 2–3 wk |
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
-| **L6 — Objects at scale** | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
+| **L6 — Objects at scale** *(ownership done; association and cells outstanding)* | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
 | **L8 — GUI** | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
@@ -975,6 +976,21 @@ objects voxel for voxel and the same measurement table column for column as
 the in-memory run - at one tile and at sixteen. Only `stddev` differs, by
 about one part in 10^13, because it comes from a sum of squares rather than
 a second pass over the values.
+
+L6's ownership half is built, which is the phase's headline: the largest
+thing a protocol produces now costs the same order as the image rather than
+six times it. The check that keeps it exact is a run-time one, because a
+static contract cannot express the rule — a marker's claim carries four
+falloffs by default, so `ownership_blocked` computes the reach from the
+parameters actually passed and refuses to run when the tiles do not overlap
+by at least that much. Anisotropically: eight microns of reach is four
+voxels along a 2 µm z-step and sixteen in x at 0.5, so a scalar check would
+pass on z and be wrong in x.
+
+What is outstanding in L6 is the *table* side — `associate_objects`
+spatially partitioned, and `build_cells`/`cell_features` through DuckDB
+rather than pandas. Those scale with object count rather than with voxels,
+which is a different problem with a different ceiling.
 
 L5 completes the reconciliation: `RESEGMENT` is built, so a learned
 segmenter can be tiled rather than refused, and the tests show the
