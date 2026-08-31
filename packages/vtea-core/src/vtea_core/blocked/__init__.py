@@ -63,6 +63,12 @@ from vtea_core.blocked.gpu import (
     load_calibration,
     save_calibration,
 )
+from vtea_core.blocked.ownership import (
+    HaloTooSmallForReach,
+    SparseOwnership,
+    load_sparse_ownership,
+    ownership_blocked,
+)
 from vtea_core.blocked.plan import (
     StepCost,
     Tile,
@@ -138,6 +144,7 @@ __all__ = [
     "HaloExceeded",
     "HaloSpec",
     "HaloTooLarge",
+    "HaloTooSmallForReach",
     "ImageStats",
     "LabelLedger",
     "ManifestMismatch",
@@ -147,6 +154,7 @@ __all__ = [
     "Scaling",
     "SeamPolicy",
     "SeamPolicyError",
+    "SparseOwnership",
     "StepCost",
     "Tile",
     "TilePlan",
@@ -166,8 +174,10 @@ __all__ = [
     "is_out_of_memory",
     "load_calibration",
     "load_ledger",
+    "load_sparse_ownership",
     "numpy_pad_mode",
     "otsu_threshold",
+    "ownership_blocked",
     "parse_size",
     "percentile_threshold",
     "plan_for_steps",

@@ -371,6 +371,8 @@ class BlockedPipeline:
 
     def _run_one(self, step: Any, context: Mapping[str, Any], *, progress) -> BlockedResult:
         scaling = _scaling_of(step)
+        if step.category == "ownership":
+            return self._run_ownership(step, context, progress=progress)
         if scaling.needs_reconciliation:
             return self._run_reconciled(step, context, progress=progress)
         if scaling.mode == ACCUMULATE:
@@ -489,15 +491,9 @@ class BlockedPipeline:
             with_seam_columns,
         )
 
-        if step.function_name == "weighted_measurements_by_channel":
-            raise NotBlockableYet(
-                f"'{step.category}.{step.function_name}' measures a probabilistic "
-                f"ownership rather than a label image, and the out-of-core form of "
-                f"Ownership - sparse, restricted to the mask, rather than dense over "
-                f"the volume - is Phase L6. See docs/LARGE_IMAGES.md."
-            )
-
         sources, params = self._split_inputs(step, context)
+        if step.function_name == "weighted_measurements_by_channel":
+            return self._run_weighted(step, context, params, progress=progress)
         labels = sources["labels"]
         intensity = sources.get("intensity", labels)
         ledger = self.ledgers.get(step.input_keys.get("labels", "labels"))
@@ -523,6 +519,54 @@ class BlockedPipeline:
         return BlockedResult(
             array=None, plan=self.plan, table=with_seam_columns(frame, ledger), ledger=ledger
         )
+
+    def _run_ownership(
+        self, step: Any, context: Mapping[str, Any], *, progress
+    ) -> BlockedResult:
+        """A posterior over owners per voxel, kept only where it means
+        something.
+
+        Dense over the volume, this is the largest thing a protocol
+        produces - six times the image it describes. Restricted to the mask
+        it is about, it is the same order as the image. See
+        vtea_core.blocked.ownership.
+        """
+        from vtea_core.blocked.ownership import ownership_blocked
+
+        sources, params = self._split_inputs(step, context)
+        owned = ownership_blocked(
+            sources["labels"],
+            sources["mask"],
+            plan=self.plan,
+            spacing=params.get("spacing", self.spacing),
+            falloff=params.get("falloff", 2.0),
+            reach=params.get("reach"),
+            top_k=params.get("top_k", 2),
+            segmentation=params.get("segmentation", step.input_keys.get("labels", "")),
+            progress=progress,
+        )
+        return BlockedResult(array=owned, plan=self.plan)
+
+    def _run_weighted(
+        self, step: Any, context: Mapping[str, Any], params: Mapping[str, Any], *, progress
+    ) -> BlockedResult:
+        """Measurements over a probabilistic ownership rather than a label
+        image - a count becomes an expected volume and a mean a
+        probability-weighted mean."""
+        from vtea_core.blocked.measure import weighted_measure_blocked_by_channel
+
+        owned = context[step.input_keys.get("ownership", "ownership")]
+        intensity = context[step.input_keys.get("intensity", "intensity")]
+        frame = weighted_measure_blocked_by_channel(
+            owned,
+            intensity,
+            plan=self.plan,
+            channel_axis=params.get("channel_axis"),
+            channel=params.get("channel"),
+            spacing=params.get("spacing", self.spacing),
+            progress=progress,
+        )
+        return BlockedResult(array=None, plan=self.plan, table=frame)
 
     def _split_inputs(
         self, step: Any, context: Mapping[str, Any]

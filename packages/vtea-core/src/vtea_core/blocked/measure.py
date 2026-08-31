@@ -412,3 +412,157 @@ def with_seam_columns(frame: pd.DataFrame, ledger: Any) -> pd.DataFrame:
     if ledger is None or "object_id" not in frame.columns:
         return frame
     return frame.merge(ledger.to_frame(), on="object_id", how="left")
+
+
+# -- weighted measurement, over a sparse ownership -----------------------
+
+
+def weighted_measure_blocked(
+    ownership: Any,
+    intensity: Any,
+    *,
+    plan: TilePlan,
+    spacing: Spacing | None = None,
+    suffix: str = "",
+    geometry: bool = True,
+    progress: Callable[[int, int], None] | None = None,
+) -> pd.DataFrame:
+    """`weighted_measurements`, over an ownership too large to hold densely.
+
+    Nothing here needs a second pass. A probability-weighted sum is additive
+    the way an unweighted one is, and `min` and `max` are taken over every
+    voxel an owner has any claim on - so unlike `threshold_mean` there is no
+    quantity that depends on knowing the whole object first. One pass over
+    the tiles is the entire calculation.
+
+    `ownership` is a `SparseOwnership` built by `ownership_blocked`, so its
+    entries are already grouped by the same tiles this walks.
+    """
+    ids = ownership.object_ids()
+    if not ids:
+        return _empty_weighted_table(suffix, geometry, spacing)
+
+    size = max(ids) + 1
+    ndim = len(ownership.shape)
+    weight = np.zeros(size)
+    value = np.zeros(size)
+    square = np.zeros(size)
+    lowest = np.full(size, np.inf)
+    highest = np.full(size, -np.inf)
+    centroids = [np.zeros(size) for _ in range(ndim)]
+
+    for index, tile in enumerate(plan.tiles()):
+        entries = _entries_for(ownership, index)
+        if entries is not None and entries.stop > entries.start:
+            block = np.asarray(intensity[tile.core], dtype=np.float64)
+            where = _local_coordinates(ownership, entries, tile)
+            values = block[where]
+            for slot in range(ownership.top_k):
+                owners = ownership.owners[slot][entries]
+                probabilities = ownership.probabilities[slot][entries].astype(np.float64)
+                claimed = np.flatnonzero((owners != 0) & (probabilities > 0))
+                if not claimed.size:
+                    continue
+                owner = owners[claimed]
+                probability = probabilities[claimed]
+                sample = values[claimed]
+                weight += np.bincount(owner, weights=probability, minlength=size)[:size]
+                value += np.bincount(owner, weights=probability * sample, minlength=size)[:size]
+                square += np.bincount(
+                    owner, weights=probability * sample * sample, minlength=size
+                )[:size]
+                np.minimum.at(lowest, owner, sample)
+                np.maximum.at(highest, owner, sample)
+                for axis in range(ndim):
+                    coordinate = where[axis][claimed] + tile.core[axis].start
+                    centroids[axis] += np.bincount(
+                        owner, weights=probability * coordinate, minlength=size
+                    )[:size]
+        if progress is not None:
+            progress(index + 1, plan.n_tiles)
+
+    return _weighted_table(
+        ids, weight, value, square, lowest, highest, centroids, spacing, suffix, geometry, ndim
+    )
+
+
+def _entries_for(ownership: Any, tile_index: int) -> slice | None:
+    if ownership.offsets is None:
+        return None
+    return ownership.tile_slice(tile_index)
+
+
+def _local_coordinates(ownership: Any, entries: slice, tile: Any) -> tuple[np.ndarray, ...]:
+    """Where this tile's owned voxels sit inside the block just read."""
+    absolute = ownership.coordinates(entries)
+    return tuple(axis - part.start for axis, part in zip(absolute, tile.core))
+
+
+def _weighted_table(
+    ids, weight, value, square, lowest, highest, centroids, spacing, suffix, geometry, ndim
+) -> pd.DataFrame:
+    index = np.array(ids)
+    safe = np.where(weight[index] > 0, weight[index], np.nan)
+    mean = value[index] / safe
+    variance = np.maximum(square[index] / safe - mean * mean, 0.0)
+
+    columns: dict[str, Any] = {}
+    if geometry:
+        columns["object_id"] = index
+        for axis, centroid in enumerate(centroids):
+            columns[f"centroid-{axis}"] = centroid[index] / safe
+        columns["count"] = weight[index]
+        if spacing is not None and spacing.is_known:
+            columns[VOLUME_COLUMN] = weight[index] * float(np.prod(spacing.for_ndim(ndim)))
+    columns[f"mean{suffix}"] = mean
+    columns[f"sum{suffix}"] = value[index]
+    columns[f"stddev{suffix}"] = np.sqrt(variance)
+    columns[f"min{suffix}"] = lowest[index]
+    columns[f"max{suffix}"] = highest[index]
+    return pd.DataFrame(columns)
+
+
+def _empty_weighted_table(suffix: str, geometry: bool, spacing) -> pd.DataFrame:
+    names = ["object_id", "count"] if geometry else []
+    names += [f"{name}{suffix}" for name in ("mean", "sum", "stddev", "min", "max")]
+    return pd.DataFrame({name: pd.Series(dtype=float) for name in names})
+
+
+def weighted_measure_blocked_by_channel(
+    ownership: Any,
+    intensity: Any,
+    *,
+    plan: TilePlan,
+    channel_axis: int | None = None,
+    channel: int | None = None,
+    spacing: Spacing | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> pd.DataFrame:
+    """One row per owner, every channel measured, geometry once."""
+    if channel_axis is None or len(intensity.shape) == plan.ndim:
+        return weighted_measure_blocked(
+            ownership, intensity, plan=plan, spacing=spacing, progress=progress
+        )
+
+    axis = channel_axis % len(intensity.shape)
+    n_channels = intensity.shape[axis]
+    wanted = range(n_channels) if channel is None else [channel]
+    for index in wanted:
+        if not 0 <= index < n_channels:
+            raise ValueError(
+                f"channel {index} is out of range - axis {channel_axis} has "
+                f"{n_channels} channel(s)"
+            )
+    tables = [
+        weighted_measure_blocked(
+            ownership,
+            _ChannelView(intensity, index, axis),
+            plan=plan,
+            spacing=spacing,
+            suffix=f"_ch{index}",
+            geometry=position == 0,
+            progress=progress,
+        )
+        for position, index in enumerate(wanted)
+    ]
+    return pd.concat(tables, axis=1)

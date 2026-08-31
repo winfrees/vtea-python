@@ -442,12 +442,15 @@ class TestPipelineIntegration:
         counted = store.query("SELECT count(*) AS n FROM OBJECTS").loc[0, "n"]
         assert counted == len(got)
 
-    def test_a_weighted_measurement_says_which_phase_it_waits_on(self, volume):
-        from vtea_core.blocked import BlockedPipeline, NotBlockableYet
+    def test_a_weighted_measurement_wants_a_sparse_ownership(self, volume):
+        # It measures a posterior, not a label image - see
+        # test_blocked_ownership.py for the whole path. Handing it an array
+        # is a mistake worth failing on rather than measuring around.
+        from vtea_core.blocked import BlockedPipeline
         from vtea_core.workflow import Pipeline, Step
 
         step = Step.for_function("measurements", "weighted_measurements_by_channel")
         plan = plan_tiles(volume.shape, budget=MemoryBudget(10**9), bytes_per_voxel=8)
         with BlockedPipeline(Pipeline([step]), plan=plan) as blocked:
-            with pytest.raises(NotBlockableYet, match="L6"):
+            with pytest.raises(AttributeError):
                 blocked.run({"ownership": volume, "intensity": volume})

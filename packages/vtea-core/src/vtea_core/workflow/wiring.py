@@ -395,6 +395,13 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             mode=OBJECT_LOCAL,
             halo=HaloSpec(param="reach", physical=True, minimum=2),
             bytes_per_voxel=40,
+            needs_reconciliation=False,
+            notes=(
+                "`reach` defaults to four falloffs, which a HaloSpec cannot express - "
+                "vtea_core.blocked.ownership checks the effective reach against the "
+                "plan's halo at run time instead, since a check beats a guess and the "
+                "failure it prevents is a seam down the middle of the result"
+            ),
         ),
     ),
     # Voxels in, one row per object out. Count, sum, sum of squares, min,
