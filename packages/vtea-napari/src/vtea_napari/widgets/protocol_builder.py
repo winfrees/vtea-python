@@ -40,6 +40,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from vtea_core.blocked import format_bytes
 from vtea_core.measurements import FeatureCatalog, feature_matrix
 from vtea_core.objects import AssociationSet, CellCollection, Ownership
 from vtea_core.workflow import Pipeline, Step
@@ -49,6 +50,7 @@ from vtea_napari.widgets.feature_select import FeatureSelectWidget
 from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.memory_control import MemoryControl
 from vtea_napari.widgets.param_form import ParameterForm
+from vtea_napari.widgets.roi_preview import PREVIEW_PREFIX, PreviewControl, visible_region
 from vtea_napari.widgets.run_control import RunControl
 from vtea_napari.widgets.spacing_control import SpacingControl
 from vtea_napari.widgets.step_stack import StepStackWidget
@@ -69,6 +71,12 @@ RUN_BUTTON_STYLE = (
 # A 2D per-object result wider than this is a crop stack or a distance
 # matrix, not a handful of features to plot against each other.
 MAX_DERIVED_FEATURES = 8
+
+# What a preview block is assumed to cost per voxel: the input plus a couple
+# of intermediates, which is what a short protocol actually holds. Only used
+# to refuse a view too large to preview, so an approximation that errs
+# towards refusing is the right kind of wrong.
+PREVIEW_BYTES_PER_VOXEL = 24
 
 # A dock this wide already shows every control; past that it is just taking
 # screen away from the image canvas, which is the thing being analysed.
@@ -355,6 +363,13 @@ class ProtocolBuilderWidget(QWidget):
         self.run_control = RunControl(self)
         top_row.addWidget(self.run_control.widget())
 
+        # Run the protocol over the part of the image on screen, at the
+        # resolution on screen. On a dataset where a full run is measured in
+        # hours, this is the only way to tune a parameter at all.
+        self.preview_control = PreviewControl()
+        self.preview_control.requested.connect(self.run_preview)
+        top_row.addWidget(self.preview_control)
+
         top_row.addStretch()
 
         # The explorer is where the results are looked at, so it is worth
@@ -371,6 +386,7 @@ class ProtocolBuilderWidget(QWidget):
             # Keep the picker in step with what's loaded.
             self.viewer.layers.events.inserted.connect(lambda _e: self.refresh_sources())
             self.viewer.layers.events.removed.connect(lambda _e: self.refresh_sources())
+            self.preview_control.attach(self.viewer)
         self.refresh_sources()
 
         # No pane-level Run button: every step card has its own, which is
@@ -553,7 +569,12 @@ class ProtocolBuilderWidget(QWidget):
             self.layer_combo.blockSignals(True)
             self.layer_combo.clear()
             for layer in self.viewer.layers:
-                # Only things with pixels are candidates to process.
+                # Only things with pixels are candidates to process, and a
+                # preview is not one: it is a partial answer over part of
+                # the image, and running a protocol on it would compound
+                # the approximation rather than show anything.
+                if layer.name.startswith(PREVIEW_PREFIX):
+                    continue
                 if hasattr(layer, "data") and getattr(layer.data, "ndim", 0) >= 2:
                     self.layer_combo.addItem(layer.name, layer.name)
             position = self.layer_combo.findData(previous)
@@ -1065,6 +1086,182 @@ class ProtocolBuilderWidget(QWidget):
 
         self._order_dims_for_z()
         self.status_label.setText(f"Added layer '{name}'")
+
+    def run_preview(self) -> np.ndarray | None:
+        """Run the processing protocol over the region on screen.
+
+        As one tile of the protocol's own tiling: the visible box grown by
+        the same halo every other tile gets, run in memory, and trimmed
+        back. So the preview is what a full run would write there rather
+        than what a filter computes when it can see nothing past the edge
+        of the view - and a preview that disagreed with the run at the
+        edges would be worse than none, since the edges are what gets
+        looked at.
+
+        Read at the level the viewer is displaying. Reading full resolution
+        for a view showing every eighth voxel is exactly the I/O a pyramid
+        exists to avoid, and the layer name says which level it used so a
+        coarse preview is never mistaken for the answer.
+        """
+        from vtea_core.blocked import read_block, tile_for_region
+
+        layer = self.source_layer()
+        if layer is None or not self.pipeline.steps:
+            self.preview_control.set_status("nothing to preview")
+            return None
+        region = visible_region(layer, whole_axes=self._whole_axes(layer))
+        if region is None:
+            self.preview_control.set_status("nothing on screen")
+            return None
+
+        levels = getattr(layer, "data", None)
+        source = (
+            levels[region.level]
+            if isinstance(levels, (list, tuple))
+            else levels
+        )
+        tile = tile_for_region(region.core, tuple(source.shape), self._preview_halo())
+        budget = self.memory_budget()
+        cost = int(np.prod(tile.padded_shape)) * PREVIEW_BYTES_PER_VOXEL
+        if budget is not None and cost > budget.usable_bytes:
+            self.preview_control.set_status(
+                f"the view is {format_bytes(cost)} at level {region.level}, over the "
+                f"{format_bytes(budget.usable_bytes)} budget - zoom in to preview it"
+            )
+            return None
+
+        block = read_block(source, tile)
+        context = {
+            "volume": block,
+            "intensity": block,
+            "channel_axis": self.pipeline.channel_axis,
+        }
+        spacing = self.spacing_control.spacing()
+        if spacing is not None:
+            context["spacing"] = spacing
+        try:
+            # Deliberately not `self.last_context`: a preview is not a
+            # result, and a step's Show button, the plot and the tables must
+            # go on reading whatever the last real run produced.
+            result = self.pipeline.run(context)
+        except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
+            self.preview_control.set_status(f"{type(exc).__name__}: {exc}")
+            return None
+
+        array = result.get(self.pipeline.steps[-1].output_key)
+        if not isinstance(array, np.ndarray) or array.ndim != len(tile.core):
+            self.preview_control.set_status("the last step produced no image to preview")
+            return None
+        trimmed = array[tile.inner]
+        self._show_preview(trimmed, region)
+        self.preview_control.set_status(
+            "; ".join([f"preview: {region.describe()}", *self._preview_caveats()])
+        )
+        return trimmed
+
+    def _preview_caveats(self) -> list[str]:
+        """What this preview cannot promise, said out loud.
+
+        A step whose parameter comes from a statistic over the whole image -
+        an Otsu threshold, a percentile - computes that statistic over the
+        region on screen instead, because that is all it was given. Often
+        that is exactly what a user tuning it wants to see; it is never what
+        the full run will do, and the difference is invisible unless it is
+        stated.
+        """
+        from vtea_core.blocked import GLOBAL_STAT
+        from vtea_core.workflow.wiring import scaling_for
+
+        names = [
+            step.name or step.function_name
+            for step in self.pipeline.steps
+            # Resolved against the step's own parameters: `threshold_mask`
+            # is elementwise at a fixed value and a global statistic at
+            # otsu, which is the whole question here.
+            if scaling_for(step.category, step.function_name)
+            .resolve(step.params)
+            .mode
+            == GLOBAL_STAT
+        ]
+        if not names:
+            return []
+        return [f"{', '.join(names)} measured on the view, not the whole image"]
+
+    def _whole_axes(self, layer) -> tuple[int, ...]:
+        """Axes a preview must take entire rather than crop: the channel
+        axis, because slicing one channel out of a protocol that measures
+        all of them changes what it computes rather than only where."""
+        ndim = getattr(getattr(layer, "data", None), "ndim", None)
+        channel_axis = self.pipeline.channel_axis
+        if channel_axis is None:
+            return ()
+        return (channel_axis,) if ndim is None or channel_axis < ndim else ()
+
+    def _preview_halo(self) -> tuple[int, ...]:
+        """The halo this protocol needs, from the plan it would run under.
+
+        In level-0 voxels, and used unchanged at whatever level is on
+        screen. That over-reads by the level's downsample factor, and over
+        is the safe direction: the halo a filter needs at a coarse level is
+        smaller in voxels than the one it needs at full resolution, so a
+        level-0 halo always covers it. Scaling it down to save the reads
+        would be an optimisation with a correctness question attached.
+
+        Zero when the protocol cannot be planned - the preview is then only
+        approximate at its edges, which is still better than nothing and is
+        the one case where it can differ from a run.
+        """
+        plan = self.tile_plan()
+        return tuple(plan.halo) if plan is not None else ()
+
+    def _show_preview(self, array: np.ndarray, region) -> None:
+        """Put the preview on the image, placed where it was computed.
+
+        Named so it cannot be taken for a result, scaled by the level it was
+        read at so it sits over the data it describes, and replaced rather
+        than accumulated - a layer list with forty previews in it is its own
+        kind of unusable.
+        """
+        if self.viewer is None:
+            return
+        name = f"{PREVIEW_PREFIX}{self.pipeline.steps[-1].result_key}"
+        for existing in list(self.viewer.layers):
+            if existing.name.startswith(PREVIEW_PREFIX):
+                self.viewer.layers.remove(existing)
+        # The layer's own scale as well as the level's: a source layer
+        # carrying a physical voxel size places its data in microns, and a
+        # preview scaled only by the pyramid factor would sit somewhere the
+        # user is not looking on exactly the anisotropic stacks this is for.
+        source_scale = self._source_scale(len(region.core))
+        placement = {
+            "name": name,
+            "scale": [level * own for level, own in zip(region.scale, source_scale)],
+            "translate": [
+                start * level * own
+                for start, level, own in zip(
+                    [part.start for part in region.core], region.scale, source_scale
+                )
+            ],
+        }
+        if array.dtype == bool:
+            self.viewer.add_labels(array.astype(np.uint8), **placement)
+        elif np.issubdtype(array.dtype, np.integer) and self.pipeline.steps[
+            -1
+        ].category != "imageprocessing":
+            self.viewer.add_labels(array.astype(np.int32), **placement)
+        else:
+            self.viewer.add_image(array, **placement)
+
+    def _source_scale(self, ndim: int) -> tuple[float, ...]:
+        """The source layer's own per-axis scale, or ones."""
+        layer = self.source_layer()
+        try:
+            scale = tuple(float(value) for value in layer.scale)
+        except (AttributeError, TypeError, ValueError):
+            return (1.0,) * ndim
+        if len(scale) != ndim:
+            return (1.0,) * ndim
+        return scale
 
     def show_ownership(self, step: Step, ownership) -> None:
         """Show a probabilistic ownership as two layers: who won, and how

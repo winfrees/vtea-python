@@ -15,6 +15,7 @@ from vtea_core.blocked import (
     Tile,
     TilePlan,
     plan_tiles,
+    tile_for_region,
 )
 
 GB = 1024**3
@@ -257,3 +258,35 @@ def test_a_plan_is_frozen():
     assert isinstance(plan, TilePlan)
     with pytest.raises(AttributeError):
         plan.tile = (4, 4)
+
+class TestTileForRegion:
+    """One tile covering an arbitrary place rather than a whole grid - what
+    a preview of the region on screen runs on, and it has to be a tile of
+    the protocol's own tiling or the preview disagrees with the run."""
+
+    def test_the_halo_is_added_where_the_data_exists(self):
+        tile = tile_for_region((slice(10, 20), slice(10, 20)), (64, 64), (4, 4))
+        assert tile.padded == (slice(6, 24), slice(6, 24))
+        assert tile.pad_width == ((0, 0), (0, 0))
+
+    def test_what_falls_off_the_dataset_is_synthesized(self):
+        tile = tile_for_region((slice(0, 10), slice(60, 64)), (64, 64), (4, 4))
+        assert tile.pad_width == ((4, 0), (0, 4))
+
+    def test_the_core_is_found_inside_the_padded_block(self):
+        tile = tile_for_region((slice(10, 20), slice(10, 20)), (64, 64), (4, 4))
+        assert tile.inner == (slice(4, 14), slice(4, 14))
+
+    def test_a_region_beyond_the_data_is_clipped_to_it(self):
+        tile = tile_for_region((slice(-5, 100), slice(0, 8)), (64, 64), (0, 0))
+        assert tile.core == (slice(0, 64), slice(0, 8))
+
+    def test_a_shorter_halo_is_zero_on_the_rest(self):
+        """A halo named for the spatial axes should not have to be padded
+        out by hand for a channel axis that is never divided."""
+        tile = tile_for_region((slice(0, 4), slice(10, 20)), (8, 64), (2,))
+        assert tile.padded == (slice(0, 6), slice(10, 20))
+
+    def test_a_region_over_the_wrong_number_of_axes_is_refused(self):
+        with pytest.raises(ValueError, match="cannot describe"):
+            tile_for_region((slice(0, 4),), (64, 64), (0, 0))

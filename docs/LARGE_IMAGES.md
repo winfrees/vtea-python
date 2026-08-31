@@ -972,7 +972,7 @@ Changed elsewhere, and deliberately little:
 | **L5 — Deep learning** **done** | Blocked Cellpose, GPU budget and calibration, `RESEGMENT_SEAM`, resumable runs | 2–3 wk |
 | **L6 — Objects at scale** **done** | Sparse ownership, blocked association scoring, `build_cells`/`cell_features` through DuckDB | 2–3 wk |
 | **L7 — Analysis and explorer** **done** | Streaming estimators, binned scatter, gallery from the pyramid | 2–3 wk |
-| **L8 — GUI** *(lazy source, budget control, the blocked run path, cancellation off the GUI thread and seam review done; ROI preview outstanding — item 6)* | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
+| **L8 — GUI** **done** | ROI preview, background runs with progress and cancellation, resume, seam review | 2–3 wk |
 
 L0-L4 are built. A protocol of blur, Otsu threshold, connected components
 and per-object measurement now runs entirely out of core, returning the same
@@ -991,9 +991,9 @@ divided the data into ("216 tiles of 384x384x384", with what bounded it in
 the tooltip), and opens a dialog to change it — because a user who cannot
 see that number cannot tell a slow run from a stuck one, and one who cannot
 change it cannot trade time for memory on the machine they actually have.
-L8's remaining outstanding item is the ROI preview driven by
-`corner_pixels`; cancellation off the GUI thread and the seam-review view
-over `seam_confidence` are built (items 2 and 3 below).
+L8 is complete: cancellation off the GUI thread, the seam-review view over
+`seam_confidence`, and the ROI preview driven by `corner_pixels` are all
+built (items 2, 3 and 6 below).
 
 One environment note for whoever runs these tests: napari's `add_image`
 tears down through a vispy path that needs a GL context, so the viewer
@@ -1008,9 +1008,8 @@ million objects" and "k-means fitted on fifty thousand of them" are
 different claims, and a table that cannot tell them apart cannot be
 compared with one computed the other way. `exact` is deliberately strict:
 seeing every row is not the same as running the same algorithm, so
-`IncrementalPCA` reports as streamed however close it lands. Outstanding
-there: the gallery reading crops from the pyramid, which is a GUI concern
-and belongs with L8.
+`IncrementalPCA` reports as streamed however close it lands. The gallery
+reading crops from the pyramid completes it (item 1 below).
 
 L6's ownership half is built, which is the phase's headline: the largest
 thing a protocol produces now costs the same order as the image rather than
@@ -1037,18 +1036,22 @@ probe and the resume manifest are built and tested against injected
 devices and induced crashes; what cannot be exercised here is a real CUDA
 device, so the probe's `torch` path awaits hardware.
 
-**Total: roughly 18–28 engineer-weeks.** L0–L2 are worth landing on their
-own — they make a large dataset *openable and preprocessable*, which is
-most of the day-to-day pain — and L3 is where the intellectual risk is
-concentrated.
+**Total: roughly 18–28 engineer-weeks**, and all of it is now built. L0–L2
+were worth landing on their own — they make a large dataset *openable and
+preprocessable*, which is most of the day-to-day pain — and L3 was where
+the intellectual risk was concentrated. What is left is not code: see
+"Validation this environment cannot do" below.
 
 ## Finishing L6–L8
 
-One item is outstanding, plus two things that can only be checked on
-hardware this was not built on. Scoped against the code rather than against
-the phase headings, they are smaller and more separable than "three
-unfinished phases" suggests — and two of them are much smaller than the
-plan implied, because the existing code already does most of the work.
+Six items were outstanding when this section was written, plus two things
+that can only be checked on hardware this was not built on. All six are
+built; the hardware validation is not, and should not be assumed.
+
+Scoped against the code rather than against the phase headings, they were
+smaller and more separable than "three unfinished phases" suggested — and
+two were much smaller than the plan implied, because the existing code
+already did most of the work.
 
 Ordered by what a user gets soonest, not by phase number.
 
@@ -1276,7 +1279,7 @@ A measurement table may be a Parquet file rather than a DataFrame, which is
 what makes this worth doing in a database at all: the join reads the table
 as the query needs it instead of loading ten million rows to group them.
 
-### 6. ROI preview *(≈1–1.5 weeks)*
+### 6. ROI preview — **done**
 
 `layer.corner_pixels` gives the extent currently on screen, which is the
 hook for running a step over what the user is looking at instead of over
@@ -1288,6 +1291,32 @@ is either a correctness gap or the difference between a feature being
 reachable and not. Three things it needs — the displayed pyramid level (not
 level 0), a preview layer named so it cannot be mistaken for a committed
 result, and debouncing so panning does not queue a hundred runs.
+
+Built as `vtea_napari.widgets.roi_preview` plus `run_preview` on the
+builder, with all three, and a fourth that turned out to matter more than
+any of them: **the preview is a tile of the protocol's own tiling.** The
+visible box is grown by the same halo every other tile gets, run, and
+trimmed back — so the preview *is* what a full run would write there,
+rather than what a filter computes when it can see nothing past the edge of
+the view. `tile_for_region` in `blocked/plan.py` is the piece that makes
+that a two-line change rather than a second implementation, and the test
+that pins it has the negative control beside it: the same region run in
+isolation genuinely disagrees with the run at its edges, which is exactly
+where a person looks.
+
+The one thing a preview cannot promise is stated rather than hidden. A step
+whose parameter comes from a statistic over the whole image — an Otsu
+threshold, a percentile — computes it over the region on screen instead,
+because that is all it was given. Often that is what a user tuning it wants
+to see; it is never what the full run will do, so the status line says
+which steps it applies to. The scaling contract already knew: `Scaling.
+resolve` reports `threshold_mask` as elementwise at a fixed value and a
+global statistic at otsu, which is the whole question.
+
+A view too large for the budget is refused with the reason and the remedy
+("zoom in to preview it") rather than freezing the window, and the preview
+never touches the run context — the Show buttons, the plot and the tables
+go on reading whatever the last real run produced.
 
 ### 7. Validation this environment cannot do
 
@@ -1315,11 +1344,13 @@ Not code, and not optional before anyone trusts this with real data.
 | 3 | Seam review | **done** | Makes L3's ledger reachable |
 | 4 | Association partitioned | **done** | Unblocks the table forms item 5 needs |
 | 5 | Cells through DuckDB | **done** | Depended on 4's association table |
-| 6 | ROI preview | 1–1.5 wk | A convenience, and the only one |
+| 6 | ROI preview | **done** | A convenience, and the only one |
 | 7 | Hardware validation | — | Gating for production use, not for merging |
 
-**Roughly 1–1.5 engineer-weeks remain**, all of it item 6, plus the
-hardware validation in item 7 that this environment cannot do.
+**Items 1–6 are built.** What remains is item 7, which is not code: a run
+on a CUDA device, a strategy comparison on real tissue, and a check of
+`napari.add_image` under a display. None of it can be done here, and none
+of it should be assumed.
 
 ## Open questions
 

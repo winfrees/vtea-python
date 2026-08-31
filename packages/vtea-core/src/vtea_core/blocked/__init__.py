@@ -106,6 +106,7 @@ from vtea_core.blocked.plan import (
     plan_for_steps,
     plan_tiles,
     step_costs,
+    tile_for_region,
 )
 from vtea_core.blocked.reconcile import (
     ABUTTING,
@@ -243,5 +244,6 @@ __all__ = [
     "should_bin",
     "single_roles_from_links",
     "step_costs",
+    "tile_for_region",
     "tsne_scaled",
 ]
