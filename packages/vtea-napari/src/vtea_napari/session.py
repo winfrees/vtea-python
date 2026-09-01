@@ -27,7 +27,7 @@ from qtpy.QtCore import QObject, Signal
 from vtea_core.data import Spacing
 from vtea_core.gates import GateSet
 from vtea_core.measurements import FeatureCatalog
-from vtea_core.objects import AssociationSet, CellSet, ObjectRef
+from vtea_core.objects import AssociationSet, CellCollection, ObjectRef
 from vtea_core.workflow import Pipeline
 
 OBJECT_TABLE = "Objects"
@@ -101,6 +101,11 @@ class AnalysisSession(QObject):
         # it, otherwise asked for: every distance and thickness downstream
         # is wrong without it, and wrong in a way that looks plausible.
         self.spacing: Spacing | None = None
+        # How each object a tile boundary cut was put back together, when
+        # the run was a blocked one - see vtea_core.blocked.reconcile. Kept
+        # on the session rather than in the builder so the explorer can
+        # review a seam without the builder being open.
+        self.ledger = None
         # Links a person reassigned or broke by hand, child -> parent (or
         # None for "no parent"). Held here rather than only on the
         # AssociationSet a run produced, because re-running the association
@@ -187,11 +192,18 @@ class AnalysisSession(QObject):
             if isinstance(value, AssociationSet) and key != "associations"
         }
 
-    def cell_sets(self) -> dict[str, CellSet]:
+    def cell_sets(self) -> dict[str, CellCollection]:
+        """The cell results this run produced, by step name.
+
+        `CellCollection` rather than `CellSet`: a blocked run composes its
+        cells as a membership table rather than as an object graph, and
+        everything here only asks a cell result how many cells there are and
+        which segmentation identifies them - see vtea_core.objects.cells.
+        """
         return {
             key: value
             for key, value in self.context.items()
-            if isinstance(value, CellSet) and key != "cells"
+            if isinstance(value, CellCollection) and key != "cells"
         }
 
     def record_manual_link(self, child: ObjectRef, parent: ObjectRef | None) -> None:
@@ -243,6 +255,15 @@ class AnalysisSession(QObject):
         self.source_layer_name = source_layer_name
         self.channel_axis = channel_axis
         self.z_axis = z_axis
+
+    def set_ledger(self, ledger) -> None:
+        """Record how a blocked run reconciled its objects.
+
+        `None` for an in-memory run, which has no seams to account for -
+        which is also what tells a review pane there is nothing to review.
+        """
+        self.ledger = ledger
+        self.data_changed.emit()
 
     def set_spacing(self, spacing: Spacing | None) -> None:
         self.spacing = spacing

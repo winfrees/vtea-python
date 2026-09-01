@@ -72,6 +72,18 @@ class NotBlockableYet(NotImplementedError):
     """A step whose blocked form is a later phase."""
 
 
+class Cancelled(RuntimeError):
+    """A run a caller asked to stop.
+
+    Its own exception type rather than a quiet return, because a cancelled
+    run has a *partial* result in the scratch store and nothing downstream
+    should mistake it for a finished one. What a caller does with the
+    partial result is its business - paired with a manifest it is the start
+    of a resume, and paired with nothing it is something to throw away -
+    but it has to be told the difference.
+    """
+
+
 def numpy_pad_mode(scipy_mode: str) -> str:
     """The numpy.pad name for a scipy.ndimage boundary mode."""
     try:
@@ -118,6 +130,7 @@ def apply_blocked(
     dtype: Any = None,
     pad_mode: str = DEFAULT_PAD_MODE,
     progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Any:
     """Run a shape-preserving function over `plan`'s tiles.
 
@@ -142,6 +155,10 @@ def apply_blocked(
 
     total = plan.n_tiles
     for index, tile in enumerate(plan.tiles()):
+        # Between tiles, not inside one: a tile is the smallest unit of work
+        # that leaves the output in a consistent state, and interrupting one
+        # halfway would leave a partly-written region that looks finished.
+        _check_cancelled(should_stop)
         blocks = {
             name: read_block(array, tile, pad_mode) for name, array in sources.items()
         }
@@ -159,6 +176,11 @@ def apply_blocked(
         if progress is not None:
             progress(index + 1, total)
     return target
+
+
+def _check_cancelled(should_stop: Callable[[], bool] | None) -> None:
+    if should_stop is not None and should_stop():
+        raise Cancelled("the run was cancelled")
 
 
 def read_block(array: Any, tile: Tile, pad_mode: str | None = DEFAULT_PAD_MODE) -> np.ndarray:
@@ -201,6 +223,7 @@ def run_step_blocked(
     params: Mapping[str, Any] | None = None,
     pad_mode: str = DEFAULT_PAD_MODE,
     progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> BlockedResult:
     """Run one `vtea_core.workflow.Step` over a plan.
 
@@ -239,6 +262,7 @@ def run_step_blocked(
         target=target,
         pad_mode=pad_mode,
         progress=progress,
+        should_stop=should_stop,
     )
     return BlockedResult(array=array, plan=plan, stats=stats, resolved_params=resolved)
 
@@ -325,6 +349,11 @@ class BlockedPipeline:
         # Per step name, and per context key, so that a later step can find
         # the ledger belonging to the labels it was pointed at.
         self.ledgers: dict[str, Any] = {}
+        # Measurement tables by the labels key they were measured on. An
+        # association scored by centroid distance needs centroids, and a
+        # run that has already measured them should not read the image
+        # again to recompute what is sitting in a table.
+        self.tables: dict[str, Any] = {}
 
     def __enter__(self) -> BlockedPipeline:  # noqa: PYI034 - typing.Self needs Python 3.11+, this package supports 3.10
         if self.scratch is None:
@@ -341,23 +370,34 @@ class BlockedPipeline:
         context: Mapping[str, Any],
         *,
         progress: Callable[[str, int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Run every step, threading stored arrays through a context.
 
         The context holds arrays that are read a tile at a time rather than
         held, so it looks exactly like `Pipeline.run`'s and costs a
         different amount.
+
+        `should_stop` is polled between tiles and between steps, and raises
+        `Cancelled` when it answers yes. A run measured in hours has to be
+        stoppable, and the place to stop is a tile boundary: it is the
+        smallest unit that leaves the output consistent. Paired with a
+        manifest (see `vtea_core.blocked.resume`) a cancelled run is the
+        start of a resume rather than wasted work.
         """
         if self.scratch is None:
             raise RuntimeError("use BlockedPipeline as a context manager, or pass a scratch store")
         working = dict(context)
         for step in self.pipeline.steps:
+            _check_cancelled(should_stop)
             step_progress = (
                 (lambda done, total, name=step.name: progress(name, done, total))
                 if progress is not None
                 else None
             )
-            result = self._run_one(step, working, progress=step_progress)
+            result = self._run_one(
+                step, working, progress=step_progress, should_stop=should_stop
+            )
             self.results[step.name or step.function_name] = result
             produced = result.table if result.table is not None else result.array
             working[step.output_key] = produced
@@ -367,14 +407,24 @@ class BlockedPipeline:
                 self.ledgers[step.output_key] = result.ledger
                 if step.name:
                     self.ledgers[step.name] = result.ledger
+            if step.category == "measurements" and result.table is not None:
+                self.tables[step.input_keys.get("labels", "labels")] = result.table
         return working
 
-    def _run_one(self, step: Any, context: Mapping[str, Any], *, progress) -> BlockedResult:
+    def _run_one(
+        self, step: Any, context: Mapping[str, Any], *, progress, should_stop=None
+    ) -> BlockedResult:
         scaling = _scaling_of(step)
         if step.category == "ownership":
             return self._run_ownership(step, context, progress=progress)
+        if step.category == "association":
+            return self._run_association(step, context, progress=progress)
+        if step.category == "cells":
+            return self._run_cells(step, context)
         if scaling.needs_reconciliation:
-            return self._run_reconciled(step, context, progress=progress)
+            return self._run_reconciled(
+                step, context, progress=progress, should_stop=should_stop
+            )
         if scaling.mode == ACCUMULATE:
             return self._run_measurement(step, context, progress=progress)
         sources, params = self._split_inputs(step, context)
@@ -396,11 +446,12 @@ class BlockedPipeline:
             params=params,
             pad_mode=self.pad_mode,
             progress=progress,
+            should_stop=should_stop,
         )
 
 
     def _run_reconciled(
-        self, step: Any, context: Mapping[str, Any], *, progress
+        self, step: Any, context: Mapping[str, Any], *, progress, should_stop=None
     ) -> BlockedResult:
         """A step whose objects have to be joined across tile boundaries.
 
@@ -440,6 +491,7 @@ class BlockedPipeline:
             spacing=self.spacing,
             name=_scratch_name(step),
             progress=progress,
+            should_stop=should_stop,
         )
         return BlockedResult(
             array=labels.array, plan=labels.plan, ledger=labels.ledger
@@ -475,6 +527,103 @@ class BlockedPipeline:
         return BlockedResult(
             array=filtered.array, plan=filtered.plan, ledger=filtered.ledger
         )
+
+    def _run_association(
+        self, step: Any, context: Mapping[str, Any], *, progress
+    ) -> BlockedResult:
+        """A step that links the objects of two segmentations.
+
+        The output is a set of links rather than an array, and every method
+        that produces it is either additive over tiles, object-local, or a
+        table operation that touches no voxels at all - see
+        `vtea_core.blocked.associate`. So this reads images a tile or a
+        window at a time and then runs exactly the same posterior, the same
+        assignment and the same record as the in-memory path.
+
+        `merge_associations` is here for completeness rather than for
+        scale: it joins two sets of links and never had an image to read.
+        """
+        from vtea_core.blocked.associate import (
+            associate_by_identity_blocked,
+            associate_objects_blocked,
+        )
+
+        sources, params = self._split_inputs(step, context)
+        if step.function_name == "merge_associations":
+            return BlockedResult(array=None, plan=self.plan, table=step.function(**params))
+
+        block_progress = (
+            (lambda done, total: progress(done, total)) if progress is not None else None
+        )
+        common = {
+            "plan": self.plan,
+            "child_ids": self._ledger_ids(step, "child_labels"),
+            "parent_ids": self._ledger_ids(step, "parent_labels"),
+            "progress": block_progress,
+        }
+        if step.function_name == "associate_by_identity":
+            links = associate_by_identity_blocked(
+                sources["child_labels"], sources["parent_labels"], **common, **params
+            )
+        else:
+            links = associate_objects_blocked(
+                sources["child_labels"],
+                sources["parent_labels"],
+                spacing=params.pop("spacing", self.spacing),
+                child_table=self.tables.get(step.input_keys.get("child_labels")),
+                parent_table=self.tables.get(step.input_keys.get("parent_labels")),
+                **common,
+                **params,
+            )
+        return BlockedResult(array=None, plan=self.plan, table=links)
+
+    def _run_cells(self, step: Any, context: Mapping[str, Any]) -> BlockedResult:
+        """Composing cells, and measuring them, as SQL.
+
+        Following the links out from the roots is a recursive join and the
+        per-cell table is a join and a group-by, so both go to DuckDB, which
+        spills them - see `vtea_core.blocked.cells`. The root object ids
+        come from the ledger of the segmentation that identifies a cell
+        where this run made one, because a root nothing was assigned to is
+        still a cell and dropping it biases every statistic that follows.
+        """
+        from vtea_core.blocked.associate import object_ids_blocked
+        from vtea_core.blocked.cells import build_cells_blocked, cell_features_blocked
+
+        sources, params = self._split_inputs(step, context)
+        if step.function_name == "cell_features":
+            membership = params.pop("cells", None)
+            tables = params.pop("measurement_tables", None) or self.tables
+            return BlockedResult(
+                array=None,
+                plan=self.plan,
+                table=cell_features_blocked(membership, tables, **params),
+            )
+
+        root = params.pop("root", "") or step.input_keys.get("root_labels", "")
+        root_ids = params.pop("root_labels", None)
+        if root_ids is None and "root_labels" in sources:
+            ledger = self.ledgers.get(step.input_keys.get("root_labels", ""))
+            root_ids = (
+                np.asarray(ledger.object_ids, dtype=np.int64)
+                if ledger is not None
+                else object_ids_blocked(sources["root_labels"], plan=self.plan)
+            )
+        return BlockedResult(
+            array=None,
+            plan=self.plan,
+            table=build_cells_blocked(params.pop("associations"), root_ids, root=root, **params),
+        )
+
+    def _ledger_ids(self, step: Any, argument: str):
+        """Every object id of one of this step's inputs, when a blocked
+        segmentation in this run already knows them.
+
+        `None` otherwise, which means the scorer scans for them - correct
+        either way, and the difference is one pass over the data.
+        """
+        ledger = self.ledgers.get(step.input_keys.get(argument, argument))
+        return None if ledger is None else np.asarray(ledger.object_ids, dtype=np.int64)
 
     def _run_measurement(
         self, step: Any, context: Mapping[str, Any], *, progress

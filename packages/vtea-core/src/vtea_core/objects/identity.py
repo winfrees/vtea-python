@@ -34,8 +34,31 @@ def associate_by_identity(
     what this function assumes - a genuine mistake rather than an unlucky
     object - so it raises by default rather than quietly dropping it.
     """
-    child_ids = set(np.unique(np.asarray(child_labels))) - {0}
-    parent_ids = set(np.unique(np.asarray(parent_labels))) - {0}
+    return associate_ids(
+        set(np.unique(np.asarray(child_labels))) - {0},
+        set(np.unique(np.asarray(parent_labels))) - {0},
+        child_name=child_name,
+        parent_name=parent_name,
+        require_parent=require_parent,
+    )
+
+
+def associate_ids(
+    child_ids,
+    parent_ids,
+    *,
+    child_name: str = "child",
+    parent_name: str = "parent",
+    require_parent: bool = True,
+) -> AssociationSet:
+    """The same links, from the two id sets rather than the two images.
+
+    Which is all this ever needed: identity association compares ids, and a
+    blocked run knows every id without reading a voxel - the ledger of the
+    segmentation that produced them already lists them.
+    """
+    child_ids = {int(value) for value in child_ids}
+    parent_ids = {int(value) for value in parent_ids}
 
     orphans = sorted(child_ids - parent_ids)
     if orphans and require_parent:

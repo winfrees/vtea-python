@@ -39,6 +39,7 @@ from vtea_core.objects.cells import (
     CELL_FORMAT_VERSION,
     DEFAULT_AGGREGATIONS,
     Cell,
+    CellCollection,
     CellSet,
     build_cells,
     cell_features,
@@ -46,7 +47,7 @@ from vtea_core.objects.cells import (
     merge_associations,
     save_cells,
 )
-from vtea_core.objects.identity import associate_by_identity
+from vtea_core.objects.identity import associate_by_identity, associate_ids
 from vtea_core.objects.ownership import (
     DISTANCE,
     OWNERSHIP_FORMAT_VERSION,
@@ -90,6 +91,7 @@ __all__ = [
     "AssociationSet",
     "CandidateScores",
     "Cell",
+    "CellCollection",
     "CellSet",
     "Match",
     "ObjectRef",
@@ -97,6 +99,7 @@ __all__ = [
     "Posterior",
     "assign",
     "associate_by_identity",
+    "associate_ids",
     "associate_objects",
     "boundary_distance",
     "build_cells",

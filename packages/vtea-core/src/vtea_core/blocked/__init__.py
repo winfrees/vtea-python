@@ -23,6 +23,17 @@ from vtea_core.blocked.analysis import (
     should_bin,
     tsne_scaled,
 )
+from vtea_core.blocked.associate import (
+    associate_objects_blocked,
+    boundary_distance_blocked,
+    boxes_blocked,
+    boxes_from_ledger,
+    centroid_distance_table,
+    centroids_blocked,
+    containment_blocked,
+    object_ids_blocked,
+    score_candidates_blocked,
+)
 from vtea_core.blocked.budget import (
     CGROUP,
     DETECTED,
@@ -38,6 +49,12 @@ from vtea_core.blocked.budget import (
     format_bytes,
     gpu_free_bytes,
     parse_size,
+)
+from vtea_core.blocked.cells import (
+    CellMembership,
+    build_cells_blocked,
+    cell_features_blocked,
+    single_roles_from_links,
 )
 from vtea_core.blocked.contract import (
     ACCUMULATE,
@@ -58,6 +75,7 @@ from vtea_core.blocked.contract import (
 from vtea_core.blocked.executor import (
     BlockedPipeline,
     BlockedResult,
+    Cancelled,
     NotBlockableYet,
     apply_blocked,
     numpy_pad_mode,
@@ -88,6 +106,7 @@ from vtea_core.blocked.plan import (
     plan_for_steps,
     plan_tiles,
     step_costs,
+    tile_for_region,
 )
 from vtea_core.blocked.reconcile import (
     ABUTTING,
@@ -152,6 +171,8 @@ __all__ = [
     "BlockedResult",
     "BudgetTooSmall",
     "Calibration",
+    "Cancelled",
+    "CellMembership",
     "EstimatorChoice",
     "Fragment",
     "HaloExceeded",
@@ -173,11 +194,20 @@ __all__ = [
     "TilePlan",
     "ZarrScratch",
     "apply_blocked",
+    "associate_objects_blocked",
     "available_bytes",
     "binned_scatter",
+    "boundary_distance_blocked",
+    "boxes_blocked",
+    "boxes_from_ledger",
+    "build_cells_blocked",
     "calibrate",
     "calibrated_voxels",
+    "cell_features_blocked",
+    "centroid_distance_table",
+    "centroids_blocked",
     "cgroup_limit_bytes",
+    "containment_blocked",
     "detect_memory_budget",
     "device_name",
     "filter_by_size_blocked",
@@ -195,6 +225,7 @@ __all__ = [
     "load_ledger",
     "load_sparse_ownership",
     "numpy_pad_mode",
+    "object_ids_blocked",
     "otsu_threshold",
     "ownership_blocked",
     "parse_size",
@@ -208,8 +239,11 @@ __all__ = [
     "save_calibration",
     "save_ledger",
     "scan",
+    "score_candidates_blocked",
     "segment_blocked",
     "should_bin",
+    "single_roles_from_links",
     "step_costs",
+    "tile_for_region",
     "tsne_scaled",
 ]

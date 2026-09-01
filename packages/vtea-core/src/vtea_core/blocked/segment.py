@@ -43,7 +43,7 @@ from typing import Any
 import numpy as np
 from scipy import ndimage as ndi
 
-from vtea_core.blocked.executor import read_block
+from vtea_core.blocked.executor import _check_cancelled, read_block
 from vtea_core.blocked.plan import Tile, TilePlan
 from vtea_core.blocked.reconcile import (
     CENTROID,
@@ -118,6 +118,7 @@ def segment_blocked(
     name: str = "labels",
     manifest: Any = None,
     progress: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> BlockedLabels:
     """Segment a volume tile by tile and reconcile the objects across seams.
 
@@ -152,6 +153,7 @@ def segment_blocked(
         name,
         progress,
         manifest,
+        should_stop,
     )
     pairs = _match(
         scratch, fragments, tile_arrays, provisional, effective_plan, policy, spacing
@@ -230,7 +232,17 @@ def _scratch_array(scratch: ZarrScratch, key: str, plan: TilePlan, *, resuming: 
 
 
 def _segment_pass(
-    function, sources, plan, policy, params, provisional, scratch, name, progress, manifest=None
+    function,
+    sources,
+    plan,
+    policy,
+    params,
+    provisional,
+    scratch,
+    name,
+    progress,
+    manifest=None,
+    should_stop=None,
 ) -> tuple[list[Fragment], dict[tuple[int, ...], str]]:
     """Pass 1: segment every tile, number the objects so they cannot
     collide, and catalogue what each tile saw."""
@@ -244,6 +256,9 @@ def _segment_pass(
     for index, tile in enumerate(plan.tiles()):
         if policy.needs_tile_labels:
             tile_arrays[tile.index] = f"{name}__tile{index}"
+        # Between tiles, and after the manifest check so that cancelling
+        # never discards a tile the manifest already accounts for.
+        _check_cancelled(should_stop)
         if manifest is not None and manifest.is_done(tile.index):
             # Already segmented, its labels already in the provisional array
             # and its fragments already read back from the manifest.

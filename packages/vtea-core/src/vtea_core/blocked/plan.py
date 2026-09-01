@@ -268,6 +268,38 @@ def _cost(shape: Sequence[int], bytes_per_voxel: int) -> int:
     return math.prod(shape) * bytes_per_voxel
 
 
+def tile_for_region(
+    region: Sequence[slice], shape: Sequence[int], halo: Sequence[int]
+) -> Tile:
+    """One tile covering an arbitrary region of a dataset.
+
+    A `TilePlan` divides everything; this covers one place, which is what a
+    preview of the part of the image on screen is. The halo is the same
+    halo the protocol would use anywhere else, so trimming the result back
+    to `core` gives exactly what a full run would have written there - a
+    preview that differs from the run at the edges of the view is worse
+    than no preview, because it is the edges that get looked at.
+
+    Regions are clipped to the data and grown by the halo where the data
+    exists; what falls off the outside of the dataset comes back in
+    `pad_width` to be synthesized, exactly as for a planned tile.
+    """
+    if len(region) != len(shape):
+        raise ValueError(
+            f"a region over {len(region)} axes cannot describe data with {len(shape)}"
+        )
+    halo = tuple(halo) + (0,) * (len(shape) - len(halo))
+    core, padded, pad_width = [], [], []
+    for part, extent, pad in zip(region, shape, halo):
+        start = max(0, int(0 if part.start is None else part.start))
+        stop = min(int(extent if part.stop is None else part.stop), int(extent))
+        stop = max(stop, start)
+        core.append(slice(start, stop))
+        padded.append(slice(max(start - pad, 0), min(stop + pad, extent)))
+        pad_width.append((max(pad - start, 0), max((stop + pad) - extent, 0)))
+    return Tile((0,) * len(shape), tuple(core), tuple(padded), tuple(pad_width))
+
+
 def plan_tiles(
     shape: Sequence[int],
     *,

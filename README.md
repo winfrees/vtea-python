@@ -30,7 +30,8 @@ docs/OBJECT_ASSOCIATION.md
                        voxels (planned, under review)
 docs/LARGE_IMAGES.md   Strategy for datasets larger than RAM - memory
                        budgets, tiling, and the rules for objects a tile
-                       boundary cuts in half (planned, under review)
+                       boundary cuts in half (built; awaiting validation on
+                       GPU hardware and real tissue)
 tests/golden/          Golden-dataset parity fixtures (Java vs. Python outputs)
 packages/vtea-core/    Headless analysis library
 packages/vtea-napari/  napari plugin GUI
@@ -71,7 +72,21 @@ The two panes are views of one analysis, sharing a
 builder publishes each run into it, the explorer plots and gates it, and
 hiding or closing either pane loses nothing.
 
-Both are registered as real napari plugin dock widgets, verified by
+**Data larger than memory** runs through the same protocol, a tile at a
+time: `vtea_core.blocked` carries the memory budget, the tile plan, the
+reconciliation of objects a tile boundary cuts in half (four selectable
+strategies, defaulting to overlap matching), streaming measurements,
+scaled estimators, blocked association and cell composition through
+DuckDB. The builder decides from the plan - data that fits runs in memory
+as it always has - shows the budget and what it divided the data into,
+runs off the GUI thread with a Cancel button, and previews the protocol
+over the region on screen. What the numbers are worth is pinned by
+invariance tests: one tile is bit-identical to the whole image, and the
+same objects and measurements come out at 1, 8 and 27 tiles. See
+[`docs/LARGE_IMAGES.md`](docs/LARGE_IMAGES.md), including what still needs
+real GPU hardware and real tissue to validate.
+
+Both panes are registered as real napari plugin dock widgets, verified by
 actually loading them through `napari.Viewer` in tests, not just
 constructing them standalone. See `docs/PORT_PLAN.md`'s "Protocol builder:
 Option A" and "Object Explorer" sections, and `packages/vtea-napari/README.md`,

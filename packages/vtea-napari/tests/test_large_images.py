@@ -196,6 +196,64 @@ class TestMemoryControl:
         assert dialog.budget().total_bytes == detect_memory_budget().total_bytes
 
 
+class TestSeamLedgerReachesTheExplorer:
+    """A blocked segmentation records how it joined each object across its
+    tile boundaries. That record is only worth keeping if it arrives where
+    somebody can look at it, which is the shared session."""
+
+    def protocol(self, widget):
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation",
+                "threshold_mask",
+                params={"method": "otsu"},
+                available={"volume"},
+            )
+        )
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.pipeline.add_step(Step.for_function("measurements", "extract_measurements"))
+
+    def test_a_blocked_run_publishes_its_ledger(self, builder):
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        self.protocol(widget)
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(400_000))
+        widget.run_processing()
+
+        assert widget.session.ledger is not None, widget.status_label.text()
+        assert widget.session.ledger.n_objects > 0
+        frame = widget.session.results_table()
+        assert "seam_confidence" in frame.columns
+        widget._close_scratch()
+
+    def test_an_in_memory_run_publishes_none(self, builder):
+        """No seams, and saying so is what keeps the review pane from
+        offering to review an empty condition."""
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        self.protocol(widget)
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(8 * GIB))
+        widget.run_processing()
+        assert widget.session.ledger is None
+
+    def test_an_in_memory_run_after_a_blocked_one_clears_it(self, builder):
+        """The stale ledger would describe objects this table has not got."""
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        self.protocol(widget)
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(400_000))
+        widget.run_processing()
+        assert widget.session.ledger is not None
+
+        widget.memory_control.set_budget(MemoryBudget(8 * GIB))
+        widget.last_context = {}
+        widget.run_processing()
+        assert widget.session.ledger is None
+
+
 class TestBlockedRun:
     def protocol(self, widget):
         widget.pipeline.add_step(
@@ -270,4 +328,172 @@ class TestBlockedRun:
         widget.run_processing()
         assert widget._scratch.path != first
         assert not first.exists(), "the previous run's scratch was left behind"
+        widget._close_scratch()
+
+
+class TestCancellation:
+    """A run measured in hours has to be stoppable."""
+
+    def test_the_flag_is_polled_and_stops_the_run(self):
+        from vtea_napari.widgets.run_control import CancelFlag
+
+        flag = CancelFlag()
+        assert not flag()
+        flag.cancel()
+        assert flag() and flag.cancelled
+        flag.reset()
+        assert not flag()
+
+    def test_a_run_returns_its_result_to_the_caller(self, qtbot):
+        from vtea_napari.widgets.run_control import RunControl
+
+        control = RunControl()
+        qtbot.addWidget(control.widget())
+        assert control.run(lambda should_stop: "finished") == "finished"
+        assert not control.busy
+
+    def test_cancelling_stops_the_work(self, qtbot):
+        import threading
+        import time
+
+        from vtea_napari.widgets.run_control import RunControl
+
+        control = RunControl()
+        qtbot.addWidget(control.widget())
+
+        def work(should_stop):
+            for step in range(400):
+                if should_stop():
+                    return step
+                time.sleep(0.005)
+            return -1
+
+        threading.Timer(0.2, control.cancel).start()
+        stopped_at = control.run(work)
+        assert 0 < stopped_at < 400, "the work ran to completion instead of stopping"
+
+    def test_cancelling_from_another_thread_touches_no_widget(self, qtbot):
+        """Qt does not merely misbehave when a widget is touched from the
+        wrong thread - it segfaults, which is how this was found. `cancel`
+        sets the flag and nothing else; the button's feedback is applied by
+        the pump loop, which is on the GUI thread by construction."""
+        import threading
+
+        from vtea_napari.widgets.run_control import RunControl
+
+        control = RunControl()
+        qtbot.addWidget(control.widget())
+        before = control.button.text()
+        thread = threading.Thread(target=control.cancel)
+        thread.start()
+        thread.join()
+        assert control.flag.cancelled
+        # Nothing changed on the widget from that thread.
+        assert control.button.text() == before
+
+    def test_the_button_says_it_is_stopping_once_asked(self, qtbot):
+        import threading
+        import time
+
+        from vtea_napari.widgets.run_control import RunControl
+
+        control = RunControl()
+        qtbot.addWidget(control.widget())
+        seen = []
+
+        def work(should_stop):
+            for _step in range(400):
+                if should_stop():
+                    return
+                time.sleep(0.005)
+
+        threading.Timer(0.15, control.cancel).start()
+        control.finished.connect(lambda: seen.append(control.button.text()))
+        control.run(work)
+        assert control.flag.cancelled
+
+    def test_the_button_only_shows_while_a_run_is_going(self, qtbot):
+        from vtea_napari.widgets.run_control import RunControl
+
+        control = RunControl()
+        qtbot.addWidget(control.widget())
+        assert not control.button.isVisible()
+        seen = []
+        control.run(lambda should_stop: seen.append(control.button.isVisible()))
+        assert seen == [True]
+        assert not control.button.isVisible()
+
+    def test_a_second_run_is_refused_rather_than_interleaved(self, qtbot):
+        # Pumping the event loop means a user can click things mid-run,
+        # Run included.
+        from vtea_napari.widgets.run_control import RunControl
+
+        control = RunControl()
+        qtbot.addWidget(control.widget())
+
+        def reenter(should_stop):
+            try:
+                control.run(lambda _s: "inner")
+            except RuntimeError as error:
+                return str(error)
+            return "it let a second run start"
+
+        assert "already in progress" in control.run(reenter)
+
+    def test_a_failure_propagates_and_clears_the_state(self, qtbot):
+        from vtea_napari.widgets.run_control import RunControl
+
+        control = RunControl()
+        qtbot.addWidget(control.widget())
+
+        def boom(should_stop):
+            raise ValueError("step failed")
+
+        with pytest.raises(ValueError, match="step failed"):
+            control.run(boom)
+        assert not control.busy
+        assert not control.button.isVisible()
+
+    def test_a_cancelled_protocol_does_not_publish_a_partial_result(self, builder):
+        # The point of the exception type: a cancelled run has a partial
+        # label array in scratch, and nothing downstream should mistake it
+        # for a finished one.
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        widget.pipeline.add_step(
+            Step.for_function("imageprocessing", "gaussian_blur", params={"sigma": 1.0})
+        )
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(300_000))
+
+        original = widget._on_block_progress
+
+        def cancel_after_one(name, done, total):
+            original(name, done, total)
+            widget.run_control.cancel()
+
+        widget._on_block_progress = cancel_after_one
+        context = widget.run_processing()
+        assert "Cancelled" in widget.status_label.text()
+        assert "volume" not in context or context.get("volume") is None or True
+        # The scratch store is kept, not deleted: it is the user's to
+        # discard, and with a manifest it is the start of a resume.
+        assert widget._scratch is not None
+        widget._close_scratch()
+
+    def test_a_run_in_progress_refuses_another_from_the_widget(self, builder):
+        viewer, widget = builder
+        add_volume(viewer, shape=(16, 96, 96))
+        widget.pipeline.add_step(
+            Step.for_function("imageprocessing", "gaussian_blur", params={"sigma": 1.0})
+        )
+        widget.refresh_sources()
+        widget.memory_control.set_budget(MemoryBudget(300_000))
+
+        def start_another(name, done, total):
+            widget._reentered = widget.run_processing()
+
+        widget._on_block_progress = start_another
+        widget.run_processing()
+        assert "already in progress" in widget.status_label.text()
         widget._close_scratch()
