@@ -356,3 +356,243 @@ class TestPointStyle:
         sizes, _ = widget._point_sizes()
         assert sizes.min() == 20.0
         assert sizes.max() == 40.0
+
+
+class TestAspectRatio:
+    """Item 2: the plot keeps 4:3 whatever the pane does. A plot whose
+    proportions follow the furniture is a plot whose shape is an artefact of
+    how somebody dragged a dock."""
+
+    def test_a_tall_box_letterboxes_the_canvas(self, qtbot):
+        from qtpy.QtWidgets import QWidget
+
+        from vtea_napari.widgets.plot import AspectRatioBox
+
+        box = AspectRatioBox(QWidget())
+        qtbot.addWidget(box)
+        _x, y, width, height = box.child_geometry(800, 800)
+        assert (width, height) == (800, 600)
+        assert width / height == pytest.approx(4 / 3)
+        assert y > 0  # centred in the leftover height
+
+    def test_a_wide_box_pillarboxes_the_canvas(self, qtbot):
+        from qtpy.QtWidgets import QWidget
+
+        from vtea_napari.widgets.plot import AspectRatioBox
+
+        box = AspectRatioBox(QWidget())
+        qtbot.addWidget(box)
+        x, _y, width, height = box.child_geometry(1200, 600)
+        assert (width, height) == (800, 600)
+        assert width / height == pytest.approx(4 / 3)
+        assert x > 0  # centred in the leftover width
+
+    def test_resizing_keeps_the_ratio(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.resize(900, 700)
+        widget.show()
+        qtbot.waitExposed(widget)
+        for size in ((900, 700), (600, 900), (1200, 400)):
+            widget.canvas_box.resize(*size)
+            ratio = widget.canvas.width() / max(widget.canvas.height(), 1)
+            assert ratio == pytest.approx(4 / 3, abs=0.02)
+
+    def test_the_canvas_is_inside_the_box(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        assert widget.canvas.parent() is widget.canvas_box
+
+
+class TestDiscreteLut:
+    """Item 3: a cluster id is not a quantity. A gradient over it puts
+    cluster 2 "between" 1 and 3, which is a statement about a numbering."""
+
+    def _categorical_frame(self):
+        return pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4],
+                "mean": [10.5, 20.25, 30.75, 41.5],
+                "kmeans_1": [0, 1, 2, 1],
+                "in_gate": [True, False, True, False],
+            }
+        )
+
+    def test_a_measurement_is_continuous(self, qtbot):
+        from vtea_napari.widgets.plot import is_discrete
+
+        assert is_discrete(self._categorical_frame()["mean"]) is False
+
+    def test_a_cluster_id_is_discrete(self, qtbot):
+        from vtea_napari.widgets.plot import is_discrete
+
+        assert is_discrete(self._categorical_frame()["kmeans_1"]) is True
+
+    def test_a_boolean_class_is_discrete(self, qtbot):
+        from vtea_napari.widgets.plot import is_discrete
+
+        assert is_discrete(self._categorical_frame()["in_gate"]) is True
+
+    def test_a_whole_numbered_measurement_is_not_mistaken_for_categories(self, qtbot):
+        """A voxel count is whole numbers too - what makes an id an id is
+        that it starts at 0 (or -1) and stays small."""
+        from vtea_napari.widgets.plot import is_discrete
+
+        assert is_discrete(pd.Series([120.0, 340.0, 512.0])) is False
+
+    def test_the_mode_overrides_the_heuristic_both_ways(self, qtbot):
+        from vtea_napari.widgets.plot import LUT_CONTINUOUS, LUT_DISCRETE, is_discrete
+
+        assert is_discrete(pd.Series([0, 1, 2]), LUT_CONTINUOUS) is False
+        assert is_discrete(pd.Series([1.5, 2.5]), LUT_DISCRETE) is True
+
+    def test_a_discrete_column_gets_a_legend_and_no_colorbar(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._categorical_frame())
+        widget.color_combo.setCurrentText("kmeans_1")
+
+        assert widget.color_is_discrete() is True
+        assert widget._colorbar is None
+        assert widget.ax.get_legend() is not None
+
+    def test_a_continuous_column_still_gets_its_colorbar(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._categorical_frame())
+        widget.color_combo.setCurrentText("mean")
+
+        assert widget.color_is_discrete() is False
+        assert widget._colorbar is not None
+
+    def test_forcing_continuous_brings_the_colorbar_back(self, qtbot):
+        from vtea_napari.widgets.plot import LUT_CONTINUOUS
+
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._categorical_frame())
+        widget.color_combo.setCurrentText("kmeans_1")
+        widget.set_lut_mode(LUT_CONTINUOUS)
+
+        assert widget._colorbar is not None
+
+    def test_the_analysis_can_declare_a_column_categorical(self, qtbot):
+        """The feature catalog knows a column came from a clustering step
+        even when its values would not give it away."""
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        frame = self._categorical_frame()
+        frame["odd_ids"] = [100, 200, 300, 200]
+        widget.set_data(frame)
+        widget.color_combo.setCurrentText("odd_ids")
+        assert widget.color_is_discrete() is False
+
+        widget.set_discrete_columns({"odd_ids"})
+        assert widget.color_is_discrete() is True
+
+    def test_one_colour_per_level(self, qtbot):
+        from vtea_napari.widgets.plot import discrete_colors
+
+        colors = discrete_colors([0, 1, 2], "tab10")
+        assert len(colors) == 3
+        assert len(set(map(tuple, [c[:3] for c in colors]))) == 3
+
+    def test_a_gradient_is_sampled_across_its_whole_range(self, qtbot):
+        """Ten clusters get ten different colours, not ten neighbouring
+        shades of the same one."""
+        from vtea_napari.widgets.plot import discrete_colors
+
+        colors = discrete_colors(list(range(4)), "viridis")
+        assert len({tuple(color[:3]) for color in colors}) == 4
+
+    def test_the_lut_mode_is_remembered_with_the_view(self, qtbot):
+        from vtea_napari.widgets.plot import LUT_DISCRETE
+
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._categorical_frame())
+        widget.set_lut_mode(LUT_DISCRETE)
+        state = widget.view_state()
+
+        restored = ScatterPlotWidget()
+        qtbot.addWidget(restored)
+        restored.set_data(self._categorical_frame())
+        restored.apply_view_state(state)
+        assert restored.lut_mode == LUT_DISCRETE
+
+
+class TestRings:
+    """Item 4's plot half: objects inside a region painted on the image are
+    ringed, in that region's own colour."""
+
+    def _frame(self):
+        return pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4],
+                "mean": [1.0, 2.0, 3.0, 4.0],
+                "count": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+
+    def _ring_collections(self, widget):
+        # A ring scatter is the one drawn without a face colour.
+        return [
+            collection
+            for collection in widget.ax.collections
+            if len(getattr(collection, "get_facecolors", lambda: [])()) == 0
+        ]
+
+    def test_no_rings_by_default(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._frame())
+        assert self._ring_collections(widget) == []
+
+    def test_one_ring_group_per_region(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._frame())
+        widget.set_rings([0, 1, 2, 1], {1: "#ff0000", 2: "#00ff00"})
+        assert len(self._ring_collections(widget)) == 2
+
+    def test_objects_outside_every_region_are_not_ringed(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._frame())
+        widget.set_rings([0, 0, 0, 1], {1: "#ff0000"})
+        ringed = self._ring_collections(widget)
+        assert len(ringed) == 1
+        assert len(ringed[0].get_offsets()) == 1
+
+    def test_a_single_colour_rings_everything_in_it(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._frame())
+        widget.set_rings([1, 1, 0, 2], "#123456")
+        assert len(self._ring_collections(widget)) == 2  # one group per region id
+
+    def test_rings_are_drawn_larger_than_their_points(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._frame())
+        widget.set_rings([1, 1, 1, 1], {1: "#ff0000"})
+        ring = self._ring_collections(widget)[0]
+        assert ring.get_sizes()[0] > widget.point_size
+
+    def test_clearing_them(self, qtbot):
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._frame())
+        widget.set_rings([1, 1, 1, 1], {1: "#ff0000"})
+        widget.set_rings(None)
+        assert self._ring_collections(widget) == []
+
+    def test_rings_survive_a_colour_encoding(self, qtbot):
+        """The LUT owns the fill and the image gate owns the outline, so
+        both can be read at once."""
+        widget = ScatterPlotWidget()
+        qtbot.addWidget(widget)
+        widget.set_data(self._frame())
+        widget.set_rings([1, 0, 1, 0], {1: "#ff0000"})
+        widget.color_combo.setCurrentText("mean")
+        assert len(self._ring_collections(widget)) == 1

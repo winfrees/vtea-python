@@ -564,11 +564,26 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             notes="fitted on a subsample and extended with UMAP.transform",
         ),
     ),
-    ("gates", "polygon_gate"): StepIO(
-        ("x", "y", "vertices"), "gate", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
+    # Classes read the measurement *table*, not a feature matrix: a class is
+    # written in terms of column names ("mean_ch2 between 50 and 150",
+    # "roi_tubules AND NOT kmeans_1 == 3"), and the matrix conversion a
+    # clustering step wants would throw the names away. So no
+    # `feature_input` here - the DataFrame arrives as it is.
+    ("classes", "class_from_range"): StepIO(
+        ("data",), "class", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
     ),
-    ("gates", "rectangle_gate"): StepIO(
-        ("x", "y"), "gate", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
+    ("classes", "class_from_values"): StepIO(
+        ("data",), "class", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
+    ),
+    ("classes", "class_from_expression"): StepIO(
+        ("data",), "class", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
+    ),
+    ("classes", "label_set"): StepIO(
+        ("data",), "label_set", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
+    ),
+    # Two sets in, one hierarchy out - the second refines the first.
+    ("classes", "combine_labels"): StepIO(
+        ("label_set", "other"), "label_set", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
     ),
     ("classification", "class_map"): StepIO(
         ("labels", "object_ids", "class_labels"),

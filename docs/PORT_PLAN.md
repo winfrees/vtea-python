@@ -146,6 +146,52 @@ protocol has more than one segmentation in it.
   that is missing because a dependency is missing looks, from the menu,
   exactly like a step VTEA does not have.
 
+## Classes, label sets and image gates (decided)
+
+The second round of the same review, and the one that changes what the
+`gates` protocol category *is*.
+
+- **The gate steps could never have worked.** `gates.polygon_gate` and
+  `gates.rectangle_gate` were registered as protocol steps, but their inputs
+  are `x`, `y` and `vertices` - and no step in a protocol produces vertices.
+  The only way to configure one was to type polygon coordinates into a form.
+  Drawing a polygon is a gesture over a plot, and it stays in the Object
+  Explorer where the mouse is. The category is replaced by `classes`, which
+  carries the half a protocol *can* re-run: the rule.
+- **A class is a rule, and a label set is what an object is.** Three forms,
+  as the request names them: a range of a feature, a single gate or ROI or
+  cluster id, and any boolean combination of those (AND / OR / NOT / XOR /
+  XNOR / NAND / NOR). All three are one small language
+  (`vtea_core.classes.expression`), parsed rather than `eval`'d - these
+  definitions live in saved protocol files that get mailed between labs, and
+  `eval` on one is a remote-code-execution hole with a friendly name.
+  Objects then carry *n* labels, grouped into named sets, because a nucleus
+  is a cell and an immune cell and a CD3+ T cell and inside the tubule ROI
+  simultaneously, and forcing a choice throws away the structure the tissue
+  has. Two sets cross into a hierarchy ("immune > CD3+"), keeping the
+  objects the finer set says nothing about, since dropping them would change
+  every proportion computed afterwards.
+- **Image gates.** A region painted on a napari Labels layer answers the
+  question a scatter plot cannot: not "which objects are bright" but "which
+  objects are in *there*". It is answered per object with the region's id
+  rather than a boolean - several tubules are several populations, and an id
+  joins to the layer's own colours - by centroid (one voxel read per object,
+  free at any volume) or by majority overlap. The membership lives on the
+  shared session, not in the table, because a painted region is an input to
+  the analysis and a re-run must not discard it.
+- **Two LUTs, because there are two kinds of column.** A gradient over
+  cluster ids asserts that cluster 2 is between 1 and 3. Categorical columns
+  get a distinct colour each and a legend; which columns those are comes
+  from the feature catalog, with a cautious fallback that reads only
+  id-shaped numbers (whole, few, starting at 0 or -1) as categories.
+- **A highlight is the volume.** The gate highlight was built from the label
+  image as-is, which for a channel-sliced segmentation has one axis fewer
+  than the image - and napari right-aligns arrays of differing ndim, so a
+  z-stack's leading axis landed on the *channel* axis and the highlight
+  read as one flat section. It is re-aligned to the source, carries the
+  source layer's scale and translate, and is computed lazily above a few
+  million voxels so a dozen gates is not a dozen copies of the segmentation.
+
 ## Phased roadmap
 
 | Phase | Content | Est. effort |

@@ -62,7 +62,9 @@ class StepCost:
 
 # Categories whose steps all consume the per-object table rather than the
 # image, used to cost a step nobody has timed - see cost_for.
-TABLE_CATEGORIES = frozenset({"clustering", "reduction", "gates", "association", "cells"})
+TABLE_CATEGORIES = frozenset(
+    {"clustering", "reduction", "classes", "gates", "association", "cells"}
+)
 
 # A step nobody has timed: assume it walks its input once, cheaply, and be
 # wrong by a small factor rather than by an order of magnitude.
@@ -139,8 +141,14 @@ STEP_COSTS: dict[tuple[str, str], StepCost] = {
     ("reduction", "umap"): StepCost(
         superlinear=True, notes="a kNN graph, then a stochastic layout optimisation"
     ),
-    ("gates", "polygon_gate"): StepCost(per_object_ns=200.0),
-    ("gates", "rectangle_gate"): StepCost(per_object_ns=100.0),
+    # A class is a comparison per object, or a handful of them; a label set
+    # is a column stack. Cheap enough that the bar is gone before it is
+    # seen, which is itself the right thing to report.
+    ("classes", "class_from_range"): StepCost(per_object_ns=120.0),
+    ("classes", "class_from_values"): StepCost(per_object_ns=150.0),
+    ("classes", "class_from_expression"): StepCost(per_object_ns=300.0),
+    ("classes", "label_set"): StepCost(per_object_ns=200.0),
+    ("classes", "combine_labels"): StepCost(per_object_ns=400.0),
     ("classification", "class_map"): StepCost(per_voxel_ns=10.0),
     ("classification", "train_classifier"): StepCost(superlinear=True, notes="epochs over crops"),
     ("classification", "predict"): StepCost(per_object_ns=200000.0, notes="a forward pass per crop"),

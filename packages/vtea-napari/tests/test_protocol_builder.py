@@ -93,13 +93,16 @@ class TestAddStep:
         # No "classification": its steps need crops, a model and training
         # labels, none of which any protocol step produces, so every one of
         # them could only ever fail with "needs context key(s) [...]".
+        # "classes" rather than "gates": the polygon and rectangle steps are
+        # gone from the protocol (they need vertices nothing produces), and
+        # what is left is the rule half - see vtea_core.classes.
         assert analysis == {
             "measurements",
             "association",
             "cells",
             "clustering",
             "reduction",
-            "gates",
+            "classes",
         }
         assert processing.isdisjoint(analysis)
 
@@ -1619,14 +1622,14 @@ class TestTabularStepsShowNoChannel:
         assert summarize_channel(step) == "3 feature(s)"
 
     def test_a_step_with_no_channel_and_no_features_says_no_channel(self, qtbot):
-        """A gate reads a table and a derived segmentation reads a label
+        """A class reads a table and a derived segmentation reads a label
         image; neither has a channel, and neither reads "the feature
         table" in the sense the clustering steps do."""
         from vtea_core.workflow import Step
 
         from vtea_napari.widgets.step_card import summarize_channel
 
-        assert summarize_channel(Step.for_function("gates", "polygon_gate")) == "no channel"
+        assert summarize_channel(Step.for_function("classes", "class_from_range")) == "no channel"
         assert summarize_channel(Step.for_function("segmentation", "label_ring")) == "no channel"
 
     def test_a_clustering_step_runs_on_the_feature_table_from_every_channel(self, qtbot):
@@ -3339,3 +3342,188 @@ class TestNewAnalysisSteps:
         table = widget.results_table()
         assert step.name in table.columns
         assert table[step.name].nunique() == 2
+
+
+class TestClassSteps:
+    """Item 5: the gates category is now `classes` - the rule half of
+    gating, which is the half a protocol can carry and re-run."""
+
+    def _measured(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        volume = np.zeros((16, 16))
+        volume[2:6, 2:6] = 100.0
+        volume[10:14, 10:14] = 200.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.measure_all_check.setChecked(False)
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "measurements",
+                "extract_measurements",
+                available={"labels", "intensity", "spacing"},
+            )
+        )
+        widget.run_processing()
+        widget.run_single_step(widget.analysis_pipeline.steps[0])
+        return widget
+
+    def _add_class(self, widget, function_name, **params):
+        from vtea_core.workflow import Step
+
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "classes", function_name, params=params, taken_names=widget.step_names()
+            )
+        )
+        widget.run_single_step(step)
+        return step
+
+    def test_the_classes_category_is_offered_and_the_gate_steps_are_gone(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText("classes")
+        offered = {stack.function_combo.itemText(i) for i in range(stack.function_combo.count())}
+        assert {"class_from_range", "class_from_expression", "label_set"} <= offered
+
+        categories = {
+            stack.category_combo.itemText(i) for i in range(stack.category_combo.count())
+        }
+        assert "gates" not in categories
+
+    def test_the_polygon_gate_is_still_there_for_the_explorer(self, qtbot):
+        """Removed from the protocol menu, not from the library: a polygon
+        is drawn with a mouse, and that is what the Object Explorer does."""
+        from vtea_core.gates import polygon_gate, rectangle_gate
+
+        assert callable(polygon_gate) and callable(rectangle_gate)
+
+    def test_a_range_class_becomes_a_column_of_the_data(self, qtbot):
+        widget = self._measured(qtbot)
+        step = self._add_class(widget, "class_from_range", column="mean", minimum=150.0)
+
+        table = widget.results_table()
+        assert step.name in table.columns
+        assert list(table[step.name]) == [False, True]
+
+    def test_a_class_from_a_cluster_id(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._measured(qtbot)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        widget.run_single_step(cluster)
+
+        step = self._add_class(widget, "class_from_values", column=cluster.name, values="0")
+        assert widget.results_table()[step.name].sum() == 1
+
+    def test_a_class_can_combine_a_gate_with_a_range(self, qtbot):
+        """The request's case: gates, ROIs and clustering outputs combined
+        with boolean logic. A gate is drawn in the explorer, so it reaches a
+        protocol step as a column of the table it is handed."""
+        import numpy as np
+        from vtea_core.gates import Gate
+
+        widget = self._measured(qtbot)
+        frame = widget.results_table()
+        widget.session.gate_set.add(
+            Gate(
+                name="bright",
+                x_axis="mean",
+                y_axis="count",
+                vertices=np.array([[150.0, 0.0], [250.0, 0.0], [250.0, 1e6], [150.0, 1e6]]),
+            )
+        )
+
+        step = self._add_class(
+            widget, "class_from_expression", expression="gate_bright AND mean > 100"
+        )
+        assert list(widget.results_table()[step.name]) == [False, True]
+
+    def test_a_definition_that_cannot_be_read_is_reported_not_raised(self, qtbot):
+        widget = self._measured(qtbot)
+        self._add_class(widget, "class_from_expression", expression="nonsense_column")
+        assert "no column" in widget.status_label.text()
+
+    def test_a_class_adds_no_layer(self, qtbot):
+        widget = self._measured(qtbot)
+        before = len(widget.viewer.layers)
+        self._add_class(widget, "class_from_range", column="mean", minimum=150.0)
+        assert len(widget.viewer.layers) == before
+
+    def test_a_label_set_groups_the_classes(self, qtbot):
+        widget = self._measured(qtbot)
+        bright = self._add_class(widget, "class_from_range", column="mean", minimum=150.0)
+        dim = self._add_class(widget, "class_from_range", column="mean", maximum=150.0)
+
+        step = self._add_class(widget, "label_set", name="populations")
+
+        table = widget.results_table()
+        # One boolean column per label, plus the set's own code column.
+        assert f"{step.name}.{bright.name}" in table.columns
+        assert f"{step.name}.{dim.name}" in table.columns
+        assert list(table[step.name]) == [1, 0]
+
+    def test_the_log_says_how_the_labels_came_out(self, qtbot):
+        widget = self._measured(qtbot)
+        self._add_class(widget, "class_from_range", column="mean", minimum=150.0)
+        self._add_class(widget, "label_set", name="populations")
+        assert "label(s) over 2 objects" in widget.status_label.text()
+
+    def test_an_object_can_carry_more_than_one_label(self, qtbot):
+        widget = self._measured(qtbot)
+        self._add_class(widget, "class_from_range", column="mean", minimum=50.0)
+        self._add_class(widget, "class_from_range", column="count", minimum=1.0)
+        self._add_class(widget, "label_set", name="populations")
+        assert "with more than one label" in widget.status_label.text()
+
+    def test_two_label_sets_combine_into_a_hierarchy(self, qtbot):
+        from vtea_core.classes import LabelSet
+        from vtea_core.workflow import Step
+
+        widget = self._measured(qtbot)
+        bright = self._add_class(widget, "class_from_range", column="mean", minimum=150.0)
+        big = self._add_class(widget, "class_from_range", column="count", minimum=1.0)
+
+        coarse = self._add_class(
+            widget, "label_set", classes=bright.name, name="populations"
+        )
+        fine = self._add_class(widget, "label_set", classes=big.name, name="fine")
+
+        combined = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "classes",
+                "combine_labels",
+                available=set(widget.last_context),
+                taken_names=widget.step_names(),
+                params={"mode": "cross", "name": "types"},
+            )
+        )
+        combined.input_keys["label_set"] = coarse.name
+        combined.input_keys["other"] = fine.name
+        widget.run_single_step(combined)
+
+        result = widget.last_context[combined.name]
+        assert isinstance(result, LabelSet)
+        assert any(">" in name for name in result.names)
+        assert result.parent == "populations"
+
+    def test_the_hierarchy_reaches_the_plot_as_a_categorical_column(self, qtbot):
+        widget = self._measured(qtbot)
+        self._add_class(widget, "class_from_range", column="mean", minimum=150.0)
+        step = self._add_class(widget, "label_set", name="populations")
+
+        explorer = _explorer_for(widget, qtbot)
+        assert step.name in _axis_choices(explorer)

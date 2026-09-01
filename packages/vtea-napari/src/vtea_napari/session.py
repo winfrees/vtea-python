@@ -18,7 +18,7 @@ restored into (see docs/SAVING_AND_ARCHIVING.md).
 from __future__ import annotations
 
 import weakref
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -31,6 +31,24 @@ from vtea_core.objects import AssociationSet, CellCollection, ObjectRef
 from vtea_core.workflow import Pipeline
 
 OBJECT_TABLE = "Objects"
+
+# What a feature catalog entry's `measurement` says when the column holds a
+# category rather than a quantity - the columns a discrete LUT is for.
+CATEGORICAL_MEASUREMENTS = frozenset({"cluster assignment", "class", "label set"})
+
+# The prefix a gate's membership column gets when a gate is handed to a
+# protocol step - see gate_columns.
+GATE_COLUMN_PREFIX = "gate_"
+
+
+def gate_column_name(name: str) -> str:
+    """A gate's name as a column a class definition can refer to."""
+    cleaned = "".join(
+        character if (character.isalnum() or character == "_") else "_" for character in str(name)
+    )
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return f"{GATE_COLUMN_PREFIX}{cleaned.strip('_') or 'gate'}"
 
 
 @dataclass
@@ -106,6 +124,13 @@ class AnalysisSession(QObject):
         # on the session rather than in the builder so the explorer can
         # review a seam without the builder being open.
         self.ledger = None
+        # Image gates: which region of a napari Labels layer each object
+        # falls in, keyed by the column it is published under and indexed by
+        # object id. Held here rather than written into the table because
+        # the builder rebuilds the table on every run, and a region somebody
+        # painted has to survive that - it is an input to the analysis, not
+        # an output of it.
+        self.image_gates: dict[str, pd.Series] = {}
         # Links a person reassigned or broke by hand, child -> parent (or
         # None for "no parent"). Held here rather than only on the
         # AssociationSet a run produced, because re-running the association
@@ -134,8 +159,14 @@ class AnalysisSession(QObject):
         since they are drawn on features that still exist.
         """
         self.context = context
+        table = self.apply_image_gates(table)
         self._table = table
-        published = dict(tables or {})
+        published = {
+            name: replace(view, frame=self.apply_image_gates(view.frame))
+            if view.id_column == "object_id"
+            else view
+            for name, view in (tables or {}).items()
+        }
         if table is not None:
             published.setdefault(OBJECT_TABLE, TableView(table))
         for name, view in published.items():
@@ -148,6 +179,78 @@ class AnalysisSession(QObject):
                 next(iter(self.tables), OBJECT_TABLE)
             )
         self.data_changed.emit()
+
+    # -- image gates ------------------------------------------------------
+
+    def set_image_gate(self, column: str, object_ids, values) -> None:
+        """Record which region of a painted layer each object is in.
+
+        Kept as a Series indexed by object id rather than a bare array, so
+        it survives a re-run that adds or drops objects: the ones it still
+        knows about keep their region, and the rest come back as "in none"
+        instead of silently shifting by a row.
+        """
+        self.image_gates[column] = pd.Series(
+            np.asarray(values), index=np.asarray(object_ids), name=column
+        )
+
+    def clear_image_gate(self, column: str | None = None) -> None:
+        if column is None:
+            self.image_gates.clear()
+        else:
+            self.image_gates.pop(column, None)
+
+    def apply_image_gates(self, frame: pd.DataFrame | None) -> pd.DataFrame | None:
+        """Put the image-gate columns back onto a freshly built table."""
+        if frame is None or not self.image_gates or "object_id" not in frame.columns:
+            return frame
+        frame = frame.copy()
+        ids = frame["object_id"]
+        for column, values in self.image_gates.items():
+            frame[column] = ids.map(values).fillna(0).to_numpy()
+        return frame
+
+    def gate_columns(self, frame: pd.DataFrame | None = None) -> dict[str, np.ndarray]:
+        """Each gate's membership as a named boolean column.
+
+        This is how a gate reaches a *protocol* step: a class definition
+        says `gate_bright AND NOT roi_tubule`, and the class step is handed
+        a table with those columns in it. The name is sanitised so it can be
+        typed into a definition without backticks.
+        """
+        frame = self.results_table() if frame is None else frame
+        if frame is None:
+            return {}
+        gate_set = self.gate_set
+        columns: dict[str, np.ndarray] = {}
+        for gate in gate_set:
+            if gate.x_axis not in frame.columns or gate.y_axis not in frame.columns:
+                continue
+            columns[gate_column_name(gate.name)] = gate_set.mask(gate.id, frame)
+        return columns
+
+    def categorical_columns(self, frame: pd.DataFrame | None = None) -> set[str]:
+        """Columns that hold categories rather than measurements.
+
+        Read from the feature catalog - which records the step that produced
+        each column - rather than guessed from the values, so a clustering's
+        output is coloured as clusters even when its ids happen to look like
+        a measurement.
+        """
+        names = {
+            descriptor.name
+            for descriptor in self.feature_catalog
+            if descriptor.measurement in CATEGORICAL_MEASUREMENTS
+        }
+        names |= set(self.image_gates)
+        frame = self.results_table() if frame is None else frame
+        if frame is not None:
+            names |= {
+                str(column)
+                for column in frame.columns
+                if pd.api.types.is_bool_dtype(frame[column])
+            }
+        return names
 
     def table_names(self) -> list[str]:
         """The tables on offer, the per-object one first."""
