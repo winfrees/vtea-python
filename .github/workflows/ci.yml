@@ -43,6 +43,26 @@ jobs:
       - name: Test
         run: pytest packages/vtea-core -v
 
+  test-analysis-extras:
+    # Separate job for the same reason test-deeplearning is one: umap-learn
+    # pulls in numba/llvmlite and the graph clustering needs igraph, none of
+    # which the rest of vtea-core wants. The tests for those steps skip
+    # themselves without the backends (pytest.importorskip), so test-core
+    # still covers everything else - this job is what actually runs a UMAP
+    # projection and a Leiden partition.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install vtea-core with the umap and graph extras
+        run: pip install -e "packages/vtea-core[dev,umap,graph]"
+      - name: Lint
+        run: ruff check packages/vtea-core/src
+      - name: Test
+        run: pytest packages/vtea-core -v
+
   test-golden-harness:
     runs-on: ubuntu-latest
     steps:

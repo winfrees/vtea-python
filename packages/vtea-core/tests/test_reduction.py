@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 
 from vtea_core.reduction import isomap, laplacian_eigenmap, pca, pca_explained_variance, tsne
+from vtea_core.reduction import umap as umap_projection
 
 
 def make_correlated_data(seed=0, n=50):
@@ -54,3 +56,34 @@ class TestTSNE:
         a = tsne(data, n_components=2, perplexity=5, random_state=0)
         b = tsne(data, n_components=2, perplexity=5, random_state=0)
         np.testing.assert_array_equal(a, b)
+
+
+class TestUMAP:
+    def test_output_shape(self):
+        umap = pytest.importorskip("umap")  # noqa: F841 - umap-learn is optional
+        data = make_correlated_data(n=30)
+        embedding = umap_projection(data, n_components=2, n_neighbors=5, random_state=0)
+        assert embedding.shape == (30, 2)
+
+    def test_deterministic_with_fixed_random_state(self):
+        pytest.importorskip("umap")
+        data = make_correlated_data(n=30)
+        first = umap_projection(data, n_components=2, n_neighbors=5, random_state=0)
+        second = umap_projection(data, n_components=2, n_neighbors=5, random_state=0)
+        np.testing.assert_allclose(first, second)
+
+    def test_a_missing_umap_learn_says_how_to_install_it(self, monkeypatch):
+        """The step is in the menu whether or not umap-learn is installed,
+        so the failure it gives when it is not has to be the instruction."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def without_umap(name, *args, **kwargs):
+            if name == "umap":
+                raise ImportError("no module named umap")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_umap)
+        with pytest.raises(ImportError, match="vtea-core\\[umap\\]"):
+            umap_projection(make_correlated_data(n=10))

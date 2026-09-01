@@ -1,3 +1,4 @@
+import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QLabel, QPushButton
 
@@ -1150,7 +1151,10 @@ class TestPlotIsFedByMeasurements:
         widget.analysis_stack._add_step_from_selection()
 
         widget.run_processing()
-        widget.run_single_step(widget.analysis_pipeline.steps[0])
+        # The step this test added by hand, which is now the second one in
+        # the pane: a segmentation added from the menu already raises a
+        # measurement step of its own (see TestMeasuringEverySegmentation).
+        widget.run_single_step(widget.analysis_pipeline.steps[-1])
 
         axes = _axis_choices(_explorer_for(widget, qtbot))
         assert {"mean", "count", "sum", "stddev"} <= axes
@@ -2712,3 +2716,626 @@ class TestManualDecisionsSurviveARerun:
         links = widget.last_context[associate.name]
         assert links.parent_of(child) is None
         assert child in links.unassigned
+
+
+class TestMeasuringEverySegmentation:
+    """Item 1: a protocol rarely has one segmentation. A nucleus, a ring
+    derived from it - each is a population of objects, and each is measured,
+    under the segmentation step's own name."""
+
+    def _builder(self, qtbot):
+        import numpy as np
+
+        viewer = _model_viewer()
+        volume = np.zeros((16, 16))
+        volume[2:6, 2:6] = 100.0
+        volume[10:14, 10:14] = 100.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        return widget
+
+    def _add(self, qtbot, widget, category, function_name):
+        stack = widget.processing_stack
+        stack.category_combo.setCurrentText(category)
+        stack.function_combo.setCurrentText(function_name)
+        _click_button(qtbot, stack, "Add Step")
+        return widget.pipeline.steps[-1]
+
+    def _segmented(self, qtbot, widget):
+        threshold = self._add(qtbot, widget, "segmentation", "threshold_mask")
+        threshold.params = {"method": "fixed", "value": 50.0}
+        return self._add(qtbot, widget, "segmentation", "label_components")
+
+    def test_a_segmentation_added_from_the_menu_is_measured(self, qtbot):
+        widget = self._builder(qtbot)
+        nuclei = self._segmented(qtbot, widget)
+
+        measurements = [
+            step for step in widget.analysis_pipeline.steps if step.output_key == "measurements"
+        ]
+        assert [step.name for step in measurements] == [f"measure_{nuclei.name}"]
+        assert measurements[0].input_keys["labels"] == nuclei.name
+
+    def test_a_derived_ring_is_measured_too(self, qtbot):
+        """The case the whole thing is for: the ring is a second population,
+        and before this it was silently never measured."""
+        widget = self._builder(qtbot)
+        nuclei = self._segmented(qtbot, widget)
+        ring = self._add(qtbot, widget, "segmentation", "label_ring")
+
+        measured = {step.auto_for for step in widget.analysis_pipeline.steps if step.auto_for}
+        assert measured == {nuclei.name, ring.name}
+
+    def test_only_the_segmentations_get_one(self, qtbot):
+        """A threshold produces a mask, not objects; measuring it would
+        measure one object the size of the image."""
+        widget = self._builder(qtbot)
+        self._segmented(qtbot, widget)
+        assert len(widget.analysis_pipeline.steps) == 1
+
+    def test_deleting_a_segmentation_takes_its_measurement_with_it(self, qtbot):
+        widget = self._builder(qtbot)
+        self._segmented(qtbot, widget)
+        ring = self._add(qtbot, widget, "segmentation", "label_ring")
+
+        widget.processing_stack._delete_step(ring)
+
+        assert [step.auto_for for step in widget.analysis_pipeline.steps if step.auto_for] == [
+            "label_components_1"
+        ]
+
+    def test_renaming_a_segmentation_renames_its_measurement(self, qtbot):
+        widget = self._builder(qtbot)
+        nuclei = self._segmented(qtbot, widget)
+
+        widget.processing_stack.rename_step(nuclei, "podocytes")
+
+        measure = widget.analysis_pipeline.steps[0]
+        assert measure.name == "measure_podocytes"
+        assert measure.auto_for == "podocytes"
+        assert measure.input_keys["labels"] == "podocytes"
+
+    def test_a_rename_does_not_raise_a_second_measurement(self, qtbot):
+        widget = self._builder(qtbot)
+        nuclei = self._segmented(qtbot, widget)
+        widget.processing_stack.rename_step(nuclei, "podocytes")
+        widget.sync_measurement_steps()
+        assert len(widget.analysis_pipeline.steps) == 1
+
+    def test_a_rename_follows_the_result_and_the_catalog(self, qtbot):
+        widget = self._builder(qtbot)
+        nuclei = self._segmented(qtbot, widget)
+        previous = nuclei.name
+        widget.run_processing()
+        widget.run_single_step(widget.analysis_pipeline.steps[0])
+        assert previous in widget.last_context
+
+        widget.processing_stack.rename_step(nuclei, "podocytes")
+
+        assert "podocytes" in widget.last_context
+        assert previous not in widget.last_context
+        segmentations = {
+            descriptor.segmentation for descriptor in widget.session.feature_catalog
+        }
+        assert segmentations == {"podocytes"}
+
+    def test_a_hand_added_measurement_is_not_duplicated(self, qtbot):
+        """Somebody who has already measured this segmentation has answered
+        the question; a second step would double every row of the table."""
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        widget.measure_all_check.setChecked(False)
+        nuclei = self._segmented(qtbot, widget)
+        mine = widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements", name="mine")
+        )
+        mine.input_keys["labels"] = nuclei.name
+
+        widget.measure_all_check.setChecked(True)
+
+        assert [step.name for step in widget.analysis_pipeline.steps] == ["mine"]
+
+    def test_the_switch_turns_it_off(self, qtbot):
+        widget = self._builder(qtbot)
+        widget.measure_all_check.setChecked(False)
+        self._segmented(qtbot, widget)
+        assert widget.analysis_pipeline.steps == []
+
+    def test_each_segmentation_s_table_is_published_under_its_own_name(self, qtbot):
+        """A ring's rows are rings. They cannot be columns of the nuclei
+        table, so each measurement travels as its own table."""
+        widget = self._builder(qtbot)
+        nuclei = self._segmented(qtbot, widget)
+        ring = self._add(qtbot, widget, "segmentation", "label_ring")
+        ring.params = {"thickness": 1.0}
+        widget.run_processing()
+        for step in list(widget.analysis_pipeline.steps):
+            widget.run_single_step(step)
+
+        names = set(widget.session.table_names())
+        assert {f"measure_{nuclei.name}", f"measure_{ring.name}"} <= names
+        rings = widget.session.results_table(f"measure_{ring.name}")
+        assert rings is not None and len(rings) == 2
+
+    def test_one_segmentation_publishes_one_table(self, qtbot):
+        """With a single measurement step the per-object table already is
+        that table; offering it twice would be a choice with no difference
+        behind it."""
+        widget = self._builder(qtbot)
+        self._segmented(qtbot, widget)
+        widget.run_processing()
+        widget.run_single_step(widget.analysis_pipeline.steps[0])
+        assert widget.session.table_names() == ["Objects"]
+
+
+class TestRecalculationOnASettingChange:
+    """Item 1's last clause: change a setting in a segmentation step and
+    what was computed from the old one is no longer that step's result."""
+
+    def _builder(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        volume = np.zeros((16, 16))
+        volume[2:6, 2:6] = 100.0
+        volume[10:14, 10:14] = 30.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "measurements",
+                "extract_measurements",
+                available={"labels", "intensity", "spacing"},
+            )
+        )
+        widget.run_processing()
+        widget.run_single_step(widget.analysis_pipeline.steps[0])
+        return widget
+
+    def test_a_changed_threshold_re_runs_the_segmentation_and_the_measurements(self, qtbot):
+        widget = self._builder(qtbot)
+        assert len(widget.last_context["measurements"]) == 1
+
+        threshold = widget.pipeline.steps[0]
+        threshold.params = {"method": "fixed", "value": 20.0}
+        widget.recalculate_from(threshold)
+
+        assert widget.last_context["labels"].max() == 2
+        assert len(widget.last_context["measurements"]) == 2
+
+    def test_editing_a_step_in_the_gui_recalculates(self, qtbot, monkeypatch):
+        from qtpy.QtWidgets import QDialog
+
+        from vtea_napari.widgets import protocol_builder as module
+
+        widget = self._builder(qtbot)
+
+        class LowerThreshold:
+            def __init__(self, step, *args, **kwargs):
+                self.step = step
+
+            def exec(self):
+                return QDialog.DialogCode.Accepted
+
+            def updated_params(self):
+                return {"method": "fixed", "value": 20.0}
+
+            def updated_channel(self):
+                return None
+
+            def updated_name(self):
+                return self.step.name
+
+            def updated_features(self):
+                return []
+
+            def updated_input_keys(self):
+                return dict(self.step.input_keys)
+
+        monkeypatch.setattr(module, "EditStepDialog", LowerThreshold)
+        widget.processing_stack._edit_step(widget.pipeline.steps[0])
+
+        assert len(widget.last_context["measurements"]) == 2
+
+    def test_a_rename_alone_does_not_recalculate(self, qtbot):
+        """Renaming changes what a result is called, not what it is - and an
+        hour of watershed is not something to re-run over a better name."""
+        widget = self._builder(qtbot)
+        before = widget.last_context["labels"]
+
+        widget.processing_stack.rename_step(widget.pipeline.steps[1], "nuclei")
+
+        assert widget.last_context["nuclei"] is before
+
+    def test_a_step_that_has_never_run_is_left_alone(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        assert widget.recalculate_from(cluster) == []
+        assert cluster.name not in widget.last_context
+
+    def test_only_what_depends_on_the_changed_step_is_re_run(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._builder(qtbot)
+        other = widget.pipeline.add_step(
+            Step.for_function("segmentation", "label_components", name="unrelated")
+        )
+        affected = widget.stale_steps(widget.analysis_pipeline.steps[0])
+        assert other not in affected
+
+
+class TestNoLayerForPerObjectResults:
+    """Item 3: t-SNE, every reduction and every clustering are features of
+    the data. A layer for one would be a picture of a table."""
+
+    def _measured(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        volume = np.zeros((16, 16))
+        volume[2:6, 2:6] = 100.0
+        volume[10:14, 10:14] = 200.0
+        viewer.add_image(volume, name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.measure_all_check.setChecked(False)
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        widget.pipeline.add_step(Step.for_function("segmentation", "label_components"))
+        widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "measurements",
+                "extract_measurements",
+                available={"labels", "intensity", "spacing"},
+            )
+        )
+        widget.run_processing()
+        widget.run_single_step(widget.analysis_pipeline.steps[0])
+        return widget
+
+    def test_a_reduction_adds_no_layer(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._measured(qtbot)
+        before = len(widget.viewer.layers)
+        reduction = widget.analysis_pipeline.add_step(
+            Step.for_function("reduction", "pca", params={"n_components": 2})
+        )
+        widget.run_single_step(reduction)
+
+        assert len(widget.viewer.layers) == before
+        assert f"{reduction.name}_1" in widget.results_table().columns
+
+    def test_a_clustering_adds_no_layer(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._measured(qtbot)
+        before = len(widget.viewer.layers)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        widget.run_single_step(cluster)
+
+        assert len(widget.viewer.layers) == before
+        assert cluster.name in widget.results_table().columns
+
+    def test_it_says_where_the_result_went_instead(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._measured(qtbot)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        widget.run_single_step(cluster)
+        assert "no image layer" in widget.status_label.text()
+
+    def test_show_refuses_one_explicitly(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._measured(qtbot)
+        cluster = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "kmeans", params={"n_clusters": 2})
+        )
+        widget.run_single_step(cluster)
+        before = len(widget.viewer.layers)
+
+        widget.show_step_result(cluster)
+
+        assert len(widget.viewer.layers) == before
+        assert "not an image" in widget.status_label.text()
+
+    def test_a_segmentation_still_gets_one(self, qtbot):
+        widget = self._measured(qtbot)
+        before = len(widget.viewer.layers)
+        widget.run_single_step(widget.pipeline.steps[1])
+        assert len(widget.viewer.layers) == before + 1
+
+    def test_no_thumbnail_is_drawn_for_a_reduction(self, qtbot):
+        """A (n_objects, 2) embedding rendered as an image is a two-pixel
+        stripe that says nothing."""
+        from vtea_core.workflow import Step
+        from vtea_napari.widgets.step_card import StepCardWidget
+
+        widget = self._measured(qtbot)
+        reduction = widget.analysis_pipeline.add_step(
+            Step.for_function("reduction", "pca", params={"n_components": 2})
+        )
+        widget.run_single_step(reduction)
+
+        cards = widget.analysis_stack.findChildren(StepCardWidget)
+        card = cards[-1]
+        assert card.thumbnail_label.pixmap() is None or card.thumbnail_label.pixmap().isNull()
+
+
+class TestStepsRunOffTheGuiThread:
+    """Item 2's other half: a step must not be computed on the thread that
+    detects clicks - the Java equivalent of running it on the EDT."""
+
+    def _widget(self, qtbot):
+        import numpy as np
+
+        viewer = _model_viewer()
+        viewer.add_image(np.zeros((8, 8)), name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        return widget
+
+    def _probe_step(self, monkeypatch, seen):
+        import threading
+
+        from vtea_core.workflow import STEP_REGISTRY, Step
+
+        def probe(volume):
+            seen.append(threading.get_ident())
+            return volume
+
+        monkeypatch.setitem(STEP_REGISTRY["imageprocessing"], "probe", probe)
+        return Step(
+            category="imageprocessing",
+            function_name="probe",
+            input_keys={"volume": "volume"},
+            output_key="volume",
+            name="probe_1",
+        )
+
+    def test_a_single_step_runs_on_a_worker_thread(self, qtbot, monkeypatch):
+        import threading
+
+        seen = []
+        widget = self._widget(qtbot)
+        step = self._probe_step(monkeypatch, seen)
+        widget.pipeline.add_step(step)
+        widget.refresh_steps()
+
+        widget.run_single_step(step)
+
+        assert seen and seen[0] != threading.get_ident()
+
+    def test_a_whole_protocol_runs_on_a_worker_thread(self, qtbot, monkeypatch):
+        import threading
+
+        seen = []
+        widget = self._widget(qtbot)
+        widget.pipeline.add_step(self._probe_step(monkeypatch, seen))
+        widget.refresh_steps()
+
+        widget.run_processing()
+
+        assert seen and seen[0] != threading.get_ident()
+
+    def test_the_result_still_comes_back_to_the_caller(self, qtbot, monkeypatch):
+        seen = []
+        widget = self._widget(qtbot)
+        widget.pipeline.add_step(self._probe_step(monkeypatch, seen))
+        widget.refresh_steps()
+
+        context = widget.run_processing()
+
+        assert "volume" in context
+
+    def test_a_failure_is_still_reported_rather_than_raised(self, qtbot, monkeypatch):
+        from vtea_core.workflow import STEP_REGISTRY, Step
+
+        def explode(volume):
+            raise RuntimeError("no good")
+
+        monkeypatch.setitem(STEP_REGISTRY["imageprocessing"], "explode", explode)
+        widget = self._widget(qtbot)
+        step = Step(
+            category="imageprocessing",
+            function_name="explode",
+            input_keys={"volume": "volume"},
+            output_key="volume",
+            name="explode_1",
+        )
+        widget.pipeline.add_step(step)
+        widget.refresh_steps()
+
+        widget.run_single_step(step)
+
+        assert "no good" in widget.status_label.text()
+
+
+class TestStepProgressInTheBuilder:
+    def _widget(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        viewer.add_image(np.zeros((8, 8)), name="src")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 1.0}
+            )
+        )
+        widget.refresh_steps()
+        return widget
+
+    def test_a_sized_step_gets_an_estimate(self, qtbot):
+        widget = self._widget(qtbot)
+        assert widget.estimate_for(widget.pipeline.steps[0]) > 0
+
+    def test_a_step_whose_runtime_cannot_be_predicted_gets_none(self, qtbot):
+        from vtea_core.workflow import Step
+
+        widget = self._widget(qtbot)
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function("reduction", "tsne", params={"n_components": 2})
+        )
+        assert widget.estimate_for(step) is None
+
+    def test_the_estimate_is_scaled_by_what_this_machine_actually_does(self, qtbot):
+        widget = self._widget(qtbot)
+        step = widget.pipeline.steps[0]
+        plain = widget.estimate_for(step)
+        for _ in range(20):
+            widget.calibration.observe(step, seconds=8.0, predicted=1.0)
+        assert widget.estimate_for(step) > plain
+
+    def test_the_bar_is_put_away_when_the_step_finishes(self, qtbot):
+        widget = self._widget(qtbot)
+        widget.run_single_step(widget.pipeline.steps[0])
+        card = widget.card_for(widget.pipeline.steps[0])
+        # isVisibleTo rather than isVisible: the dock itself is never shown
+        # in a headless test, which would make every bar "invisible".
+        assert card is not None and not card.progress_bar.isVisibleTo(card)
+
+    def test_the_display_drives_the_running_step_s_card(self, qtbot):
+        widget = self._widget(qtbot)
+        step = widget.pipeline.steps[0]
+
+        widget.step_progress.show(step.result_key, 10.0)
+        card = widget.card_for(step)
+        assert card.progress_bar.isVisibleTo(card)
+
+        widget.step_progress.finish()
+        assert not card.progress_bar.isVisibleTo(card)
+
+    def test_a_tiled_run_reports_a_real_fraction(self, qtbot):
+        widget = self._widget(qtbot)
+        step = widget.pipeline.steps[0]
+
+        widget._on_block_progress(step.result_key, 5, 10)
+        widget._on_blocked_tick(0.0)
+
+        card = widget.card_for(step)
+        assert card.progress_bar.value() == card.progress_bar.maximum() // 2
+
+
+class TestNewAnalysisSteps:
+    """Items 4 and 5: UMAP in the reduction menu, Louvain and Leiden in the
+    clustering one."""
+
+    def _offered(self, widget, category):
+        stack = widget.analysis_stack
+        stack.category_combo.setCurrentText(category)
+        return {
+            stack.function_combo.itemText(index)
+            for index in range(stack.function_combo.count())
+        }
+
+    def test_umap_is_offered_as_a_reduction(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        assert "umap" in self._offered(widget, "reduction")
+
+    def test_louvain_and_leiden_are_offered_as_clustering(self, qtbot):
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        assert {"louvain", "leiden"} <= self._offered(widget, "clustering")
+
+    def test_they_read_the_feature_table_rather_than_a_channel(self, qtbot):
+        from vtea_core.workflow import Step
+
+        for category, function_name in (
+            ("reduction", "umap"),
+            ("clustering", "louvain"),
+            ("clustering", "leiden"),
+        ):
+            step = Step.for_function(category, function_name)
+            assert step.feature_input == "data"
+            assert step.channel_applies is False
+            assert step.produces_image is False
+
+    def test_a_umap_projection_becomes_two_columns_of_the_data(self, qtbot):
+        import numpy as np
+        import pytest
+
+        pytest.importorskip("umap")
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        rng = np.random.default_rng(0)
+        widget.last_context = {
+            "measurements": pd.DataFrame(
+                {
+                    "object_id": np.arange(30),
+                    "mean": rng.normal(size=30),
+                    "count": rng.normal(size=30),
+                }
+            )
+        }
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "reduction", "umap", params={"n_components": 2, "n_neighbors": 5}
+            )
+        )
+        widget.run_single_step(step)
+
+        table = widget.results_table()
+        assert {f"{step.name}_1", f"{step.name}_2"} <= set(table.columns)
+
+    def test_a_leiden_partition_becomes_a_column_of_the_data(self, qtbot):
+        import numpy as np
+        import pytest
+
+        pytest.importorskip("igraph")
+        from vtea_core.workflow import Step
+
+        widget = ProtocolBuilderWidget()
+        qtbot.addWidget(widget)
+        rng = np.random.default_rng(0)
+        far_apart = np.concatenate(
+            [rng.normal(0, 1, size=20), rng.normal(60, 1, size=20)]
+        )
+        widget.last_context = {
+            "measurements": pd.DataFrame(
+                {
+                    "object_id": np.arange(40),
+                    "mean": far_apart,
+                    "count": far_apart + rng.normal(0, 0.1, size=40),
+                }
+            )
+        }
+        step = widget.analysis_pipeline.add_step(
+            Step.for_function("clustering", "leiden", params={"n_neighbors": 8})
+        )
+        widget.run_single_step(step)
+
+        table = widget.results_table()
+        assert step.name in table.columns
+        assert table[step.name].nunique() == 2

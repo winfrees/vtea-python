@@ -32,6 +32,15 @@ dependencies = [
 [project.optional-dependencies]
 bioformats = ["bioio>=1.0"]
 deeplearning = ["torch>=2.1", "cellpose>=3.0"]
+# The UMAP projection (vtea_core.reduction.umap). Optional because
+# umap-learn pulls in numba/llvmlite, which is a large install for a
+# library the rest of vtea-core does not need - the step says so when it
+# is run rather than disappearing from the menu.
+umap = ["umap-learn>=0.5"]
+# Louvain and Leiden community detection (vtea_core.clustering.graph).
+# leidenalg is the reference Leiden implementation; python-igraph carries
+# its own, and Louvain, so the pair covers both algorithms.
+graph = ["python-igraph>=0.10", "leidenalg>=0.9"]
 dev = [
     "pytest>=8.0",
     "pytest-cov",

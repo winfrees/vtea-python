@@ -90,6 +90,83 @@ class TestThumbnail:
         assert card.thumbnail_label.pixmap() is None or card.thumbnail_label.pixmap().isNull()
 
 
+class TestProgressBar:
+    """Item 2: every step card carries a progress bar, and it stays out of
+    the way - no wider than the three buttons together, no taller than one
+    of them."""
+
+    def _card(self, qtbot, category="segmentation", function_name="threshold_mask"):
+        card = StepCardWidget(1, Step(category=category, function_name=function_name))
+        qtbot.addWidget(card)
+        card.show()
+        return card
+
+    def test_every_card_has_one(self, qtbot):
+        assert self._card(qtbot).progress_bar is not None
+
+    def test_it_is_hidden_until_the_step_runs(self, qtbot):
+        card = self._card(qtbot)
+        assert not card.progress_bar.isVisible()
+
+    def test_it_is_no_wider_than_the_three_buttons_together(self, qtbot):
+        card = self._card(qtbot)
+        buttons = (card.run_button, card.edit_button, card.delete_button)
+        combined = sum(button.sizeHint().width() for button in buttons) + 4
+        assert card.progress_bar.maximumWidth() <= combined
+
+    def test_it_is_no_taller_than_a_button(self, qtbot):
+        card = self._card(qtbot)
+        assert card.progress_bar.height() <= card.run_button.sizeHint().height()
+
+    def test_a_step_with_an_estimate_gets_a_measured_bar(self, qtbot):
+        card = self._card(qtbot)
+        card.begin_progress(12.0)
+        assert card.progress_bar.isVisible()
+        assert card.progress_bar.maximum() > 0
+        assert "12" in card.progress_bar.toolTip()
+
+    def test_it_advances_with_the_fraction(self, qtbot):
+        card = self._card(qtbot)
+        card.begin_progress(10.0)
+        card.set_progress(0.5)
+        assert card.progress_bar.value() == card.progress_bar.maximum() // 2
+
+    def test_it_says_how_long_is_left(self, qtbot):
+        card = self._card(qtbot)
+        card.begin_progress(10.0)
+        card.set_progress(0.5, remaining=5.0)
+        assert "5 s" in card.progress_bar.toolTip()
+
+    def test_a_step_with_no_estimate_gets_a_continuous_bar(self, qtbot):
+        """t-SNE's runtime depends on how its optimisation converges. A
+        fraction for it would have to be invented, so it gets Qt's busy
+        indicator instead - minimum and maximum both zero."""
+        card = self._card(qtbot, "reduction", "tsne")
+        card.begin_progress(None)
+        assert (card.progress_bar.minimum(), card.progress_bar.maximum()) == (0, 0)
+
+    def test_a_continuous_bar_ignores_a_fraction(self, qtbot):
+        card = self._card(qtbot, "reduction", "tsne")
+        card.begin_progress(None)
+        card.set_progress(0.5)
+        assert card.progress_bar.maximum() == 0
+
+    def test_a_step_that_learns_its_fraction_switches_to_a_measured_bar(self, qtbot):
+        """A tiled run counts tiles, which beats any estimate from a clock."""
+        card = self._card(qtbot)
+        card.begin_progress(None)
+        card.set_determinate()
+        card.set_progress(0.25)
+        assert card.progress_bar.value() == card.progress_bar.maximum() // 4
+
+    def test_it_goes_away_when_the_step_finishes(self, qtbot):
+        card = self._card(qtbot)
+        card.begin_progress(5.0)
+        card.end_progress()
+        assert not card.progress_bar.isVisible()
+        assert card.progress_bar.value() == 0
+
+
 def _collect_label_texts(widget):
     return [child.text() for child in widget.findChildren(QLabel)]
 

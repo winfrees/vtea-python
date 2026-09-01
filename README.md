@@ -67,6 +67,18 @@ Phase 4 (napari GUI) landed two dock widgets:
   Explorer" section for the full comparison, including which Java
   gate-related classes turned out to be dead code).
 
+Since then the builder has grown four things the Java original has no
+answer to, all described in `docs/PORT_PLAN.md`'s "Beyond the port"
+section: every segmentation in a protocol is measured under its own step's
+name (so a derived cytosol ring is no longer silently unmeasured, and
+renaming or deleting a segmentation carries its measurement with it);
+editing a step's settings re-runs it and what depends on it; every step
+card carries a small progress bar and every step runs off the GUI thread,
+with a real time estimate where the work's size implies one and a
+continuous bar where it does not; and reductions and clusterings - t-SNE,
+UMAP - are added to the data as features rather than to the viewer as
+layers. The analysis menus also gained UMAP, Louvain and Leiden.
+
 The two panes are views of one analysis, sharing a
 `vtea_napari.session.AnalysisSession` keyed by the napari viewer: the
 builder publishes each run into it, the explorer plots and gates it, and

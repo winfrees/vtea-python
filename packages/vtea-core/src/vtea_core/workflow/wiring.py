@@ -477,6 +477,34 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
         feature_input="data",
         scaling=_TABLE_STEP,
     ),
+    # Community detection builds a k-nearest-neighbour graph first, which is
+    # what its memory goes on: the graph is O(n*k) edges rather than the
+    # O(n^2) distance matrix hierarchical clustering needs, so it reaches
+    # object counts the linkage methods cannot.
+    ("clustering", "louvain"): StepIO(
+        ("data",),
+        "clusters",
+        channel_mode=CHANNEL_NONE,
+        feature_input="data",
+        scaling=Scaling(
+            mode=TABLE,
+            bytes_per_voxel=0,
+            exactness=APPROXIMATE,
+            notes="the kNN graph is O(n*k); a subsampled graph is the only blocked form",
+        ),
+    ),
+    ("clustering", "leiden"): StepIO(
+        ("data",),
+        "clusters",
+        channel_mode=CHANNEL_NONE,
+        feature_input="data",
+        scaling=Scaling(
+            mode=TABLE,
+            bytes_per_voxel=0,
+            exactness=APPROXIMATE,
+            notes="the kNN graph is O(n*k); a subsampled graph is the only blocked form",
+        ),
+    ),
     ("reduction", "pca"): StepIO(
         ("data",),
         "reduced",
@@ -520,6 +548,22 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             notes="sklearn's TSNE has no transform; openTSNE would be needed to extend a fit",
         ),
     ),
+    # The one embedding here that can place objects it was not fitted on:
+    # UMAP.transform is what makes a subsample-and-extend blocked form
+    # possible at all, and what makes a second acquisition comparable to
+    # the first.
+    ("reduction", "umap"): StepIO(
+        ("data",),
+        "reduced",
+        channel_mode=CHANNEL_NONE,
+        feature_input="data",
+        scaling=Scaling(
+            mode=TABLE,
+            bytes_per_voxel=0,
+            exactness=APPROXIMATE,
+            notes="fitted on a subsample and extended with UMAP.transform",
+        ),
+    ),
     ("gates", "polygon_gate"): StepIO(
         ("x", "y", "vertices"), "gate", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
     ),
@@ -545,6 +589,27 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
         ("model", "crops"), "predictions", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
     ),
 }
+
+# Which outputs are image-shaped, and so have something to show as a layer.
+#
+# The distinction matters because a per-object result is an array too. A
+# t-SNE embedding of nine thousand nuclei is a (9000, 2) float array, and
+# nothing but this table separates it from a 9000x2 image - so without it a
+# reduction lands in the viewer as a two-pixel-wide stripe that means
+# nothing, instead of as the two features it actually is.
+IMAGE_OUTPUTS = frozenset({"volume", "mask", "labels", "class_map"})
+
+
+def produces_image(category: str, function_name: str) -> bool:
+    """Whether this step's result is an image to be shown as a layer.
+
+    An unknown step is assumed not to produce one: a third-party analysis
+    step landing in the table is recoverable, one landing in the viewer as a
+    nonsense layer is what a user reports as a bug.
+    """
+    spec = STEP_IO.get((category, function_name))
+    return spec is not None and spec.output in IMAGE_OUTPUTS
+
 
 # Kept as a name-only view for callers that just need "which parameters are
 # data, not form fields" - the napari Edit-step form uses this to decide

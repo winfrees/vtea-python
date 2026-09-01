@@ -144,3 +144,84 @@ class TestPipeline:
         result = pipeline.run({"volume": volume})
         means = result["measurements"]["mean"].to_numpy()
         assert sorted(means) == [50.0, 200.0]
+
+
+class TestProducesImage:
+    """Which results are images. A per-object result is an array too - a
+    t-SNE embedding of 9000 nuclei is a (9000, 2) float array - and only
+    this says it is not a picture."""
+
+    def test_a_segmentation_produces_an_image(self):
+        assert Step.for_function("segmentation", "label_components").produces_image
+
+    def test_preprocessing_produces_an_image(self):
+        assert Step.for_function("imageprocessing", "gaussian_blur").produces_image
+
+    def test_a_reduction_does_not(self):
+        assert not Step.for_function("reduction", "tsne").produces_image
+        assert not Step.for_function("reduction", "umap").produces_image
+
+    def test_a_clustering_does_not(self):
+        assert not Step.for_function("clustering", "kmeans").produces_image
+        assert not Step.for_function("clustering", "leiden").produces_image
+
+    def test_a_measurement_table_does_not(self):
+        assert not Step.for_function("measurements", "extract_measurements").produces_image
+
+    def test_an_unknown_step_is_assumed_not_to(self):
+        """A third-party analysis step landing in the table is recoverable;
+        one landing in the viewer as a nonsense layer is a bug report."""
+        step = Step(category="segmentation", function_name="third_party")
+        assert not step.produces_image
+
+
+class TestSettingsSignature:
+    def test_two_identically_configured_steps_agree(self):
+        first = Step.for_function("segmentation", "threshold_mask", params={"value": 5.0})
+        second = Step.for_function("segmentation", "threshold_mask", params={"value": 5.0})
+        assert first.settings_signature == second.settings_signature
+
+    def test_a_changed_parameter_changes_it(self):
+        step = Step.for_function("segmentation", "threshold_mask", params={"value": 5.0})
+        before = step.settings_signature
+        step.params["value"] = 9.0
+        assert step.settings_signature != before
+
+    def test_a_changed_channel_or_wiring_changes_it(self):
+        step = Step.for_function("measurements", "extract_measurements")
+        before = step.settings_signature
+        step.input_keys["labels"] = "nuclei"
+        assert step.settings_signature != before
+
+    def test_a_rename_does_not(self):
+        """Renaming changes what a result is called, not what it is - and
+        re-running an hour of watershed over a better name would be its own
+        bug."""
+        step = Step.for_function("segmentation", "watershed_split")
+        before = step.settings_signature
+        step.name = "nuclei"
+        assert step.settings_signature == before
+
+
+class TestRunProgress:
+    def test_it_names_each_step_before_running_it(self):
+        pipeline = Pipeline(
+            [
+                Step.for_function(
+                    "segmentation", "threshold_mask", params={"method": "fixed", "value": 1.0}
+                ),
+                Step.for_function("segmentation", "label_components", available={"mask"}),
+            ]
+        )
+        seen = []
+        pipeline.run(
+            {"volume": np.zeros((4, 4))},
+            progress=lambda step, done, total: seen.append(
+                (None if step is None else step.function_name, done, total)
+            ),
+        )
+        assert seen == [
+            ("threshold_mask", 0, 2),
+            ("label_components", 1, 2),
+            (None, 2, 2),
+        ]

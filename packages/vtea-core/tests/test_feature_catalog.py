@@ -267,3 +267,38 @@ class TestAgainstARealTable:
         assert catalog.get("mean_ch1").channel == 1
         assert catalog.get("count").kind == GEOMETRY
         assert isinstance(catalog.to_dataframe(), pd.DataFrame)
+
+
+class TestRenamingASource:
+    """A segmentation renamed in the GUI has to be renamed here too: a data
+    dictionary pointing at a step that no longer exists is worse than no
+    provenance, because it looks like provenance."""
+
+    def _catalog(self):
+        catalog = FeatureCatalog()
+        catalog.record_measured(
+            ["mean_ch0", "count"],
+            produced_by="measure_nuclei",
+            function="measurements.extract_measurements_by_channel",
+            segmentation="nuclei",
+        )
+        return catalog
+
+    def test_the_segmentation_follows_the_rename(self):
+        catalog = self._catalog()
+        catalog.rename_source("nuclei", "podocytes")
+        assert {d.segmentation for d in catalog} == {"podocytes"}
+
+    def test_the_producing_step_follows_it_too(self):
+        catalog = self._catalog()
+        catalog.rename_source("measure_nuclei", "measure_podocytes")
+        assert {d.produced_by for d in catalog} == {"measure_podocytes"}
+
+    def test_it_reports_what_it_touched(self):
+        catalog = self._catalog()
+        assert len(catalog.rename_source("nuclei", "podocytes")) == 2
+
+    def test_an_unrelated_name_changes_nothing(self):
+        catalog = self._catalog()
+        assert catalog.rename_source("cytoplasm", "cytosol") == []
+        assert {d.segmentation for d in catalog} == {"nuclei"}
