@@ -13,6 +13,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from vtea_core.classes import (
+    class_from_expression,
+    class_from_range,
+    class_from_values,
+    combine_labels,
+    label_set,
+)
 from vtea_core.classification import class_map
 from vtea_core.clustering import (
     auto_k_kmeans,
@@ -22,7 +29,6 @@ from vtea_core.clustering import (
     leiden,
     louvain,
 )
-from vtea_core.gates import polygon_gate, rectangle_gate
 from vtea_core.imageprocessing import (
     enhance_contrast,
     gaussian_blur,
@@ -129,9 +135,19 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
         # optional, and the step says so when run rather than not appearing.
         "umap": umap,
     },
-    "gates": {
-        "polygon_gate": polygon_gate,
-        "rectangle_gate": rectangle_gate,
+    # Classes: the rule half of gating, which is the half a protocol can
+    # carry. A polygon is drawn with a mouse on a plot and stays in the
+    # Object Explorer (vtea_core.gates); what re-runs on the next
+    # acquisition is "objects with mean_ch2 between 50 and 150, inside the
+    # tubule ROI, and not in cluster 7" - see vtea_core.classes.
+    "classes": {
+        "class_from_range": class_from_range,
+        "class_from_values": class_from_values,
+        "class_from_expression": class_from_expression,
+        # The classes above become the labels an object carries; two label
+        # sets combine into the hierarchy that makes a finer cell type.
+        "label_set": label_set,
+        "combine_labels": combine_labels,
     },
     "classification": {
         "class_map": class_map,

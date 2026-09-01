@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (556 tests, including real
+Phase 4 done. Implemented and tested (608 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -110,6 +110,61 @@ widget and run it):
   shared-nearest-neighbour graph, with `resolution` as the dial instead of
   `k`. Their backends are optional extras of `vtea-core`; the steps stay in
   the menu regardless and say what to install if picked without one.
+- **Classes instead of gate steps** — the analysis menu's `gates` category
+  is now `classes`, and the polygon and rectangle *steps* are gone from it.
+  They never worked as protocol steps: both needed vertices no step
+  produces, so they could only be configured by typing polygon coordinates
+  into a form. Drawing a polygon is an Object Explorer gesture and stays
+  there, unchanged. What a protocol can carry is the rule - a range
+  (`mean_ch2` from 50 to 150), a single gate or ROI or cluster id, or any
+  boolean combination of them (AND / OR / NOT / XOR / XNOR / NAND / NOR) -
+  which re-runs on the next acquisition without anyone drawing anything
+  again. A gate drawn in the explorer reaches a class step as a column of
+  the table it is handed (`gate_bright`), and a napari ROI as another
+  (`roi_tubules`), so `gate_bright AND roi_tubules == 2 AND NOT kmeans_1 in
+  [3, 7]` is a step in a protocol. `label_set` groups classes into the set
+  an object's labels live in - an object carries as many as apply, and the
+  log says how many carry none and how many carry several rather than
+  quietly picking a winner - and `combine_labels` crosses two sets into the
+  hierarchy that makes "immune > CD3+" a population you can count, colour
+  and map. Each label set lands in the data as one boolean column per label
+  plus a code column, so the next level of the hierarchy is written in terms
+  of the last.
+- **Image gates** — a region painted on a napari Labels layer, read as
+  "which objects are in there". Pick the layer in the Object Explorer's
+  header: the objects inside are ringed on the plot, the region each object
+  is in becomes a column of the data (usable in a class definition), and the
+  count is reported. The rings are the plot's spare encoding on purpose -
+  fill is the LUT's, so an image gate and a colour-by can be read at the
+  same time. With one region they take the colour set by "Ring colour…";
+  with several, each ring takes that region's own colour in napari, so a
+  tubule and the nuclei inside it are the same colour in both windows. The
+  membership lives on the shared session rather than in the table, so a
+  re-run of the protocol does not discard a region somebody painted.
+- **Gate highlights are the volume, not a section** — a highlight is put
+  back on the source image's axes before it goes into the viewer. A
+  channel-sliced segmentation has one axis fewer than the image, and napari
+  right-aligns arrays of differing ndim, which mapped a z-stack's leading
+  axis onto the *channel* axis: the highlight appeared as a single flat
+  section that moved when the channel slider did. It also carries the source
+  layer's scale and translate, so on an anisotropic stack in microns it
+  lands on the objects rather than near them, and above a few million voxels
+  it is computed lazily block by block - a dozen gates should not cost a
+  dozen copies of the segmentation.
+- **The plot is 4:3, and the gate list is under it** — the scatter keeps its
+  proportions whatever the dock does, so two runs are not different shapes
+  because the window was; and the gate manager, now a wide strip below the
+  plot rather than a column beside it, stops taking a third of the plot's
+  width (and, at a fixed ratio, its height with it).
+- **Continuous and discrete LUTs** — a measured feature gets a gradient and
+  a colorbar; a cluster id, a class, a label-set code or an ROI membership
+  gets a distinct colour each and a legend. A gradient over cluster ids puts
+  cluster 2 "between" 1 and 3, which is a statement about a numbering rather
+  than about the tissue. Which one a column is comes from the feature
+  catalog (it records the step that produced each column) and from a
+  deliberately cautious reading of the values - whole numbers, few of them,
+  starting at 0 or -1, which is what an id looks like and what a voxel count
+  does not - and the LUT-mode picker overrides both.
 - **Derived segmentations and association** — the segmentation menu carries
   the morphology-only steps (`label_ring` for cytosol, `label_shell` for a
   nuclear envelope, `expand_labels`, `subtract_labels`, `restrict_labels_to`,
@@ -239,7 +294,7 @@ widget and run it):
   scatter plot docked into napari's side panel is unusable at the width it
   gets there, and gating means working between the plot and the image. It
   reads the shared session rather than owning its own copy of the analysis.
-  Holds the scatter plot and gate manager side by side (2:1) on a "Plot"
+  Holds the scatter plot with the gate manager beneath it (3:1) on a "Plot"
   tab and the per-object crop grid on a "Gallery" tab; subgate within a
   selection for real gate hierarchy; each gate's members get their own
   napari `Labels` overlay painted in *that gate's* colour and shown only

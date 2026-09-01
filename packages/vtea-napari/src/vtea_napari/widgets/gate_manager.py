@@ -1,8 +1,10 @@
 """The gate manager: draw, list, persist and summarize gates over a scatter
 plot.
 
-Sits beside the protocol builder's plot and owns the `vtea_core.gates.GateSet`
-drawn on it. What the Java UI split across MicroExplorer's toolbar, the
+Sits under the Object Explorer's plot and owns the `vtea_core.gates.GateSet`
+drawn on it. Under rather than beside: a scatter plot held at 4:3 loses
+height as well as width to anything placed next to it, and a gate list is a
+strip of controls rather than a second column of data. What the Java UI split across MicroExplorer's toolbar, the
 "Gate Management" TableWindow and a set of ad-hoc dialogs is one pane here:
 
 - Rectangle / Polygon buttons put the plot into the matching drawing mode.
@@ -41,6 +43,15 @@ from vtea_napari.widgets.plot import POLYGON_MODE, RECTANGLE_MODE
 
 GATE_FILE_FILTER = "VTEA gates (*.json);;All files (*)"
 
+# Three or four gates visible without scrolling, which is what a strip under
+# the plot has room for. Deliberately small: this pane's height comes out of
+# the plot's.
+MINIMUM_TABLE_HEIGHT = 90
+
+# Enough for "1,234 of 5,678 cells (21.7%)" and a mean per axis without
+# wrapping every line.
+STATS_WIDTH = 180
+
 
 class GateManagerWidget(QWidget):
     """Gate drawing controls, the gate list, JSON persistence, and per-gate
@@ -68,12 +79,19 @@ class GateManagerWidget(QWidget):
         self._parent_id_provider = parent_id_provider or (lambda: None)
         self._next_gate_number = 1
 
-        root = QVBoxLayout(self)
+        # Laid out as a wide strip rather than a tall column: this pane
+        # sits *under* the plot now (see explorer.py), where it has the
+        # whole width and every row of height it takes is a row the plot
+        # does not get. Buttons on the left, the gate list in the middle
+        # where the space is, the selected gate's numbers on the right.
+        root = QHBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
 
+        controls = QVBoxLayout()
+        controls.setSpacing(2)
         heading = QLabel("Gates")
         heading.setStyleSheet("font-weight: bold;")
-        root.addWidget(heading)
+        controls.addWidget(heading)
 
         draw_row = QHBoxLayout()
         self.rectangle_button = QPushButton("Rectangle")
@@ -89,14 +107,7 @@ class GateManagerWidget(QWidget):
         self.polygon_button.clicked.connect(lambda: self.set_gate_mode(POLYGON_MODE))
         draw_row.addWidget(self.rectangle_button)
         draw_row.addWidget(self.polygon_button)
-        root.addLayout(draw_row)
-
-        self.table = GateTableWidget()
-        self.table.gate_selected.connect(self._on_gate_selected)
-        self.table.gate_visibility_changed.connect(self._on_gate_visibility_changed)
-        self.table.gate_renamed.connect(self._on_gate_renamed)
-        self.table.gate_color_requested.connect(self.pick_gate_color)
-        root.addWidget(self.table, 1)
+        controls.addLayout(draw_row)
 
         file_row = QHBoxLayout()
         self.delete_button = QPushButton("Delete")
@@ -111,14 +122,26 @@ class GateManagerWidget(QWidget):
         self.open_button.clicked.connect(self.open_gates_dialog)
         for button in (self.delete_button, self.clear_button, self.save_button, self.open_button):
             file_row.addWidget(button)
-        root.addLayout(file_row)
+        controls.addLayout(file_row)
+        controls.addStretch()
+        root.addLayout(controls)
+
+        self.table = GateTableWidget()
+        self.table.gate_selected.connect(self._on_gate_selected)
+        self.table.gate_visibility_changed.connect(self._on_gate_visibility_changed)
+        self.table.gate_renamed.connect(self._on_gate_renamed)
+        self.table.gate_color_requested.connect(self.pick_gate_color)
+        self.table.setMinimumHeight(MINIMUM_TABLE_HEIGHT)
+        root.addWidget(self.table, 1)
 
         stats_box = QGroupBox("Selected gate")
         stats_layout = QVBoxLayout(stats_box)
         stats_layout.setContentsMargins(4, 4, 4, 4)
         self.stats_label = QLabel("No gate selected.")
         self.stats_label.setWordWrap(True)
+        self.stats_label.setMinimumWidth(STATS_WIDTH)
         stats_layout.addWidget(self.stats_label)
+        stats_layout.addStretch()
         root.addWidget(stats_box)
 
         self.plot.gate_drawn.connect(self.add_gate_from_vertices)

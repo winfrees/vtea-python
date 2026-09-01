@@ -208,9 +208,10 @@ class TestTabularStepsHaveNoChannel:
             step = Step.for_function(category, function)
             assert step.channel_applies is False, f"{category}.{function}"
 
-    def test_gates_and_classification_are_not_either(self):
+    def test_classes_and_classification_are_not_either(self):
         for category, function in (
-            ("gates", "polygon_gate"),
+            ("classes", "class_from_range"),
+            ("classes", "label_set"),
             ("classification", "class_map"),
         ):
             assert Step.for_function(category, function).channel_applies is False
@@ -326,7 +327,9 @@ class TestFeatureSelection:
     def test_only_a_feature_input_step_narrows_anything(self):
         assert Step.for_function("clustering", "kmeans").feature_input == "data"
         assert Step.for_function("segmentation", "threshold_mask").feature_input is None
-        assert Step.for_function("gates", "polygon_gate").feature_input is None
+        # A class step takes `data` too, but as the table: its rule is
+        # written in column names, which a feature matrix does not have.
+        assert Step.for_function("classes", "class_from_expression").feature_input is None
 
     def test_the_selection_travels_with_the_step(self):
         """It is protocol, not a transient GUI choice - which is what makes

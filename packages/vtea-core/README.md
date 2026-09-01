@@ -99,8 +99,29 @@ Phases 0-4 are done. Implemented and tested:
   faster at tissue-scale object counts, and can project new objects into an
   existing embedding, which is what makes a second acquisition comparable
   to the first. Needs the `umap` extra (umap-learn)
+- **classes** (new): what an object *is*, as a rule that re-runs rather than
+  a shape somebody drew. `class_from_range` ("mean_ch2 from 50 to 150"),
+  `class_from_values` (cluster 3 and 7; ROI 2; a gate's members) and
+  `class_from_expression`, which reads a small boolean language
+  (`expression.py`: AND / OR / NOT / XOR / XNOR / NAND / NOR, comparisons,
+  `in [3, 7]`, chained ranges) over the table's columns - parsed, never
+  `eval`'d, because these definitions are saved in protocol files and mailed
+  around. `LabelSet`/`ObjectLabel` then hold the *n* labels an object
+  carries (an object is a cell, an immune cell, a CD3+ T cell and inside the
+  tubule ROI, all at once), `combine_label_sets` builds the hierarchy out of
+  two sets - `cross` refines "immune" by "CD3+" into "immune > CD3+",
+  keeping the objects the finer set says nothing about rather than dropping
+  them - and `label_image` paints a set back onto the segmentation as a
+  lookup-table remap. This replaces the `gates` protocol category (see the
+  napari README); the gate *primitives* below stay where they are, for the
+  Object Explorer
 - **gates**: `polygon_gate`, `rectangle_gate`, `rectangle_vertices`
   (boolean-array primitives);
+  `objects_in_rois`/`image_gate` (new) - the gate drawn on the *image*
+  rather than the plot: which region of a napari Labels layer each object
+  lies in, by centroid (one voxel read per object, so it costs nothing at
+  any volume) or by majority overlap, answered with the region's own id so
+  the objects and the region can be drawn in the same colour;
   `Gate`/`GateSet` (new) - named, stateful gates with real hierarchy
   (a subgate's membership is intersected with its parent's) and per-gate
   statistics (`GateSet.statistics` - the gated cell count plus the mean of
@@ -182,7 +203,11 @@ src/vtea_core/
   reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE, UMAP
   gates/            Boolean gate math (polygon/rectangle point-membership tests)
                     plus Gate/GateSet (named, hierarchical gates over a
-                    measurement DataFrame)
+                    measurement DataFrame) and image gates (which napari ROI
+                    each object is in)
+  classes/          Class rules (range / values / boolean expression), the
+                    label sets an object's n labels live in, and the
+                    hierarchies two sets combine into
   imageprocessing/  Gaussian blur, median filter, contrast, background subtraction
   classification/   class_map (label-remap) + a small torch 3D CNN
                     (train_classifier/predict) for supervised object classification

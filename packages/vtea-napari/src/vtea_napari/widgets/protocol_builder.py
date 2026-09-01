@@ -44,6 +44,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 from vtea_core.blocked import format_bytes
+from vtea_core.classes import LabelSet
 from vtea_core.measurements import FeatureCatalog, feature_matrix
 from vtea_core.objects import AssociationSet, CellCollection, Ownership
 from vtea_core.workflow import Calibration, Pipeline, Step, estimate_seconds, format_duration
@@ -93,11 +94,16 @@ def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
 
     A per-object vector (cluster ids) becomes one column named after the
     step; a per-object matrix (PCA/t-SNE coordinates) becomes one column per
-    component, `name_1`, `name_2`, ... Anything that isn't one row per
-    object contributes nothing. Naming after the step is what keeps a second
-    reduction from overwriting the first one's columns, and is what makes
-    those columns findable in the plot's X/Y menus.
+    component, `name_1`, `name_2`, ... A label set becomes one boolean
+    column per label plus the set's own code column, because an object
+    carries as many labels as apply and a single column could only report
+    one of them. Anything that isn't one row per object contributes nothing.
+    Naming after the step is what keeps a second reduction from overwriting
+    the first one's columns, and is what makes those columns findable in the
+    plot's X/Y menus.
     """
+    if isinstance(result, LabelSet):
+        return label_set_columns(name, result, n_objects)
     if not isinstance(result, np.ndarray) or result.shape[:1] != (n_objects,):
         return {}
     if result.ndim == 1:
@@ -105,6 +111,23 @@ def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
     if result.ndim == 2 and result.shape[1] <= MAX_DERIVED_FEATURES:
         return {f"{name}_{index + 1}": result[:, index] for index in range(result.shape[1])}
     return {}
+
+
+def label_set_columns(name: str, label_set: LabelSet, n_objects: int) -> dict[str, np.ndarray]:
+    """A label set as table columns: one per label, plus one code column.
+
+    The code column is what a discrete LUT colours and what a legend reads;
+    the boolean columns are what a later class definition refers to by name,
+    which is how a hierarchy is built out of a set that already exists
+    (`populations.immune AND cd3_1`).
+    """
+    if label_set.n_objects != n_objects:
+        return {}
+    columns = {
+        f"{name}.{label.name}": np.asarray(label.mask, dtype=bool) for label in label_set
+    }
+    columns[name] = label_set.codes()
+    return columns
 
 
 # How far a determinate progress bar may run before its step actually
@@ -358,7 +381,13 @@ class ProtocolBuilderWidget(QWidget):
         "cells",
         "clustering",
         "reduction",
-        "gates",
+        # "classes" replaces "gates": a polygon is drawn on the plot with a
+        # mouse, which is an Object Explorer gesture and was never something
+        # a protocol could carry (the two gate steps needed vertices nothing
+        # produces). What a protocol needs is the rule - a range, a cluster
+        # id, an ROI, or any boolean combination of them - which is what a
+        # class is. See vtea_core.classes.
+        "classes",
     )
 
     def __init__(
@@ -1267,6 +1296,11 @@ class ProtocolBuilderWidget(QWidget):
             self.status_label.setText(f"{step.result_key}: {self._describe_features(step)}")
         elif isinstance(result, Ownership):
             self.show_ownership(step, result)
+        elif isinstance(result, LabelSet):
+            # Nothing to draw: a label set is what the objects *are*, so it
+            # goes to the table and the plot's legend. What is worth saying
+            # is how many carry each label, and how many carry none.
+            self.status_label.setText(f"{step.result_key}: {result.summary()}")
         elif isinstance(result, CellCollection):
             # Same reason as an association: nothing to draw, and how many
             # cells are missing a part is the number worth seeing.
@@ -1350,17 +1384,27 @@ class ProtocolBuilderWidget(QWidget):
 
     def _seed_feature_matrix(self, context: dict) -> None:
         """Put the measurement table into the context as `data`, which is
-        what clustering and reduction steps consume.
+        what clustering, reduction and class steps consume.
 
         Nothing in a protocol produces a `data` key, so without this every
         clustering/reduction step fails with "needs context key(s) ['data']"
         the moment it's run. The *table* is seeded rather than a ready-made
         matrix so each step can narrow it to its own chosen features - see
-        Step.selected_features.
+        Step.selected_features - and so a class step, which is written in
+        column names, has names to work with.
+
+        The gates drawn in the Object Explorer are added as columns here.
+        That is how a class definition gets to say `gate_bright AND NOT
+        roi_tubule`: a gate is a polygon somebody drew, which no protocol
+        step can produce, so the one place it can enter a protocol is at the
+        moment the table is handed to a step.
         """
         frame = self.results_table()
-        if frame is not None:
-            context["data"] = frame
+        if frame is None:
+            return
+        for column, mask in self.session.gate_columns(frame).items():
+            frame[column] = mask
+        context["data"] = frame
 
     def _seed_measurement_tables(self, context: dict) -> None:
         """Put each measurement step's table into the context under the

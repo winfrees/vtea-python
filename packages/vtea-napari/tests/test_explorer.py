@@ -309,17 +309,26 @@ class TestFloatsByDefault:
 
 
 class TestLayout:
-    def test_the_plot_takes_two_thirds_of_the_results_row(self, qtbot):
+    def test_the_gate_list_sits_below_the_plot(self, qtbot):
+        """Side by side, the gate table took a third of the plot's width -
+        and with the plot held at 4:3 that is a third of its height too."""
+        from qtpy.QtCore import Qt
+
+        widget = ExplorerWidget(float_by_default=False)
+        qtbot.addWidget(widget)
+        assert widget.results_splitter.orientation() == Qt.Orientation.Vertical
+
+    def test_the_plot_takes_most_of_the_height(self, qtbot):
         widget = ExplorerWidget(float_by_default=False)
         qtbot.addWidget(widget)
         widget.resize(900, 600)
         widget.show()
         qtbot.waitExposed(widget)
 
-        plot_width, gate_width = widget.results_splitter.sizes()
-        assert plot_width > gate_width
-        share = plot_width / (plot_width + gate_width)
-        assert 0.55 < share < 0.8, f"plot took {share:.0%} of the results row"
+        plot_height, gate_height = widget.results_splitter.sizes()
+        assert plot_height > gate_height
+        share = plot_height / (plot_height + gate_height)
+        assert 0.55 < share < 0.85, f"plot took {share:.0%} of the results column"
 
     def test_the_plot_canvas_grows_with_its_pane(self, qtbot):
         """A canvas with matplotlib's default Preferred size policy keeps
@@ -834,3 +843,240 @@ class TestAssociationReview:
         restored = load_associations(path)
         assert restored.was_edited(ObjectRef("cytoplasm_1", 1))
         assert restored.link_for(ObjectRef("cytoplasm_1", 1)).method == "manual"
+
+
+def _model_viewer():
+    """ViewerModel has the same layers/dims/add_* API as napari.Viewer but
+    builds no vispy visuals, which need a GL context this container lacks."""
+    from napari.components import ViewerModel
+
+    return ViewerModel()
+
+
+class TestHighlightsOccupyTheVolume:
+    """Item 1: a gate highlight is the same volume, in the same place, as
+    the data - not one flat section of it."""
+
+    def _session_with_a_channel_sliced_segmentation(self, qtbot):
+        """A (z, c, y, x) acquisition segmented on one channel: the labels
+        have one axis fewer than the image, which is where the bug was."""
+        viewer = _model_viewer()
+        image = np.zeros((4, 2, 8, 8), dtype=np.uint16)
+        layer = viewer.add_image(image, name="src", scale=(2.0, 1.0, 0.5, 0.5))
+        viewer.layers.selection.active = layer
+
+        labels = np.zeros((4, 8, 8), dtype=np.int32)
+        labels[:, 1:3, 1:3] = 1
+        labels[:, 5:7, 5:7] = 2
+        frame = pd.DataFrame({"object_id": [1, 2], "x": [1.0, 5.0], "y": [1.0, 5.0]})
+
+        widget = ExplorerWidget(napari_viewer=viewer, float_by_default=False)
+        qtbot.addWidget(widget)
+        widget.session.set_axes(source_layer_name="src", channel_axis=1, z_axis=0)
+        widget.session.set_context({"labels": labels, "intensity": image}, frame)
+        return widget, viewer
+
+    def _add_gate(self, widget):
+        widget.plot.set_data(widget.frame, x_column="x", y_column="y")
+        _draw_triangle(widget.plot, (-1, -1), (10, -1), (4, 10))
+        return next(iter(widget.gate_set))
+
+    def test_the_highlight_keeps_the_whole_z_stack(self, qtbot):
+        widget, viewer = self._session_with_a_channel_sliced_segmentation(qtbot)
+        self._add_gate(widget)
+        highlight = next(layer for layer in viewer.layers if layer.name.startswith("Gate highlight"))
+        # (z, 1, y, x): the channel axis back as a singleton, so napari's
+        # right-alignment maps z onto z instead of onto the channel axis.
+        assert highlight.data.shape == (4, 1, 8, 8)
+
+    def test_it_is_placed_where_the_data_is(self, qtbot):
+        """An acquisition in microns places its data by scale; a highlight
+        left at scale 1 sits somewhere the user is not looking."""
+        widget, viewer = self._session_with_a_channel_sliced_segmentation(qtbot)
+        self._add_gate(widget)
+        highlight = next(layer for layer in viewer.layers if layer.name.startswith("Gate highlight"))
+        assert tuple(highlight.scale) == (2.0, 1.0, 0.5, 0.5)
+
+    def test_a_segmentation_already_matching_the_image_is_left_alone(self, qtbot):
+        viewer = _model_viewer()
+        image = np.zeros((4, 8, 8), dtype=np.uint16)
+        viewer.add_image(image, name="src")
+        labels = np.zeros((4, 8, 8), dtype=np.int32)
+        labels[:, 1:3, 1:3] = 1
+        frame = pd.DataFrame({"object_id": [1], "x": [1.0], "y": [1.0]})
+        widget = ExplorerWidget(napari_viewer=viewer, float_by_default=False)
+        qtbot.addWidget(widget)
+        widget.session.set_axes(source_layer_name="src", channel_axis=None)
+        widget.session.set_context({"labels": labels}, frame)
+        self._add_gate(widget)
+
+        highlight = next(layer for layer in viewer.layers if layer.name.startswith("Gate highlight"))
+        assert highlight.data.shape == (4, 8, 8)
+
+    def test_a_large_volume_is_not_copied_per_gate(self, qtbot):
+        """A dozen gates on a real acquisition is a dozen copies of the
+        segmentation; above a threshold the remap stays lazy."""
+        from vtea_napari.widgets.explorer import LAZY_HIGHLIGHT_VOXELS, highlight_array
+
+        small = np.zeros((4, 4), dtype=np.int32)
+        assert isinstance(highlight_array(small, [1]), np.ndarray)
+
+        side = int(LAZY_HIGHLIGHT_VOXELS ** (1 / 3)) + 40
+        big = np.zeros((side, side, side), dtype=np.int8)
+        lazy = highlight_array(big, [1])
+        assert type(lazy).__module__.startswith("dask")
+        assert lazy.shape == big.shape
+
+    def test_the_lazy_remap_computes_the_same_answer(self, qtbot):
+        import dask.array as da
+
+        from vtea_napari.widgets.explorer import highlight_array
+
+        labels = np.arange(27, dtype=np.int32).reshape(3, 3, 3)
+        lazy = highlight_array(da.from_array(labels, chunks=2), [5, 9])
+        np.testing.assert_array_equal(
+            np.asarray(lazy), np.where(np.isin(labels, [5, 9]), labels, 0)
+        )
+
+
+class TestImageGates:
+    """Item 4: a region painted on a napari Labels layer, read as "which
+    objects are in there"."""
+
+    def _widget_with_rois(self, qtbot, n_regions=2):
+        viewer = _model_viewer()
+        image = np.zeros((8, 8), dtype=np.uint16)
+        viewer.add_image(image, name="src")
+
+        labels = np.zeros((8, 8), dtype=np.int32)
+        labels[1, 1] = 1
+        labels[1, 6] = 2
+        labels[6, 6] = 3
+        frame = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3],
+                "centroid-0": [1.0, 1.0, 6.0],
+                "centroid-1": [1.0, 6.0, 6.0],
+                "mean": [10.0, 20.0, 30.0],
+            }
+        )
+
+        rois = np.zeros((8, 8), dtype=np.int32)
+        rois[:, :4] = 1
+        if n_regions > 1:
+            rois[:4, 4:] = 2
+        viewer.add_labels(rois, name="tubules")
+
+        widget = ExplorerWidget(napari_viewer=viewer, float_by_default=False)
+        qtbot.addWidget(widget)
+        widget.session.set_axes(source_layer_name="src")
+        widget.session.set_context({"labels": labels}, frame)
+        return widget, viewer
+
+    def test_the_labels_layers_are_offered(self, qtbot):
+        widget, _viewer = self._widget_with_rois(qtbot)
+        choices = [
+            widget.image_gate_combo.itemText(index)
+            for index in range(widget.image_gate_combo.count())
+        ]
+        assert choices == ["(none)", "tubules"]
+
+    def test_a_highlight_layer_is_not_offered_as_a_region(self, qtbot):
+        """Gating on the highlight of a gate would be a loop, and nobody
+        painted it."""
+        widget, viewer = self._widget_with_rois(qtbot)
+        viewer.add_labels(np.zeros((8, 8), dtype=np.int32), name="Gate highlight: gate1")
+        widget._refresh_image_gate_choices()
+        choices = [
+            widget.image_gate_combo.itemText(index)
+            for index in range(widget.image_gate_combo.count())
+        ]
+        assert choices == ["(none)", "tubules"]
+
+    def test_choosing_one_adds_a_column_saying_which_region_each_object_is_in(self, qtbot):
+        widget, _viewer = self._widget_with_rois(qtbot)
+        widget.image_gate_combo.setCurrentText("tubules")
+
+        assert list(widget.frame["roi_tubules"]) == [1, 2, 0]
+
+    def test_the_objects_inside_a_region_are_ringed(self, qtbot):
+        widget, _viewer = self._widget_with_rois(qtbot)
+        widget.image_gate_combo.setCurrentText("tubules")
+
+        ringed = [
+            collection
+            for collection in widget.plot.ax.collections
+            if len(collection.get_facecolors()) == 0
+        ]
+        # One ring group per region, and the object in no region has none.
+        assert len(ringed) == 2
+
+    def test_with_several_regions_each_ring_matches_its_region(self, qtbot):
+        widget, viewer = self._widget_with_rois(qtbot)
+        layer = next(one for one in viewer.layers if one.name == "tubules")
+        colors = widget.region_colors(layer, [0, 1, 2])
+        assert set(colors) == {1, 2}
+        assert colors[1] != colors[2]
+
+    def test_with_one_region_the_user_s_ring_colour_is_used(self, qtbot):
+        """"Region 1" is not a colour anybody chose."""
+        widget, viewer = self._widget_with_rois(qtbot, n_regions=1)
+        layer = next(one for one in viewer.layers if one.name == "tubules")
+        widget.set_ring_color("#abcdef")
+        assert widget.region_colors(layer, [0, 1]) == {1: "#abcdef"}
+
+    def test_the_column_survives_a_re_run(self, qtbot):
+        """A painted region is an input to the analysis, not an output, so
+        re-running the protocol must not drop it."""
+        widget, _viewer = self._widget_with_rois(qtbot)
+        widget.image_gate_combo.setCurrentText("tubules")
+
+        rebuilt = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3],
+                "centroid-0": [1.0, 1.0, 6.0],
+                "centroid-1": [1.0, 6.0, 6.0],
+                "mean": [11.0, 21.0, 31.0],
+            }
+        )
+        widget.session.set_context(dict(widget.session.context), rebuilt)
+
+        assert "roi_tubules" in widget.session.results_table().columns
+        assert list(widget.session.results_table()["roi_tubules"]) == [1, 2, 0]
+
+    def test_it_can_be_turned_off(self, qtbot):
+        widget, _viewer = self._widget_with_rois(qtbot)
+        widget.image_gate_combo.setCurrentText("tubules")
+        widget.image_gate_combo.setCurrentText("(none)")
+
+        assert widget.session.image_gates == {}
+
+    def test_a_layer_of_the_wrong_shape_is_reported_not_raised(self, qtbot):
+        widget, viewer = self._widget_with_rois(qtbot)
+        viewer.add_labels(np.zeros((3, 3), dtype=np.int32), name="wrong")
+        widget._refresh_image_gate_choices()
+        widget.image_gate_combo.setCurrentText("wrong")
+
+        assert "does not match" in widget.status_label.text()
+
+    def test_the_status_says_how_many_objects_are_inside(self, qtbot):
+        widget, _viewer = self._widget_with_rois(qtbot)
+        widget.image_gate_combo.setCurrentText("tubules")
+        assert "2 of 3 objects" in widget.status_label.text()
+
+
+class TestCategoricalColouring:
+    def test_the_catalog_decides_which_columns_are_categories(self, qtbot):
+        widget = ExplorerWidget(float_by_default=False)
+        qtbot.addWidget(widget)
+        frame = pd.DataFrame(
+            {"object_id": [1, 2, 3], "kmeans_1": [100, 200, 100], "mean": [1.0, 2.0, 3.0]}
+        )
+        widget.session.feature_catalog.record_derived(
+            ["kmeans_1"], produced_by="kmeans_1", function="clustering.kmeans"
+        )
+        widget.session.set_context({}, frame)
+
+        assert "kmeans_1" in widget.plot.discrete_columns
+        widget.plot.color_combo.setCurrentText("kmeans_1")
+        assert widget.plot.color_is_discrete() is True

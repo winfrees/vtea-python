@@ -29,10 +29,25 @@ to its parent's (see vtea_core.gates.gate).
 Selecting a gate highlights its members as a napari Labels layer (only the
 gated object ids kept, background elsewhere) - the closest napari-native
 analog of vtea's colorized ImagePlus overlay repaint - and fills the gallery
-with a crop around each gated object.
+with a crop around each gated object. The highlight occupies the same volume
+and the same place as the data: it is put back on the source image's axes
+(a channel-sliced segmentation has one axis fewer, and napari right-aligns
+arrays of differing ndim, which silently mapped a z-stack onto the channel
+axis and made a gate look like one flat section) and carries the source
+layer's scale and translate, so on an anisotropic stack in microns it lands
+on the objects rather than near them. It is computed lazily, block by block,
+because a gate should not cost a full copy of the volume per gate.
+
+Image gates are the other direction: a region painted on a napari Labels
+layer becomes a column of the measurement table (which region each object is
+in), the objects inside are ringed on the plot in that region's own colour,
+and the column can then be used in a class definition like any other
+feature - which is what makes "CD3+ inside the tubule" expressible.
 """
 
 from __future__ import annotations
+
+import logging
 
 import numpy as np
 import pandas as pd
@@ -48,7 +63,15 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from vtea_core.gates import SEAM_GATE_COLOR, has_seam_columns, seam_gate
+from vtea_core.gates import (
+    CENTROID,
+    SEAM_GATE_COLOR,
+    centroids_from_frame,
+    column_name,
+    has_seam_columns,
+    image_gate,
+    seam_gate,
+)
 
 from vtea_napari.session import AnalysisSession, session_for
 from vtea_napari.widgets.association_review import AssociationReviewWidget
@@ -68,10 +91,18 @@ GALLERY_Z_RADIUS = 8
 # user reaches for on every run, since most runs have no seams at all.
 SEAM_TAB_NAME = "Seams"
 
-# The plot is the point of this pane; the gate manager beside it is
-# controls. Same 2:1 split the protocol builder used before this moved here.
-PLOT_WIDTH_SHARE = 2
-GATE_WIDTH_SHARE = 1
+# The plot is the point of this pane and the gate list is its controls, so
+# the list sits *under* the plot rather than beside it: side by side, the
+# plot lost a third of its width to a table, and the plot is now held at 4:3
+# (see plot.AspectRatioBox), which turns lost width into lost height as
+# well. Stacked, the plot gets the whole width and the list gets a strip.
+PLOT_HEIGHT_SHARE = 3
+GATE_HEIGHT_SHARE = 1
+
+# Above this many voxels a highlight is built lazily rather than copied.
+# A gate should not cost a full copy of the volume, and at four bytes a
+# voxel this is the point where one starts being noticeable.
+LAZY_HIGHLIGHT_VOXELS = 8_000_000
 
 # Big enough that the axes and the gate table are both usable when it first
 # appears floating over the canvas.
@@ -79,6 +110,13 @@ DEFAULT_FLOATING_SIZE = (900, 560)
 
 HIGHLIGHT_LAYER_NAME = "Gate highlight"
 REVIEW_LAYER_NAME = "Reviewing"
+
+# What the image-gate picker calls "no layer chosen".
+NO_IMAGE_GATE = "(none)"
+
+# napari's per-label colour API has moved twice and a colour is display-only,
+# so a version that has none of the routes is a debug line, not a failure.
+logger = logging.getLogger(__name__)
 
 
 def _solid_label_colormap(label_ids, color: str):
@@ -95,6 +133,59 @@ def _solid_label_colormap(label_ids, color: str):
         return DirectLabelColormap(color_dict=color_dict)
     except (TypeError, ValueError):
         return None
+
+
+def highlight_array(labels, gated_ids):
+    """The label image with only `gated_ids` kept, computed on the fly.
+
+    A gate highlight is a remap of the whole volume, and a protocol can have
+    a dozen gates; materialising each one costs a full copy of the
+    segmentation apiece, which on a real acquisition is gigabytes to show a
+    few hundred objects. Above a threshold this returns a lazy Dask array
+    instead, which napari renders by computing only the blocks it is
+    actually displaying - the same mechanism that lets it show a volume too
+    large for memory in the first place.
+
+    Small arrays are still computed eagerly: below the threshold the copy is
+    cheap and eager is one less moving part.
+    """
+    ids = np.asarray(sorted({int(one) for one in np.asarray(gated_ids).ravel()}))
+
+    def keep(block):
+        return np.where(np.isin(block, ids), block, 0)
+
+    size = int(np.prod(getattr(labels, "shape", ()) or (0,)))
+    if isinstance(labels, np.ndarray) and size <= LAZY_HIGHLIGHT_VOXELS:
+        return keep(labels)
+    try:
+        import dask.array as da
+    except ImportError:  # pragma: no cover - dask is a vtea-core dependency
+        return keep(np.asarray(labels))
+    source = labels if isinstance(labels, da.Array) else da.from_array(labels)
+    return source.map_blocks(keep, dtype=source.dtype)
+
+
+def _napari_label_color(layer, label: int) -> str | None:
+    """The colour napari draws one label in, as a hex string.
+
+    napari has moved this API twice (`get_color`, then `colormap.map`), and
+    a colour is display-only, so every route is tried and failure is simply
+    "no colour" rather than an error.
+    """
+    for getter in (
+        lambda: layer.get_color(label),
+        lambda: layer.colormap.map(np.array([label]))[0],
+        lambda: layer.colormap.map(label),
+    ):
+        try:
+            rgba = np.asarray(getter(), dtype=float).ravel()
+        except Exception:  # noqa: BLE001 - try the next route; see the docstring
+            logger.debug("%s has no colour for label %s", type(layer).__name__, label)
+            continue
+        if rgba.size >= 3:
+            red, green, blue = (round(255 * float(value)) for value in rgba[:3])
+            return f"#{red:02x}{green:02x}{blue:02x}"
+    return None
 
 
 def _apply_gate_color(layer, colormap) -> bool:
@@ -145,6 +236,10 @@ class ExplorerWidget(QWidget):
         # gate id -> (layer, signature); the signature is what the layer
         # was built from, so it is only rebuilt when that changes.
         self._highlight_layers: dict[str, tuple] = {}
+        # The napari Labels layer currently read as an image gate, and the
+        # colour its rings are drawn in when it holds a single region.
+        self._image_gate_layer: str = ""
+        self.ring_color = "#ffd400"
 
         root = QVBoxLayout(self)
 
@@ -165,6 +260,28 @@ class ExplorerWidget(QWidget):
             "restricted to their parent's."
         )
         header.addWidget(self.subgate_checkbox)
+        # An image gate: a region painted on a napari Labels layer, read as
+        # "which region is each object in". Only offered where there is a
+        # viewer to paint on.
+        self.image_gate_combo = QComboBox()
+        self.image_gate_combo.setToolTip(
+            "Ring the objects inside each region of a napari Labels layer, and add "
+            "which region they are in to the data as a column"
+        )
+        self.image_gate_combo.currentTextChanged.connect(self._on_image_gate_changed)
+        self.image_gate_label = QLabel("Image gate:")
+        header.addWidget(self.image_gate_label)
+        header.addWidget(self.image_gate_combo)
+        self.ring_color_button = QPushButton("Ring colour…")
+        self.ring_color_button.setToolTip(
+            "The colour objects inside a region are ringed in. With more than one "
+            "region, each ring matches that region's own colour in napari instead."
+        )
+        self.ring_color_button.clicked.connect(self.pick_ring_color)
+        header.addWidget(self.ring_color_button)
+        for widget in (self.image_gate_label, self.image_gate_combo, self.ring_color_button):
+            widget.setVisible(self.viewer is not None)
+
         header.addStretch()
         refresh_button = QPushButton("Refresh")
         refresh_button.setToolTip("Re-read the latest results from the protocol builder")
@@ -194,12 +311,15 @@ class ExplorerWidget(QWidget):
         plot_layout.addWidget(self.plot, 1)
         plot_layout.addWidget(self.style_panel)
 
-        self.results_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Plot on top, gate list underneath: the plot keeps the full width
+        # (and, at 4:3, the height that comes with it), and the list is a
+        # strip of controls rather than a column competing with the data.
+        self.results_splitter = QSplitter(Qt.Orientation.Vertical)
         self.results_splitter.addWidget(plot_pane)
         self.results_splitter.addWidget(self.gate_manager)
         self.results_splitter.setChildrenCollapsible(False)
-        self.results_splitter.setStretchFactor(0, PLOT_WIDTH_SHARE)
-        self.results_splitter.setStretchFactor(1, GATE_WIDTH_SHARE)
+        self.results_splitter.setStretchFactor(0, PLOT_HEIGHT_SHARE)
+        self.results_splitter.setStretchFactor(1, GATE_HEIGHT_SHARE)
 
         # The gallery is a second view of the same selection, not a third
         # column: it needs the full width to show a useful number of crops.
@@ -293,7 +413,13 @@ class ExplorerWidget(QWidget):
                 return
             # Keep the axes on screen across a re-run.
             self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
+            # Which columns are categories rather than measurements, from
+            # the catalog rather than from the values - so a clustering's
+            # output is coloured as clusters however its ids happen to look.
+            self.plot.set_discrete_columns(self.session.categorical_columns(frame))
             self.gate_manager.set_frame(frame)
+            self._refresh_image_gate_choices()
+            self.apply_image_gate()
             self.refresh_highlights()
             self.plot.apply_view_state(self.session.view_state)
             self.style_panel.read_from_plot()
@@ -320,8 +446,11 @@ class ExplorerWidget(QWidget):
             for existing in list(self.viewer.layers):
                 if existing.name == name:
                     self.viewer.layers.remove(existing)
+            one_object = self.align_to_source(
+                np.where(labels == ref.object_id, labels, 0).astype(np.int32)
+            )
             layer = self.viewer.add_labels(
-                np.where(labels == ref.object_id, labels, 0).astype(np.int32), name=name
+                one_object, name=name, **self.source_placement(one_object)
             )
             _apply_gate_color(layer, _solid_label_colormap([ref.object_id], colour))
 
@@ -460,6 +589,134 @@ class ExplorerWidget(QWidget):
             return
         self.set_data(layer.features, labels=np.asarray(layer.data))
 
+    # -- image gates ------------------------------------------------------
+
+    def label_layers(self) -> list:
+        """The napari Labels layers that could hold a region to gate on.
+
+        The highlight layers this pane adds are excluded: gating on a
+        highlight of a gate would be a loop, and they are not regions anyone
+        painted.
+        """
+        if self.viewer is None:
+            return []
+        excluded = (HIGHLIGHT_LAYER_NAME, REVIEW_LAYER_NAME)
+        return [
+            layer
+            for layer in self.viewer.layers
+            if type(layer).__name__ == "Labels" and not str(layer.name).startswith(excluded)
+        ]
+
+    def _refresh_image_gate_choices(self) -> None:
+        if self.viewer is None:
+            return
+        names = [NO_IMAGE_GATE] + [str(layer.name) for layer in self.label_layers()]
+        current = self.image_gate_combo.currentText() or NO_IMAGE_GATE
+        if names == [self.image_gate_combo.itemText(i) for i in range(self.image_gate_combo.count())]:
+            return
+        self.image_gate_combo.blockSignals(True)
+        self.image_gate_combo.clear()
+        self.image_gate_combo.addItems(names)
+        self.image_gate_combo.setCurrentText(current if current in names else NO_IMAGE_GATE)
+        self.image_gate_combo.blockSignals(False)
+
+    def _on_image_gate_changed(self, name: str) -> None:
+        self._image_gate_layer = "" if name in ("", NO_IMAGE_GATE) else name
+        self.apply_image_gate()
+
+    def pick_ring_color(self) -> None:
+        """Choose the colour objects inside a region are ringed in."""
+        from qtpy.QtGui import QColor
+        from qtpy.QtWidgets import QColorDialog
+
+        chosen = QColorDialog.getColor(QColor(self.ring_color), self, "Ring colour")
+        if chosen.isValid():
+            self.set_ring_color(chosen.name())
+
+    def set_ring_color(self, color: str) -> None:
+        self.ring_color = color
+        self.apply_image_gate()
+
+    def region_colors(self, layer, regions) -> dict:
+        """The colour napari draws each region in, so a ring matches it.
+
+        With one region there is nothing to match - "region 1" is not a
+        colour anybody chose - so the user's ring colour is used for all of
+        them. With several, the layer's own palette is what makes ring and
+        region legible as the same thing, and this asks napari for it
+        through whichever of its several colour APIs this version has.
+        """
+        regions = [int(region) for region in regions if int(region) != 0]
+        if len(regions) <= 1:
+            return {region: self.ring_color for region in regions}
+        colors = {}
+        for region in regions:
+            colors[region] = _napari_label_color(layer, region) or self.ring_color
+        return colors
+
+    def apply_image_gate(self) -> None:
+        """Read the chosen Labels layer as a gate: which region each object
+        is in, as a column of the table and as rings on the plot.
+
+        Recomputed rather than remembered, because the layer is *paint*: a
+        user draws another region and expects the plot to follow. It is
+        cheap by construction - one voxel read per object, from the
+        centroids the measurement step already produced.
+        """
+        frame = self.frame
+        if frame is None or not self._image_gate_layer:
+            self.plot.set_rings(None)
+            self.session.clear_image_gate()
+            return
+        layer = next(
+            (one for one in self.label_layers() if str(one.name) == self._image_gate_layer), None
+        )
+        labels = self.labels
+        if layer is None or labels is None:
+            self.plot.set_rings(None)
+            return
+        rois = np.asarray(layer.data)
+        object_ids = frame[self.id_column].to_numpy()
+        centroids = centroids_from_frame(frame, rois.ndim, prefix=self._centroid_prefix())
+        try:
+            memberships = image_gate(
+                labels,
+                rois,
+                object_ids=object_ids,
+                centroids=centroids,
+                mode=CENTROID,
+            )
+        except ValueError as exc:  # a layer of the wrong shape; say so
+            self.status_label.setText(f"{self._image_gate_layer}: {exc}")
+            self.plot.set_rings(None)
+            return
+
+        column = column_name(self._image_gate_layer)
+        # Published to the session rather than written into the frame here:
+        # the builder rebuilds the table on every run, and an image gate has
+        # to survive that to be usable in a class step.
+        self.session.set_image_gate(column, object_ids, memberships)
+        frame[column] = memberships
+        self.plot.set_data(frame, self.plot.x_column, self.plot.y_column)
+        self.plot.set_rings(
+            memberships,
+            self.region_colors(layer, np.unique(memberships)),
+            label=column,
+        )
+        inside = int((memberships != 0).sum())
+        regions = sorted({int(one) for one in np.unique(memberships) if int(one) != 0})
+        self.status_label.setText(
+            f"{column}: {inside} of {len(frame)} objects inside {len(regions)} region(s)"
+        )
+
+    def _centroid_prefix(self) -> str:
+        """Where this table's centroids live - namespaced on a per-cell
+        table by the segmentation its cells are rooted on."""
+        view = self.session.table_view()
+        if view is None or view.id_column == "object_id":
+            return ""
+        return f"{view.labels_key}."
+
     # -- gates ------------------------------------------------------------
 
     def _parent_gate_id(self) -> str | None:
@@ -528,14 +785,66 @@ class ExplorerWidget(QWidget):
             layer, previous = self._highlight_layers.get(gate.id, (None, None))
             if layer is None or layer not in self.viewer.layers or previous != signature:
                 self._remove_highlight(gate.id)
-                data = np.where(np.isin(labels, gated_ids), labels, 0)
-                layer = self.viewer.add_labels(data, name=name)
+                data = self.align_to_source(highlight_array(labels, gated_ids))
+                layer = self.viewer.add_labels(data, name=name, **self.source_placement(data))
                 _apply_gate_color(layer, _solid_label_colormap(gated_ids, gate.color))
                 self._highlight_layers[gate.id] = (layer, signature)
             layer.visible = gate.visible
 
         for gate_id in [gid for gid in self._highlight_layers if gid not in self.gate_set]:
             self._remove_highlight(gate_id)
+
+    def source_layer(self):
+        """The image layer the analysis was run on, when it is still loaded.
+
+        Where a highlight's scale and translate come from: an acquisition
+        with a physical voxel size places its data in microns, and a
+        highlight left at scale 1 sits somewhere the user is not looking.
+        """
+        name = self.session.source_layer_name
+        if self.viewer is None or not name:
+            return None
+        for layer in self.viewer.layers:
+            if str(layer.name) == str(name):
+                return layer
+        return None
+
+    def source_placement(self, data) -> dict:
+        """`scale` and `translate` for a layer that should sit exactly over
+        the source image - empty when there is nothing to copy them from, or
+        when they would not fit this array's dimensionality."""
+        layer = self.source_layer()
+        if layer is None:
+            return {}
+        placement = {}
+        for key in ("scale", "translate"):
+            try:
+                values = tuple(float(value) for value in getattr(layer, key))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if len(values) == getattr(data, "ndim", 0):
+                placement[key] = list(values)
+        return placement
+
+    def align_to_source(self, array):
+        """Give a highlight the source image's dimensionality again.
+
+        A channel-selecting protocol drops the channel axis, so a
+        segmentation of a (z, c, y, x) acquisition is (z, y, x). napari
+        right-aligns arrays of differing ndim, which maps that leading z
+        onto the *channel* axis of the world - so the highlight appeared as
+        one flat section that moved when the channel slider did, instead of
+        the volume it is. Re-inserting the channel axis as a singleton puts
+        it back on the same axes as the data.
+        """
+        channel_axis = self.session.channel_axis
+        source = self.source_layer()
+        source_ndim = getattr(getattr(source, "data", None), "ndim", None)
+        if channel_axis is None or source_ndim is None:
+            return array
+        if array.ndim == source_ndim - 1 and channel_axis <= array.ndim:
+            return array[(slice(None),) * channel_axis + (np.newaxis,)]
+        return array
 
     def _remove_highlight(self, gate_id: str) -> None:
         layer, _signature = self._highlight_layers.pop(gate_id, (None, None))

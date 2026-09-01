@@ -79,6 +79,19 @@ continuous bar where it does not; and reductions and clusterings - t-SNE,
 UMAP - are added to the data as features rather than to the viewer as
 layers. The analysis menus also gained UMAP, Louvain and Leiden.
 
+The Object Explorer has since grown the other half of that work: gate
+highlights that occupy the same volume and place as the data rather than one
+flat section of it, a plot fixed at 4:3 with the gate list beneath it, a LUT
+that colours categories (clusters, classes, ROIs) as categories and
+measurements as gradients, and **image gates** - a region painted on a napari
+Labels layer, whose objects are ringed on the plot in that region's own
+colour. The protocol's `gates` category became **`classes`**: a class is a
+rule (a range of a feature, a gate, an ROI, a cluster id, or any boolean
+combination of them) rather than a shape somebody drew, objects carry as
+many labels as apply, and two label sets cross into the hierarchy that makes
+"immune > CD3+" a population you can count and map. See
+`docs/PORT_PLAN.md`'s "Classes, label sets and image gates" section.
+
 The two panes are views of one analysis, sharing a
 `vtea_napari.session.AnalysisSession` keyed by the napari viewer: the
 builder publishes each run into it, the explorer plots and gates it, and
