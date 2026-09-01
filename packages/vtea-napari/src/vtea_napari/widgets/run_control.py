@@ -32,6 +32,7 @@ thread by construction, reads it back out and draws it.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -45,6 +46,12 @@ from qtpy.QtWidgets import QApplication, QPushButton, QWidget
 # How long to wait on the future between event-loop pumps. Short enough that
 # a click feels immediate, long enough not to spin.
 _PUMP_SECONDS = 0.05
+
+# A failed progress tick is logged at debug level rather than raised: it
+# fires every 50 ms, so a broken one would fill a terminal, and losing an
+# hour of computation because a progress bar could not be drawn would be the
+# worse of the two failures by a wide margin. Debug keeps it findable.
+logger = logging.getLogger(__name__)
 
 
 class CancelFlag:
@@ -159,9 +166,9 @@ class RunControl(QObject):
         `on_tick(elapsed_seconds)` is called on the *calling* thread every
         pump, which is what a progress bar is driven from: it is the one
         place in a run that is both regular and safely on the GUI thread.
-        Errors from it are swallowed rather than allowed to abort the run -
-        a bar that failed to draw is not a reason to lose an hour of
-        computation.
+        Errors from it are logged and swallowed rather than allowed to abort
+        the run - a bar that failed to draw is not a reason to lose an hour
+        of computation.
 
         `show_cancel` hides the Cancel button for a run too short to need
         one; the flag is still honoured, so a step that does poll it can
@@ -182,8 +189,9 @@ class RunControl(QObject):
                     if on_tick is not None:
                         try:
                             on_tick(time.monotonic() - started_at)
-                        except Exception:  # noqa: BLE001 - drawing must not kill the run
-                            pass
+                        except Exception:
+                            # Drawing must not kill the run - see `logger` above.
+                            logger.debug("progress tick failed", exc_info=True)
                     _pump()
                     try:
                         # Doubles as the wait and the result: whatever the
