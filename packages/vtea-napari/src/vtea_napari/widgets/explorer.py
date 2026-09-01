@@ -325,6 +325,7 @@ class ExplorerWidget(QWidget):
         # column: it needs the full width to show a useful number of crops.
         self.gallery = GalleryWidget()
         self.gallery.object_selected.connect(self._on_object_selected)
+        self.gallery.view_changed.connect(self._remember_gallery_view)
         # Reviewing the association is a third view of the same analysis, not
         # a third column: the few percent of links worth a person's attention
         # need the width to show what the alternatives were.
@@ -422,6 +423,7 @@ class ExplorerWidget(QWidget):
             self.apply_image_gate()
             self.refresh_highlights()
             self.plot.apply_view_state(self.session.view_state)
+            self.gallery.apply_view_state(self.session.view_state.get("gallery", {}))
             self.style_panel.read_from_plot()
             noun = self.session.row_noun()
             self.status_label.setText(f"{len(frame)} {noun}, {len(frame.columns)} features.")
@@ -709,6 +711,15 @@ class ExplorerWidget(QWidget):
             f"{column}: {inside} of {len(frame)} objects inside {len(regions)} region(s)"
         )
 
+    def _source_contrast_limits(self):
+        """What the viewer is displaying the source image at, if it says."""
+        layer = self.source_layer()
+        try:
+            low, high = (float(value) for value in layer.contrast_limits)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return (low, high) if high > low else None
+
     def _centroid_prefix(self) -> str:
         """Where this table's centroids live - namespaced on a per-cell
         table by the segmentation its cells are rooted on."""
@@ -729,6 +740,14 @@ class ExplorerWidget(QWidget):
         if self._restoring:
             return
         self.session.remember_view(self.plot.view_state())
+
+    def _remember_gallery_view(self) -> None:
+        """Which channels the crops are composited from, and how the
+        segmentation is tinted - kept with the plot's view for the same
+        reason: closing a napari dock destroys the widget."""
+        if self._restoring:
+            return
+        self.session.remember_view({"gallery": self.gallery.view_state()})
 
     def _on_gates_changed(self) -> None:
         self.session.set_gate_set(self.gate_manager.gate_set)
@@ -855,15 +874,15 @@ class ExplorerWidget(QWidget):
         intensity = self.session.intensity()
         if intensity is None or self.frame is None:
             return
-        # The gallery crops in (row, col), so a channel axis has to go first.
-        # Sliced rather than np.take: `take` on a Zarr array reads the whole
-        # channel into memory, which for a stored volume is the one thing
-        # the gallery is careful not to do. A plain index works lazily on
-        # Zarr and Dask alike and is the same operation on NumPy.
+        # The whole multi-channel array goes to the gallery now: it
+        # composites up to three channels itself, and slices each chosen one
+        # out lazily at crop time. Slicing one channel here would decide for
+        # it - and would show a nucleus stain where the user asked for the
+        # membrane marker.
         channel_axis = self.session.channel_axis
-        ndim = len(intensity.shape)
-        if channel_axis is not None and ndim > 2 and channel_axis < ndim:
-            intensity = intensity[(slice(None),) * channel_axis + (0,)]
+        ndim = len(getattr(intensity, "shape", ()))
+        if channel_axis is not None and (ndim <= 2 or channel_axis >= ndim):
+            channel_axis = None
         view = self.session.table_view()
         # A per-cell table's centroids are namespaced by the segmentation
         # they were measured on, so crop around the one the cells are rooted
@@ -875,6 +894,15 @@ class ExplorerWidget(QWidget):
             gated_ids,
             id_column=self.id_column,
             prefix=prefix,
+            channel_axis=channel_axis,
+            # The segmentation these ids come from, so each crop can be
+            # tinted where *this* object is - which is what tells you which
+            # cell a dot on the plot stands for.
+            labels=self.labels,
+            # Scale the crops the way the viewer is scaling the image, so
+            # the grid is comparable cell to cell and a channel that is dark
+            # here is dark rather than amplified noise.
+            contrast_limits=self._source_contrast_limits(),
             # Crop the depth as well as the plane. Projecting every slice of
             # a thousand-slice stack is a reduction over the volume rather
             # than a thumbnail of an object, and the object is a few slices

@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (608 tests, including real
+Phase 4 done. Implemented and tested (645 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -342,7 +342,21 @@ widget and run it):
   cropped around each object's centroid (replaces `GalleryViewWindow`).
   Clicking a crop outlines it in yellow and highlights that object alone on
   the image; the outline survives a refresh that still shows the object and
-  clears silently on one that doesn't.
+  clears silently on one that doesn't. Each crop is a **composite of up to
+  three channels**, each in its own LUT (grey/magenta/cyan by default, or a
+  matplotlib map), chosen once for the whole grid — a grid where each
+  picture was made differently is not comparable, and comparing is what a
+  gallery is for. The **segmentation is tinted on top** in a colour and
+  opacity of your choosing, which is what says *which* cell a dot on the
+  scatter plot stands for; opacity rather than a solid fill because an
+  opaque mask hides the intensities it is meant to identify. Crops are
+  scaled against the viewer's own contrast limits where it has them, so a
+  channel with no signal in one cell reads as dark there instead of a
+  screenful of amplified noise. **Hovering a crop shows it at 2×** until
+  the pointer moves away — 64 pixels is enough to find a cell in and not
+  enough to judge one by — and the grid itself is drawn edge to edge, with
+  the column count following the pane's width so there is no bar of empty
+  widget beside it.
 
 ## Try it
 
