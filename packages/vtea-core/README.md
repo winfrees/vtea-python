@@ -83,9 +83,22 @@ Phases 0-4 are done. Implemented and tested:
   measured, on which channel and segmentation, by which step with what
   parameters, and for a derived feature which features were fed to it),
   saved as JSON and rendered as the publication data dictionary
-- **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`, `auto_k_kmeans`
+- **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`,
+  `auto_k_kmeans`; plus `louvain` and `leiden` (new) - community detection
+  over a shared-nearest-neighbour graph (`shared_neighbor_graph`), which
+  decide how many populations there are rather than being told. Every other
+  method here has to be given `k` before it has looked at the tissue, and
+  the number of cell types in a biopsy is the thing being measured.
+  `resolution` moves the granularity instead. Needs the `graph` extra
+  (python-igraph, leidenalg); the steps stay in the menu without it and say
+  what to install when run
 - **reduction**: `pca`, `pca_explained_variance`, `isomap`,
-  `laplacian_eigenmap`, `tsne`
+  `laplacian_eigenmap`, `tsne`, and `umap` (new) - the projection the Java
+  original predates: it keeps global structure t-SNE discards (the distance
+  between two t-SNE islands means nothing), runs an order of magnitude
+  faster at tissue-scale object counts, and can project new objects into an
+  existing embedding, which is what makes a second acquisition comparable
+  to the first. Needs the `umap` extra (umap-learn)
 - **gates**: `polygon_gate`, `rectangle_gate`, `rectangle_vertices`
   (boolean-array primitives);
   `Gate`/`GateSet` (new) - named, stateful gates with real hierarchy
@@ -110,7 +123,26 @@ Phases 0-4 are done. Implemented and tested:
   A step declaring a `feature_input` is handed the measurement *table* and
   narrows it to its own `Step.features` selection, so "this clustering used
   these six of the forty measured features" is part of the protocol rather
-  than something the caller did on the way in
+  than something the caller did on the way in.
+  `wiring.produces_image`/`Step.produces_image` separate the steps whose
+  result is a picture from the ones whose result is per-object numbers - a
+  t-SNE embedding of nine thousand nuclei is a (9000, 2) array, and without
+  that distinction it lands in the viewer as a two-pixel-wide stripe rather
+  than as the two features it is.
+  `measure.sync_measurement_steps` (new) keeps one measurement step per
+  segmentation, named after it (`measure_<segmentation>`) and recorded on
+  the step (`Step.auto_for`), so a protocol that derives a cytosol ring from
+  a nucleus measures both without anyone having to remember to;
+  `rename_segmentation` follows a renamed segmentation into the step raised
+  for it. `cost.estimate_seconds`/`StepCost`/`Calibration` (new) say how
+  long a step should take before it is run - from the size of the tile and
+  a per-step cost, calibrated against what the steps actually took on this
+  machine - and return None for the steps whose runtime genuinely cannot be
+  predicted (t-SNE, UMAP, Leiden, agglomerative clustering), which is what
+  a GUI needs in order to show a continuous progress bar instead of an
+  invented fraction. `Step.settings_signature` is what "a setting changed"
+  means: everything about a step that decides what it computes, and
+  deliberately not its name
 
 There is no separate `deeplearning` module - see PORT_PLAN.md's "Why deep
 learning isn't a separate module". `cellpose_segmentation` lives in
@@ -145,8 +177,9 @@ src/vtea_core/
                     segmented channels, the cells those links compose into,
                     and the per-voxel ownership underneath them
   measurements/     MeasurementStore (DuckDB) + regionprops-based extraction
-  clustering/       KMeans, GMM, hierarchical, BIC-based automatic-k selection
-  reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE
+  clustering/       KMeans, GMM, hierarchical, BIC-based automatic-k selection,
+                    and graph-based community detection (Louvain, Leiden)
+  reduction/        PCA, Isomap, Laplacian Eigenmap, t-SNE, UMAP
   gates/            Boolean gate math (polygon/rectangle point-membership tests)
                     plus Gate/GateSet (named, hierarchical gates over a
                     measurement DataFrame)
@@ -154,7 +187,10 @@ src/vtea_core/
   classification/   class_map (label-remap) + a small torch 3D CNN
                     (train_classifier/predict) for supervised object classification
   workflow/         Step/Pipeline engine + the category -> function step registry
-                    driving vtea-napari's protocol builder widget
+                    driving vtea-napari's protocol builder widget, the
+                    measurement-per-segmentation rules (measure.py) and the
+                    a priori step-duration estimates behind its progress
+                    bars (cost.py)
 ```
 
 Each subpackage's built-in implementations register into an
@@ -174,3 +210,18 @@ so importing `vtea_core.segmentation` itself never requires the extra.
 module degrades gracefully: `class_map` is always available, and
 `Cell3DClassifier`/`train_classifier`/`predict` are only exposed if `torch`
 is installed.
+
+## The `umap` and `graph` extras
+
+`umap-learn` (for `reduction.umap`) and `python-igraph`/`leidenalg` (for
+`clustering.louvain`/`leiden`) are optional the same way:
+`pip install "vtea-core[umap]"` and `pip install "vtea-core[graph]"`.
+
+They differ from `deeplearning` in one deliberate way: those steps stay in
+`STEP_REGISTRY` - and so in the protocol builder's menu - whether or not the
+backend is installed, because the import that would fail is inside the
+function. Picking UMAP without umap-learn therefore fails with the command
+to install it, rather than the step quietly not being there and the user
+concluding VTEA has no UMAP. Louvain falls back to `networkx` where igraph
+is missing, and Leiden to python-igraph's own implementation where
+`leidenalg` is.

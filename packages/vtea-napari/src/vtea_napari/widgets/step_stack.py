@@ -48,6 +48,10 @@ class StepStackWidget(QWidget):
     steps_changed = Signal()
     run_step_requested = Signal(object)  # vtea_core.workflow.Step
     step_renamed = Signal(str, str)  # old name, new name
+    # A step whose *settings* changed - not merely its name. What was
+    # computed from the old settings is no longer this step's result, so the
+    # owner re-runs it and everything downstream of it.
+    step_settings_changed = Signal(object)  # vtea_core.workflow.Step
 
     def __init__(
         self,
@@ -119,6 +123,10 @@ class StepStackWidget(QWidget):
         add_row.addWidget(add_button)
         root.addLayout(add_row)
 
+        # step -> the card showing it, so the owner can drive one card's
+        # progress bar while its step runs.
+        self._cards: dict[int, StepCardWidget] = {}
+
         self._steps_container = QWidget()
         self._steps_layout = QVBoxLayout(self._steps_container)
         self._steps_layout.addStretch()
@@ -173,13 +181,23 @@ class StepStackWidget(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
+        self._cards.clear()
         results = self._results_provider()
         for position, step in enumerate(self.pipeline, start=1):
             # Prefer this step's own named result: with two segmentations in
             # one protocol, the shared "labels" key holds whichever ran last,
             # so every card would show the same thumbnail.
-            result = results.get(step.result_key, results.get(step.output_key))
+            #
+            # Only for a step that produces an image. A t-SNE embedding is a
+            # (n_objects, 2) array, and a thumbnail of it is a two-pixel-wide
+            # stripe that says nothing about anything.
+            result = (
+                results.get(step.result_key, results.get(step.output_key))
+                if step.produces_image
+                else None
+            )
             card = StepCardWidget(position, step, thumbnail=result)
+            self._cards[id(step)] = card
             card.edit_requested.connect(lambda s=step: self._edit_step(s))
             card.delete_requested.connect(lambda s=step: self._delete_step(s))
             card.run_requested.connect(lambda s=step: self.run_step_requested.emit(s))
@@ -197,6 +215,7 @@ class StepStackWidget(QWidget):
             feature_catalog=self._feature_catalog_provider(),
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            before = step.settings_signature
             step.params = dialog.updated_params()
             step.channel = dialog.updated_channel()
             step.input_keys = dialog.updated_input_keys()
@@ -204,6 +223,21 @@ class StepStackWidget(QWidget):
             self.rename_step(step, dialog.updated_name())
             self.refresh_steps()
             self.steps_changed.emit()
+            if step.settings_signature != before:
+                # A setting changed, so this step's last result was computed
+                # from something else. Announced after steps_changed so the
+                # owner has already re-synced the protocol before it decides
+                # what to re-run.
+                self.step_settings_changed.emit(step)
+
+    def card_for(self, step: Step) -> StepCardWidget | None:
+        """The card showing `step`, or None when this stack does not show it.
+
+        Keyed by identity rather than by name: a card is looked up while a
+        step is being renamed, which is exactly when its name is not a
+        reliable key.
+        """
+        return self._cards.get(id(step))
 
     def rename_step(self, step: Step, name: str) -> None:
         """Apply an edited name, keeping names unique. A blank name means

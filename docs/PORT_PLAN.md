@@ -88,6 +88,64 @@ Scoping this against the actual `ProtocolManagerMulti`/`blockstepgui` source cor
 - Gate → image highlighting uses napari's own `Labels` layer as the highlight surface (an "only the gated ids" remap of the source label array) rather than a custom colorized-overlay renderer, since that's already the idiomatic napari mechanism.
 - Step-card thumbnails (Phase 4's other originally-open item) share the same array→`QPixmap` helper as the gallery view (`thumbnail.py`), driven by `ProtocolBuilderWidget.run_pipeline()`'s last-run context.
 
+## Beyond the port: measurement coverage, responsiveness, and two new methods (decided)
+
+Four changes that the Java original does not have an answer to, grouped
+because they came from the same review of how the builder behaves once a
+protocol has more than one segmentation in it.
+
+- **Every segmentation is measured.** The Java UI and the first Python pass
+  both measured whichever segmentation a measurement step was pointed at,
+  which means a protocol that derives a cytosol ring from a nucleus
+  measures the ring only if somebody remembers to add a second measurement
+  step and re-point it. That is a silent hole in an analysis, and the
+  common case (`label_ring`, `label_shell`, `expand_labels`) makes it the
+  *normal* case. `vtea_core.workflow.measure` derives the measurement steps
+  from the segmentations instead - one per named segmentation, named after
+  it, with the pairing recorded on the step (`Step.auto_for`) rather than
+  inferred from the wiring afterwards. That record is what lets a rename
+  follow, a delete take its measurement with it, and a hand-added
+  measurement suppress the automatic one. Each segmentation's table is
+  published separately rather than joined: a ring's rows are rings, and
+  pairing them with nuclei is a claim only an association step may make.
+- **A changed setting recalculates.** A step's result and the settings shown
+  on its card have to describe each other. `Step.settings_signature` is
+  what "changed" means - parameters, channel, wiring, feature selection,
+  and deliberately not the name - and the builder re-runs the edited step
+  and the steps downstream of it that had already run. Steps never run are
+  left alone: editing is not a request to compute.
+- **Progress and the GUI thread.** Every step card carries a small progress
+  bar (no wider or taller than its own buttons), and the steps run on a
+  worker thread while the event loop keeps being pumped, so a long run
+  leaves the window responsive - the Java rule about not computing on the
+  event dispatch thread, in Qt terms. Two kinds of progress, because there
+  are honestly two: `vtea_core.workflow.cost` estimates a duration a priori
+  from the size of the work (voxels in the tile, objects in the table) for
+  the steps whose runtime follows from it, calibrated against what those
+  steps actually took on this machine; and the steps whose runtime does not
+  follow from their input - t-SNE, UMAP, Leiden, agglomerative clustering -
+  are marked as such and get a continuous bar rather than an invented
+  fraction. A tiled run reports the exact fraction it already has.
+  Progress crosses from the worker to the GUI through a relay
+  (`run_control.ProgressRelay`) rather than by a worker thread setting a
+  widget's text, which in Qt is not a cosmetic bug.
+- **Reductions and clusterings are features, not layers.** A t-SNE
+  embedding of nine thousand nuclei is a (9000, 2) array, and nothing in a
+  step's signature separates that from a 9000x2 image - so it used to land
+  in the viewer as a two-pixel-wide stripe. `wiring.produces_image` says
+  which outputs are pictures; everything else goes to the data table and
+  the Object Explorer's axes, where it means something.
+- **Two methods the Java version predates.** `reduction.umap` (it keeps the
+  global structure t-SNE discards, and can project new objects into an
+  existing embedding, which is what makes a second acquisition comparable
+  to the first) and `clustering.louvain`/`leiden` (community detection over
+  a shared-nearest-neighbour graph - the only clustering here that decides
+  how many populations there are instead of being told). Their backends are
+  optional extras, but unlike the `deeplearning` extra the steps stay in
+  the menu without them and name the package to install when run: a step
+  that is missing because a dependency is missing looks, from the menu,
+  exactly like a step VTEA does not have.
+
 ## Phased roadmap
 
 | Phase | Content | Est. effort |

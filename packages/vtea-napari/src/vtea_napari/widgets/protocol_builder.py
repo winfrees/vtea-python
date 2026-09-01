@@ -23,11 +23,14 @@ means closing either pane loses nothing.
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -43,7 +46,9 @@ from qtpy.QtWidgets import (
 from vtea_core.blocked import format_bytes
 from vtea_core.measurements import FeatureCatalog, feature_matrix
 from vtea_core.objects import AssociationSet, CellCollection, Ownership
-from vtea_core.workflow import Pipeline, Step
+from vtea_core.workflow import Calibration, Pipeline, Step, estimate_seconds, format_duration
+from vtea_core.workflow import rename_segmentation as rename_measured_segmentation
+from vtea_core.workflow import sync_measurement_steps as sync_measurements
 
 from vtea_napari.session import AnalysisSession, TableView, session_for
 from vtea_napari.widgets.feature_select import FeatureSelectWidget
@@ -51,7 +56,7 @@ from vtea_napari.widgets.log_view import LogView
 from vtea_napari.widgets.memory_control import MemoryControl
 from vtea_napari.widgets.param_form import ParameterForm
 from vtea_napari.widgets.roi_preview import PREVIEW_PREFIX, PreviewControl, visible_region
-from vtea_napari.widgets.run_control import RunControl
+from vtea_napari.widgets.run_control import ProgressRelay, RunControl
 from vtea_napari.widgets.spacing_control import SpacingControl
 from vtea_napari.widgets.step_stack import StepStackWidget
 
@@ -101,6 +106,84 @@ def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
         return {f"{name}_{index + 1}": result[:, index] for index in range(result.shape[1])}
     return {}
 
+
+# How far a determinate progress bar may run before its step actually
+# finishes. A bar that sat at 100% while the step ran on would be a lie
+# told at exactly the moment the user is deciding whether it has hung.
+MAX_ESTIMATED_FRACTION = 0.99
+
+
+class StepProgressDisplay:
+    """Drives whichever step card is currently running.
+
+    Every method here runs on the GUI thread - it is called from
+    RunControl's pump loop, which is the one place during a run that is
+    both regular and safely on the thread that owns the widgets. The
+    running step's *name* comes from the worker thread through a
+    ProgressRelay; nothing else crosses.
+
+    A step with an estimate gets a bar that advances with the clock and a
+    tooltip counting down; one without gets Qt's continuous bar. The
+    advancing bar stops just short of full: it is an estimate, and the step
+    finishing is what completes it.
+    """
+
+    def __init__(self, card_for):
+        self._card_for = card_for
+        self._card = None
+        self._name = ""
+        self._estimate: float | None = None
+        self._started_at = 0.0
+        self._determinate = False
+
+    def show(self, name: str, estimate: float | None = None) -> None:
+        """Report that the step called `name` is the one running now."""
+        if name == self._name:
+            self._advance()
+            return
+        self.finish()
+        if not name:
+            return
+        self._name = name
+        self._estimate = estimate
+        self._determinate = estimate is not None
+        self._started_at = time.monotonic()
+        self._card = self._card_for(name)
+        if self._card is not None:
+            self._card.begin_progress(estimate)
+
+    def report_fraction(self, name: str, fraction: float) -> None:
+        """Report a step that knows exactly how far along it is.
+
+        A tiled run counts tiles, which beats any estimate from the clock -
+        so the bar switches from continuous to measured the moment a real
+        fraction arrives.
+        """
+        self.show(name)
+        if self._card is None:
+            return
+        if not self._determinate:
+            self._card.set_determinate()
+            self._determinate = True
+        self._card.set_progress(fraction)
+
+    def _advance(self) -> None:
+        if self._card is None or not self._estimate:
+            return
+        elapsed = time.monotonic() - self._started_at
+        self._card.set_progress(
+            min(elapsed / self._estimate, MAX_ESTIMATED_FRACTION),
+            remaining=max(self._estimate - elapsed, 0.0),
+        )
+
+    def finish(self) -> None:
+        """Nothing is running any more: put every bar away."""
+        if self._card is not None:
+            self._card.end_progress()
+        self._card = None
+        self._name = ""
+        self._estimate = None
+        self._determinate = False
 
 
 class EditStepDialog(QDialog):
@@ -310,6 +393,18 @@ class ProtocolBuilderWidget(QWidget):
         self.blocked_ledgers: dict = {}
         # Which axis is depth; used to present results as full z-stacks.
         self.z_axis: int | None = None
+        # What the steps actually cost on this machine, learned as they run,
+        # so the progress bars stop being wrong in the same direction every
+        # time - see vtea_core.workflow.cost.
+        self.calibration = Calibration()
+        # What a running step has to say, written on the worker thread and
+        # read on this one. Nothing else crosses that boundary.
+        self.progress = ProgressRelay()
+        self.step_progress = StepProgressDisplay(self.card_for_name)
+        # The signatures the current results were computed from, so an edit
+        # that changes a setting can be told from one that only renames -
+        # see recalculate_from.
+        self._computed_signatures: dict[str, tuple] = {}
 
         root = QVBoxLayout(self)
 
@@ -363,6 +458,22 @@ class ProtocolBuilderWidget(QWidget):
         self.run_control = RunControl(self)
         top_row.addWidget(self.run_control.widget())
 
+        # A protocol usually has more than one segmentation - a nucleus, a
+        # ring derived from it - and every one of them is a population worth
+        # measuring. On by default because the alternative is an analysis
+        # silently missing the ring; a switch rather than a rule because a
+        # protocol that segments an intermediate mask it does not care about
+        # should be able to say so.
+        self.measure_all_check = QCheckBox("Measure every segmentation")
+        self.measure_all_check.setToolTip(
+            "Keep one measurement step per segmentation, named after it "
+            "(measure_<segmentation>). Renaming a segmentation renames its "
+            "measurement; deleting one removes it."
+        )
+        self.measure_all_check.setChecked(True)
+        self.measure_all_check.toggled.connect(lambda _on: self.sync_measurement_steps())
+        top_row.addWidget(self.measure_all_check)
+
         # Run the protocol over the part of the image on screen, at the
         # resolution on screen. On a dataset where a full run is measured in
         # hours, this is the only way to tune a parameter at all.
@@ -409,6 +520,9 @@ class ProtocolBuilderWidget(QWidget):
         )
         self.processing_stack.run_step_requested.connect(self.run_single_step)
         self.processing_stack.step_renamed.connect(self.repoint_inputs)
+        # A segmentation added or deleted changes what there is to measure.
+        self.processing_stack.steps_changed.connect(self.sync_measurement_steps)
+        self.processing_stack.step_settings_changed.connect(self.recalculate_from)
 
         self.analysis_stack = StepStackWidget(
             self.ANALYSIS_CATEGORIES,
@@ -428,6 +542,7 @@ class ProtocolBuilderWidget(QWidget):
         )
         self.analysis_stack.run_step_requested.connect(self.run_single_step)
         self.analysis_stack.step_renamed.connect(self.repoint_inputs)
+        self.analysis_stack.step_settings_changed.connect(self.recalculate_from)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.addWidget(self.processing_stack)
@@ -625,12 +740,182 @@ class ProtocolBuilderWidget(QWidget):
         return choices
 
     def repoint_inputs(self, old_name: str, new_name: str) -> None:
-        """Follow a rename through every step that referred to the old name."""
+        """Follow a rename through the whole protocol.
+
+        Three things carry a step's name and all three have to move with it:
+        the inputs of every step wired to it, the result it has already
+        published (under the old name, in the run context and in the feature
+        catalog), and - when a segmentation is what was renamed - the
+        measurement step raised for it, which is named after it.
+
+        A rename that left any of those behind would be worse than not
+        allowing renames at all: the protocol would still look right and
+        would measure the wrong thing, or nothing.
+        """
+        self._repoint(old_name, new_name)
+        self._rename_result(old_name, new_name)
+        for step, previous in rename_measured_segmentation(
+            self.analysis_pipeline, old_name, new_name, taken_names=self.step_names()
+        ):
+            if previous and previous != step.name:
+                self._repoint(previous, step.name)
+                self._rename_result(previous, step.name)
+        self.refresh_steps()
+
+    def _repoint(self, old_name: str, new_name: str) -> None:
         for step in self.all_steps():
             for parameter, key in list(step.input_keys.items()):
                 if key == old_name:
                     step.input_keys[parameter] = new_name
+
+    def _rename_result(self, old_name: str, new_name: str) -> None:
+        """Move what a step has already produced onto its new name."""
+        if old_name in self.last_context:
+            self.last_context[new_name] = self.last_context.pop(old_name)
+        if old_name in self._computed_signatures:
+            self._computed_signatures[new_name] = self._computed_signatures.pop(old_name)
+        self.session.feature_catalog.rename_source(old_name, new_name)
+
+    # -- measuring every segmentation -------------------------------------
+
+    def sync_measurement_steps(self) -> list[Step]:
+        """Keep one measurement step per segmentation - see
+        vtea_core.workflow.measure.
+
+        Returns the steps it raised. A no-op when the switch is off, and
+        idempotent otherwise, so it can be wired straight to "the steps
+        changed" without having to work out what changed.
+        """
+        if not getattr(self, "measure_all_check", None) or not self.measure_all_check.isChecked():
+            return []
+        added, removed = sync_measurements(
+            self.pipeline,
+            self.analysis_pipeline,
+            available=set(self.analysis_stack.seed_keys) | set(self.last_context),
+            taken_names=self.step_names(),
+        )
+        if not added and not removed:
+            return []
+        for step in removed:
+            self._computed_signatures.pop(step.name, None)
         self.refresh_steps()
+        parts = []
+        if added:
+            parts.append(f"measuring {', '.join(step.auto_for for step in added)}")
+        if removed:
+            parts.append(f"dropped {', '.join(step.name for step in removed)}")
+        self.status_label.setText("; ".join(parts))
+        return added
+
+    # -- estimating and re-running ----------------------------------------
+
+    def card_for(self, step: Step):
+        """The card showing `step`, from whichever pane holds it."""
+        for stack in (self.processing_stack, self.analysis_stack):
+            card = stack.card_for(step)
+            if card is not None:
+                return card
+        return None
+
+    def card_for_name(self, name: str):
+        """The card of the step whose result is called `name`."""
+        for step in self.all_steps():
+            if step.result_key == name:
+                return self.card_for(step)
+        return None
+
+    def estimate_for(self, step: Step) -> float | None:
+        """How long `step` should take on this data, or None for a step
+        whose duration cannot honestly be predicted - see
+        vtea_core.workflow.estimate_seconds.
+
+        Sized from the tile the protocol would actually run in where there
+        is a plan for one, and from the whole image otherwise, because those
+        are the same number of voxels only when the data fits in memory.
+        """
+        voxels, tiles = self._work_size()
+        frame = self.results_table()
+        n_objects = 0 if frame is None else len(frame)
+        n_features = 0
+        if frame is not None and step.feature_input is not None:
+            n_features = len(step.selected_features(frame))
+        return estimate_seconds(
+            step,
+            voxels=voxels,
+            n_objects=n_objects,
+            n_features=n_features,
+            tiles=tiles,
+            calibration=self.calibration,
+        )
+
+    def _work_size(self) -> tuple[int, int]:
+        """(voxels per tile, number of tiles) for the current source."""
+        data = self.source_data()
+        shape = getattr(data, "shape", None)
+        if not shape:
+            return 0, 1
+        plan = self.tile_plan()
+        if plan is not None and not plan.is_single_tile:
+            return int(np.prod(plan.padded_tile)), plan.n_tiles
+        return int(np.prod(shape)), 1
+
+    def stale_steps(self, step: Step) -> list[Step]:
+        """`step` and everything downstream of it, in protocol order.
+
+        Downstream means reading this step's result: by its name, or - for
+        the last step to write a shared key like "labels" - by that key,
+        since that is the one a later step wired to the default is actually
+        reading. Anything else would sweep in the steps that read a
+        *different* segmentation's labels and re-run half the protocol.
+        """
+        order = self.all_steps()
+        if step not in order:
+            return []
+        tainted = {step.result_key}
+        if self._is_last_producer(step, order):
+            tainted.add(step.output_key)
+        affected = [step]
+        for other in order[order.index(step) + 1 :]:
+            if any(key in tainted for key in other.input_keys.values()):
+                affected.append(other)
+                tainted.add(other.result_key)
+                if self._is_last_producer(other, order):
+                    tainted.add(other.output_key)
+        return affected
+
+    @staticmethod
+    def _is_last_producer(step: Step, order: list[Step]) -> bool:
+        producers = [other for other in order if other.output_key == step.output_key]
+        return bool(producers) and producers[-1] is step
+
+    def recalculate_from(self, step: Step) -> list[Step]:
+        """Re-run `step` and everything downstream that has already run.
+
+        This is what a changed setting means: the result on the card was
+        computed from parameters that are no longer this step's, and leaving
+        it there would show a segmentation nobody asked for next to the
+        settings that did not produce it. Steps that have never run are left
+        alone - they have nothing stale to correct, and running them
+        unasked is how a click on "Edit" turns into an hour of watershed.
+        """
+        if self.run_control.busy:
+            return []
+        if self._computed_signatures.get(step.result_key) == step.settings_signature:
+            # Whatever changed, it was not a setting this step computes from
+            # - a rename, or a call made for a step nobody has touched.
+            return []
+        affected = [
+            other for other in self.stale_steps(step) if other.result_key in self.last_context
+        ]
+        if not affected:
+            return []
+        self.status_label.setText(
+            f"{step.result_key} changed - recalculating "
+            f"{', '.join(other.result_key for other in affected)}"
+        )
+        for other in affected:
+            self.run_single_step(other, show_result=False)
+        return affected
 
     def n_channels(self) -> int | None:
         """How many channels the active image has along the chosen channel
@@ -657,7 +942,9 @@ class ProtocolBuilderWidget(QWidget):
         self.analysis_pipeline.channel_axis = self.pipeline.channel_axis
         for step in self.analysis_pipeline.steps:
             working = dict(self.last_context)
+            self._seed_axes(working)
             self._seed_feature_matrix(working)
+            self._seed_measurement_tables(working)
             result = step.run(
                 working,
                 channel_axis=self.pipeline.channel_axis,
@@ -668,6 +955,7 @@ class ProtocolBuilderWidget(QWidget):
                 working[step.name] = result
             self.last_context = working
             self._merge_into_measurements(step, result)
+        self._record_signatures(self.all_steps())
         self.refresh_steps()
         self._publish_results()
         return self.last_context
@@ -682,6 +970,18 @@ class ProtocolBuilderWidget(QWidget):
                 if step.channel is not None:
                     return step.channel
         return None
+
+    def _seed_axes(self, context: dict) -> None:
+        """Supply the two facts no step produces and the builder owns: which
+        axis is the channel axis, and how big a voxel is.
+
+        Seeded rather than assumed present because a measurement step is
+        wired to both, and a run driven from a script or a test starts from
+        whatever context it was handed. Absent, the step aborts with "needs
+        context key(s) ['channel_axis']" - which is true and useless.
+        """
+        context.setdefault("channel_axis", self.pipeline.channel_axis)
+        context.setdefault("spacing", self.spacing_control.spacing())
 
     def seed_context(self) -> dict:
         """Starting context for a run: the chosen image under both the key
@@ -727,14 +1027,92 @@ class ProtocolBuilderWidget(QWidget):
         # ledger against this run's table.
         self.blocked_ledgers = {}
         try:
-            self.last_context = self.pipeline.run(context)
+            self.last_context = self._run_off_thread(self.pipeline, context)
         except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
             self.status_label.setText(f"{type(exc).__name__}: {exc}")
             return self.last_context
+        self._record_signatures(self.pipeline.steps)
         self.refresh_steps()
         self._publish_results()
         self.status_label.setText("Processing finished.")
         return self.last_context
+
+    def _run_off_thread(self, pipeline: Pipeline, context: dict) -> dict:
+        """Run `pipeline` on a worker thread, driving the cards' progress
+        bars from this one.
+
+        Even an in-memory run is minutes on a real acquisition, and a window
+        that has stopped repainting is indistinguishable from one that has
+        crashed. Nothing about the pipeline changes: it is the same
+        `Pipeline.run`, and its result comes back to this thread, which is
+        the only one that touches a layer. Re-entrancy - a step already
+        running - falls back to running here rather than refusing, since the
+        caller is then already off the GUI thread.
+        """
+        if self.run_control.busy:
+            return pipeline.run(context)
+        estimates = {step.result_key: self.estimate_for(step) for step in pipeline.steps}
+        total = self._describe_total(pipeline.steps, estimates)
+        if total:
+            self.status_label.setText(f"Running {len(pipeline.steps)} step(s), {total}")
+        started = {}
+
+        def report(step, done, count):
+            # Worker thread: writes to the relay, touches nothing.
+            name = "" if step is None else step.result_key
+            self.progress.report(
+                f"step {done + 1} of {count}: {name}" if step is not None else "",
+                fraction=done / max(count, 1),
+                name=name,
+            )
+
+        def on_tick(_elapsed):
+            message, _fraction, name = self.progress.snapshot()
+            if message:
+                self.status_label.setText(message)
+            started.setdefault(name, time.monotonic())
+            self.step_progress.show(name, estimates.get(name))
+
+        self.progress.clear()
+        try:
+            result = self.run_control.run(
+                lambda _should_stop: pipeline.run(context, progress=report),
+                on_tick=on_tick,
+            )
+        finally:
+            self.step_progress.finish()
+            self.progress.clear()
+        self._observe_durations(pipeline.steps, started, estimates)
+        return result
+
+    def _describe_total(self, steps, estimates: dict) -> str:
+        """"about 4 min" for a whole protocol, or the fact that it cannot be
+        said - which is itself worth saying before somebody commits an
+        afternoon to a run."""
+        known = [estimates.get(step.result_key) for step in steps]
+        timed = [value for value in known if value is not None]
+        if not timed:
+            return ""
+        total = format_duration(sum(timed))
+        if len(timed) < len(known):
+            return f"at least {total}"
+        return total
+
+    def _observe_durations(self, steps, started: dict, estimates: dict) -> None:
+        """Feed what the steps actually took back into the estimates.
+
+        Timed from when each step was first seen running to when the next
+        one was, which is as fine-grained as the pump loop allows and quite
+        enough to catch an estimate that is out by a factor of four.
+        """
+        marks = sorted(started.items(), key=lambda item: item[1])
+        for index, (name, start) in enumerate(marks):
+            end = marks[index + 1][1] if index + 1 < len(marks) else time.monotonic()
+            step = next((one for one in steps if one.result_key == name), None)
+            if step is not None:
+                self.calibration.observe(
+                    step, seconds=end - start, predicted=estimates.get(name)
+                )
 
     def _run_processing_blocked(self, plan, context: dict) -> dict:
         """Run the protocol out of core, a tile at a time.
@@ -777,7 +1155,8 @@ class ProtocolBuilderWidget(QWidget):
             self.last_context = self.run_control.run(
                 lambda should_stop: runner.run(
                     seed, progress=self._on_block_progress, should_stop=should_stop
-                )
+                ),
+                on_tick=self._on_blocked_tick,
             )
             self.blocked_ledgers = dict(runner.ledgers)
         except Cancelled:
@@ -804,8 +1183,30 @@ class ProtocolBuilderWidget(QWidget):
         A blocked run is measured in tiles and can be measured in hours, so
         the status line is the difference between a progress report and an
         apparently frozen window.
+
+        Called on the worker thread, so it writes to the relay rather than
+        to the status label: setting a widget's text from a worker thread is
+        not a cosmetic bug in Qt, it is a crash waiting for a repaint.
         """
-        self.status_label.setText(f"{name}: tile {done:,} of {total:,}")
+        self.progress.report(
+            f"{name}: tile {done:,} of {total:,}",
+            fraction=done / max(total, 1),
+            name=name,
+        )
+
+    def _on_blocked_tick(self, _elapsed: float) -> None:
+        """Draw what the blocked run has reported. On the GUI thread."""
+        message, fraction, name = self.progress.snapshot()
+        if message:
+            self.status_label.setText(message)
+        if not name:
+            return
+        # A tiled run knows exactly how far along it is - tiles done over
+        # tiles planned - which beats any estimate from the clock.
+        if fraction is None:
+            self.step_progress.show(name)
+        else:
+            self.step_progress.report_fraction(name, fraction)
 
     def _close_scratch(self) -> None:
         scratch = getattr(self, "_scratch", None)
@@ -813,7 +1214,7 @@ class ProtocolBuilderWidget(QWidget):
             scratch.close()
             self._scratch = None
 
-    def run_single_step(self, step: Step) -> None:
+    def run_single_step(self, step: Step, *, show_result: bool = True) -> None:
         """Run one step against everything computed so far and show what it
         produced.
 
@@ -821,10 +1222,17 @@ class ProtocolBuilderWidget(QWidget):
         measurements can feed clustering, reduction and gating
         independently, and a clustering result can be folded back into the
         measurement table as another feature.
+
+        The step itself runs on a worker thread with its card's progress bar
+        going, so a ten-minute clustering leaves the window usable instead
+        of leaving the user to guess whether napari has hung. The result
+        comes back here, on the GUI thread, and everything that touches a
+        layer happens after that.
         """
         context = dict(self.last_context)
         for key, value in self.seed_context().items():
             context.setdefault(key, value)
+        self._seed_axes(context)
         # Rebuild `data` from the current table each time, so a clustering
         # step run after a reduction step sees the reduced dimensions as
         # features too - that feedback is the point of running these
@@ -833,11 +1241,7 @@ class ProtocolBuilderWidget(QWidget):
         self._seed_measurement_tables(context)
 
         try:
-            result = step.run(
-                context,
-                channel_axis=self.pipeline.channel_axis,
-                full_ndim=self._seed_ndim(context),
-            )
+            result = self._run_step_off_thread(step, context)
         except Exception as exc:  # noqa: BLE001 - report in the UI, don't crash napari
             self.status_label.setText(f"{step.function_name}: {type(exc).__name__}: {exc}")
             return
@@ -846,12 +1250,21 @@ class ProtocolBuilderWidget(QWidget):
         if step.name:
             context[step.name] = result
         self.last_context = context
+        self._record_signatures([step])
         self._merge_into_measurements(step, result)
         self.refresh_steps()
         self._publish_results()
 
-        if isinstance(result, np.ndarray) and result.ndim >= 2:
+        if not show_result:
+            return
+        if step.produces_image and isinstance(result, np.ndarray) and result.ndim >= 2:
             self.show_step_result(step)
+        elif isinstance(result, np.ndarray):
+            # A clustering or a reduction. Its result is per object, not per
+            # voxel, so it belongs in the table and on the plot's axes - not
+            # in the layer list, where a (n_objects, 2) t-SNE embedding
+            # would sit as a two-pixel-wide stripe that means nothing.
+            self.status_label.setText(f"{step.result_key}: {self._describe_features(step)}")
         elif isinstance(result, Ownership):
             self.show_ownership(step, result)
         elif isinstance(result, CellCollection):
@@ -874,6 +1287,62 @@ class ProtocolBuilderWidget(QWidget):
             self.status_label.setText(f"{step.result_key}: {summary}")
         else:
             self.status_label.setText(f"Ran {step.function_name} -> '{step.result_key}'")
+
+    def _run_step_off_thread(self, step: Step, context: dict):
+        """Run one step on a worker thread, driving its card's bar from here.
+
+        Falls back to running in place when a run is already in progress -
+        which happens when a recalculation is triggered from inside one -
+        since the caller is then already off the GUI thread and a second
+        worker would buy nothing.
+        """
+
+        def run():
+            return step.run(
+                context,
+                channel_axis=self.pipeline.channel_axis,
+                full_ndim=self._seed_ndim(context),
+            )
+
+        if self.run_control.busy:
+            return run()
+
+        estimate = self.estimate_for(step)
+        self.step_progress.show(step.result_key, estimate)
+        started = time.monotonic()
+        try:
+            result = self.run_control.run(
+                lambda _should_stop: run(),
+                on_tick=lambda _elapsed: self.step_progress.show(step.result_key, estimate),
+                show_cancel=False,
+            )
+        finally:
+            self.step_progress.finish()
+        self.calibration.observe(step, seconds=time.monotonic() - started, predicted=estimate)
+        return result
+
+    def _describe_features(self, step: Step) -> str:
+        """What a per-object step contributed to the table, for the log."""
+        frame = self.last_context.get("measurements")
+        if not isinstance(frame, pd.DataFrame):
+            return "per-object result added to the data"
+        prefix = f"{step.result_key}_"
+        columns = [
+            name for name in frame.columns if name == step.result_key or name.startswith(prefix)
+        ]
+        if not columns:
+            return "per-object result added to the data"
+        return f"added {', '.join(columns)} to the data (no image layer)"
+
+    def _record_signatures(self, steps) -> None:
+        """Remember what each of these steps was computed from.
+
+        The record is per step name, and it is what "a setting changed"
+        means later: the signature on the card no longer matches the one the
+        result in hand was produced with.
+        """
+        for step in steps:
+            self._computed_signatures[step.result_key] = step.settings_signature
 
     def _seed_ndim(self, context: dict) -> int | None:
         arrays = [value for value in context.values() if isinstance(value, np.ndarray)]
@@ -1060,6 +1529,15 @@ class ProtocolBuilderWidget(QWidget):
     def show_step_result(self, step: Step) -> None:
         """Add one step's result to the viewer as a layer."""
         if self.viewer is None:
+            return
+        if not step.produces_image:
+            # A clustering, a reduction, a gate: per-object numbers, however
+            # array-shaped. They are features of the data and are shown on
+            # the plot's axes; a layer for one would be a picture of a table.
+            self.status_label.setText(
+                f"{step.result_key}: a {step.category} result is per-object data, not an "
+                f"image - nothing to show as a layer; plot it in the Object Explorer"
+            )
             return
         result = self.last_context.get(step.result_key, self.last_context.get(step.output_key))
         if not isinstance(result, np.ndarray) or result.ndim < 2:
@@ -1345,7 +1823,11 @@ class ProtocolBuilderWidget(QWidget):
         )
         self.session.set_spacing(self.spacing_control.spacing())
         self.session.set_ledger(self.measurement_ledger())
-        self.session.set_context(self.last_context, self.results_table(), self.cell_tables())
+        self.session.set_context(
+            self.last_context,
+            self.results_table(),
+            {**self.measurement_tables(), **self.cell_tables()},
+        )
 
     def measurement_ledger(self):
         """The seam ledger behind the published measurement table, if any.
@@ -1364,6 +1846,36 @@ class ProtocolBuilderWidget(QWidget):
             if key in self.blocked_ledgers:
                 return self.blocked_ledgers[key]
         return self.blocked_ledgers.get("labels")
+
+    def measurement_tables(self) -> dict:
+        """One table per segmentation this protocol measured.
+
+        A second segmentation is not extra columns, it is different rows -
+        a ring has one row per ring, and joining it onto the nuclei would be
+        a claim about which ring belongs to which nucleus that only an
+        association step is entitled to make. So each measurement step's
+        table travels on its own, named after the step (which is named after
+        its segmentation), with the label image its rows are objects of, so
+        a gate drawn on the rings lights up rings.
+
+        Only when there is more than one: with a single measurement step the
+        per-object table already *is* that table, and offering it twice
+        under two names would be a choice with no difference behind it.
+        """
+        published = {}
+        for step in self.all_steps():
+            if step.output_key != "measurements" or not step.name:
+                continue
+            frame = self.last_context.get(step.name)
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                continue
+            published[step.name] = TableView(
+                frame=frame,
+                id_column="object_id",
+                labels_key=self._segmentation_measured_by(step) or "labels",
+                noun="objects",
+            )
+        return published if len(published) > 1 else {}
 
     def cell_tables(self) -> dict:
         """The per-cell tables this protocol produced, ready to plot.

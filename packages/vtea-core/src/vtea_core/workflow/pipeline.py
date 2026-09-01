@@ -75,6 +75,12 @@ class Step:
     # applied by the caller so a protocol carries its own answer to "which
     # of the forty measured features did this clustering actually use?".
     features: list[str] = field(default_factory=list)
+    # The step this one was created *for*, when it was created automatically
+    # rather than added by hand - see vtea_core.workflow.measure. A
+    # measurement step raised because a segmentation exists knows which
+    # segmentation that is, which is what lets it follow that segmentation's
+    # name and disappear with it. Empty for a step somebody added.
+    auto_for: str = ""
 
     @classmethod
     def for_function(
@@ -125,6 +131,35 @@ class Step:
         from vtea_core.workflow.wiring import CHANNEL_ARGUMENT
 
         return self.channel_mode == CHANNEL_ARGUMENT
+
+    @property
+    def produces_image(self) -> bool:
+        """Whether this step's result is an image to show as a layer, rather
+        than per-object numbers to add to the table - see
+        vtea_core.workflow.wiring.produces_image."""
+        from vtea_core.workflow.wiring import produces_image
+
+        return produces_image(self.category, self.function_name)
+
+    @property
+    def settings_signature(self) -> tuple:
+        """Everything about this step that changes what it computes.
+
+        Its name is deliberately not in here: renaming a segmentation
+        changes what its result is *called*, not what the result is, and
+        re-running an hour of watershed because somebody typed a better name
+        would be its own bug. Its parameters, its channel, its wiring and
+        its feature selection all are - change any of them and the last
+        result no longer describes this step.
+        """
+        return (
+            self.category,
+            self.function_name,
+            tuple(sorted((key, repr(value)) for key, value in self.params.items())),
+            tuple(sorted(self.input_keys.items())),
+            self.channel,
+            tuple(self.features),
+        )
 
     @property
     def feature_input(self) -> str | None:
@@ -323,7 +358,11 @@ class Pipeline:
         self.steps.insert(to_index, step)
 
     def run(
-        self, context: dict[str, Any] | None = None, *, channel_axis: int | None = None
+        self,
+        context: dict[str, Any] | None = None,
+        *,
+        channel_axis: int | None = None,
+        progress: Any = None,
     ) -> dict[str, Any]:
         """Runs every step in order, threading results through a shared context.
 
@@ -334,18 +373,29 @@ class Pipeline:
         `channel_axis` overrides the pipeline's own setting for this run.
         The widest array in the starting context defines "still has a
         channel axis" for per-step channel selection - see Step.run.
+
+        `progress(step, done, total)` is called before each step starts and
+        once more when the last one finishes, so a caller can say which step
+        a run is on. It is called on whatever thread `run` is on - which for
+        the napari builder is a worker thread, so what it is given has to be
+        carried to the GUI rather than drawn from inside it.
         """
         context = dict(context) if context else {}
         axis = self.channel_axis if channel_axis is None else channel_axis
         seeded = [value for value in context.values() if isinstance(value, np.ndarray)]
         full_ndim = max((value.ndim for value in seeded), default=None)
-        for step in self.steps:
+        total = len(self.steps)
+        for done, step in enumerate(self.steps):
+            if progress is not None:
+                progress(step, done, total)
             result = step.run(context, channel_axis=axis, full_ndim=full_ndim)
             context[step.output_key] = result
             if step.name:
                 # Also under its own name, so a later step can name the one
                 # segmentation it wants instead of taking whichever ran last.
                 context[step.name] = result
+        if progress is not None:
+            progress(None, total, total)
         return context
 
     def __len__(self) -> int:

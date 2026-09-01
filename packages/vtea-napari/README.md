@@ -11,7 +11,7 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (361 tests, including real
+Phase 4 done. Implemented and tested (556 tests, including real
 `napari.Viewer` integration tests that load the plugin the way an end user
 would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
@@ -56,6 +56,60 @@ widget and run it):
   produces a `data` key, so without the widget seeding it those steps could
   not be run from the GUI at all - and each step narrows it to its own
   chosen features.
+- **Every segmentation is measured** — a protocol rarely has one. A nucleus
+  is segmented, a cytosol ring is derived from it, a second channel gives
+  lysosomes; each is a population of objects with its own features, and
+  before this the ring was silently never measured unless someone
+  remembered to add a second measurement step and re-point it. Now each
+  named segmentation gets a measurement step of its own, named after it
+  (`measure_nuclei`, `measure_nuclei_ring`) - the segmentation's own name,
+  default or typed in. Rename the segmentation and its measurement follows,
+  through the GUI, along with everything wired to either and the feature
+  catalog's record of what was measured on what; delete the segmentation and
+  the measurement goes with it; measure one by hand and nothing is raised
+  for it. Each measurement travels to the Object Explorer as its own table,
+  because a ring's rows are rings - joining them onto the nuclei would be a
+  claim about which ring belongs to which nucleus that only an association
+  step is entitled to make. "Measure every segmentation" in the top row
+  turns the whole thing off for a protocol that segments an intermediate
+  mask it does not care about.
+- **A changed setting recalculates** — editing a step's parameters means the
+  result on its card was computed from settings that are no longer that
+  step's. Rather than leave it there looking authoritative, the builder
+  re-runs that step and everything downstream of it that had already run.
+  Steps that have never run are left alone: a click on "Edit" should not
+  turn into an hour of watershed. A *rename* recalculates nothing - it
+  changes what a result is called, not what it is.
+- **Per-step progress bars, off the GUI thread** — every card carries one,
+  under its buttons and no wider or taller than they are. A step whose
+  duration follows from the size of the work (voxels in the tile, objects in
+  the table) gets a real fraction and a countdown, from
+  `vtea_core.workflow.estimate_seconds`, calibrated against what the steps
+  actually took on this machine so the estimates stop being wrong in the
+  same direction every time. A step whose runtime genuinely cannot be
+  predicted - t-SNE, UMAP, a Leiden partition, agglomerative clustering -
+  gets a continuous bar instead of a fraction that would have to be
+  invented, and a tiled run reports the real one it has (tiles done over
+  tiles planned). The steps themselves run on a worker thread while the
+  event loop keeps being pumped, so clicks and repaints keep working during
+  a run; everything that touches a layer happens back on the GUI thread, and
+  progress crosses between them through a relay rather than by a worker
+  thread setting a widget's text.
+- **Reductions and clusterings are data, not layers** — a t-SNE embedding of
+  nine thousand nuclei is a (9000, 2) array, so it used to land in the layer
+  list as a two-pixel-wide stripe. Every reduction and clustering result now
+  goes only where it means something: joined onto the data table as features
+  (`umap_1_1`, `leiden_1`) and onto the Object Explorer's axes. The log says
+  which columns it added, and asking to show one explicitly says why there
+  is nothing to show.
+- **UMAP, Louvain and Leiden** — `umap` joins the reduction menu (it keeps
+  the global structure t-SNE discards and can project new objects into an
+  existing embedding), and `louvain`/`leiden` join the clustering menu.
+  Those two are the only clustering steps that decide how many populations
+  there are rather than being told: they detect communities in a
+  shared-nearest-neighbour graph, with `resolution` as the dial instead of
+  `k`. Their backends are optional extras of `vtea-core`; the steps stay in
+  the menu regardless and say what to install if picked without one.
 - **Derived segmentations and association** — the segmentation menu carries
   the morphology-only steps (`label_ring` for cytosol, `label_shell` for a
   nuclear envelope, `expand_labels`, `subtract_labels`, `restrict_labels_to`,
@@ -167,7 +221,8 @@ widget and run it):
   auto-resolution in practice, so this uses plain qtpy widgets instead (see
   `param_form.py`'s docstring).
 - **`StepCardWidget`** — one step's card, with an optional thumbnail preview
-  of that step's last-run output.
+  of that step's last-run output (only for the steps that produce an image)
+  and its own progress bar.
 - **`AnalysisSession`** (`session.py`) — the state the two dock widgets
   share: the protocol, the run context, the feature table, and the gates.
   It is keyed by the napari viewer and owned by neither widget, so results

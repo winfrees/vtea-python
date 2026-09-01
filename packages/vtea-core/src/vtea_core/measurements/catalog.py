@@ -117,6 +117,30 @@ class FeatureCatalog:
     def names(self) -> list[str]:
         return list(self._by_name)
 
+    def rename_source(self, old_name: str, new_name: str) -> list[FeatureDescriptor]:
+        """Follow a renamed step through the features it produced.
+
+        A feature records the step that produced it and the segmentation its
+        rows are objects of, both by name. Renaming a segmentation in the
+        GUI without following it here leaves a data dictionary pointing at a
+        step that no longer exists - which is worse than no provenance,
+        because it looks like provenance.
+
+        Returns the descriptors it touched.
+        """
+        touched = []
+        for descriptor in self._by_name.values():
+            changed = False
+            if descriptor.segmentation == old_name:
+                descriptor.segmentation = new_name
+                changed = True
+            if descriptor.produced_by == old_name:
+                descriptor.produced_by = new_name
+                changed = True
+            if changed:
+                touched.append(descriptor)
+        return touched
+
     def drop_missing(self, columns) -> None:
         """Forget features that are no longer in the table - a re-run with a
         different measurement step leaves the old entries stale, and a stale

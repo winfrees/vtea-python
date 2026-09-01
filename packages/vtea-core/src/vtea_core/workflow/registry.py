@@ -14,7 +14,14 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from vtea_core.classification import class_map
-from vtea_core.clustering import auto_k_kmeans, gaussian_mixture, hierarchical, kmeans
+from vtea_core.clustering import (
+    auto_k_kmeans,
+    gaussian_mixture,
+    hierarchical,
+    kmeans,
+    leiden,
+    louvain,
+)
 from vtea_core.gates import polygon_gate, rectangle_gate
 from vtea_core.imageprocessing import (
     enhance_contrast,
@@ -35,7 +42,7 @@ from vtea_core.objects import (
     distance_ownership,
     merge_associations,
 )
-from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne
+from vtea_core.reduction import isomap, laplacian_eigenmap, pca, tsne, umap
 from vtea_core.segmentation import (
     cellpose_segmentation,
     expand_labels,
@@ -104,12 +111,23 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
         "gaussian_mixture": gaussian_mixture,
         "hierarchical": hierarchical,
         "auto_k_kmeans": auto_k_kmeans,
+        # Community detection on a shared-neighbour graph: finds how many
+        # populations there are rather than being told. Listed even where
+        # python-igraph/leidenalg are not installed - unlike the
+        # deep-learning steps below, the import that would fail is inside
+        # the function, so the step names a missing package when it is run
+        # instead of silently vanishing from the menu.
+        "louvain": louvain,
+        "leiden": leiden,
     },
     "reduction": {
         "pca": pca,
         "isomap": isomap,
         "laplacian_eigenmap": laplacian_eigenmap,
         "tsne": tsne,
+        # Same arrangement as the graph clustering above: umap-learn is
+        # optional, and the step says so when run rather than not appearing.
+        "umap": umap,
     },
     "gates": {
         "polygon_gate": polygon_gate,

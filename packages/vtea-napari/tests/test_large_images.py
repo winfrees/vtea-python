@@ -296,12 +296,23 @@ class TestBlockedRun:
         widget._close_scratch()
 
     def test_progress_names_the_step_and_the_tile(self, builder):
+        """Reported from the worker thread into the relay, drawn from the
+        GUI thread by the pump loop - a widget touched from the working
+        thread is not a cosmetic bug in Qt, it is a crash."""
         viewer, widget = builder
         add_volume(viewer, shape=(16, 96, 96))
         self.protocol(widget)
         widget.refresh_sources()
         widget.memory_control.set_budget(MemoryBudget(400_000))
+
         widget._on_block_progress("gaussian_blur_1", 3, 27)
+        message, fraction, name = widget.progress.snapshot()
+        assert "gaussian_blur_1" in message
+        assert "3" in message
+        assert name == "gaussian_blur_1"
+        assert fraction == 3 / 27
+
+        widget._on_blocked_tick(0.0)
         assert "gaussian_blur_1" in widget.status_label.text()
         assert "3" in widget.status_label.text()
 
