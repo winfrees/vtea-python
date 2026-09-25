@@ -59,6 +59,15 @@ class TestExtractMeasurements:
         assert table.loc[1, "stddev"] == pytest.approx(0.0)
         assert table.loc[2, "mean"] == pytest.approx(20.0)
 
+    def test_stddev_is_the_sample_stddev_java_reports(self):
+        # vtea.objects.measurements.StandardDeviation divides by n - 1.
+        labels = np.array([[1, 1, 1, 1, 2]], dtype=np.int32)
+        intensity = np.array([[1.0, 2.0, 3.0, 4.0, 9.0]])
+        table = extract_measurements(labels, intensity).set_index("object_id")
+        assert table.loc[1, "stddev"] == pytest.approx(np.std([1, 2, 3, 4], ddof=1))
+        # One voxel has no spread; 0 rather than Java's NaN.
+        assert table.loc[2, "stddev"] == 0.0
+
     def test_includes_threshold_mean_column(self):
         labels, intensity = self.make_two_object_volume()
         table = extract_measurements(labels, intensity)

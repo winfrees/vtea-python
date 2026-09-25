@@ -13,6 +13,9 @@ import numpy as np
 import pandas as pd
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+# The sample TIFFs the Java generator segmented (they live at the Java repo's
+# root, ~46 MB together, so they are not committed here either).
+DATA_DIR = Path(__file__).parent / "data"
 
 _MISSING_MSG = (
     "Golden fixtures not found at {path}. Generate them by running the "
@@ -45,6 +48,26 @@ def load_label_mask(dataset_basename: str) -> np.ndarray:
 
     path = _require(FIXTURES_DIR / f"{dataset_basename}_segmentation_singlethreshold.tif")
     return tifffile.imread(path)
+
+
+def load_metadata(dataset_basename: str) -> dict[str, str]:
+    """key=value pairs from the generator's <dataset>_metadata.txt."""
+    path = _require(FIXTURES_DIR / f"{dataset_basename}_metadata.txt")
+    pairs = (line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+    return {key.strip(): value.strip() for key, value in pairs}
+
+
+def load_source_channel(dataset_basename: str, channel: int = 0) -> np.ndarray:
+    """One channel (ZYX) of the sample TIFF the Java fixtures were made from."""
+    from vtea_core.io import read_tiff
+
+    path = DATA_DIR / f"{dataset_basename}.tif"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Sample image not found at {path}. Copy {path.name} from the root of the "
+            "volumetric-tissue-exploration-analysis repo into tests/golden/data/."
+        )
+    return np.asarray(read_tiff(path).channel(channel))
 
 
 def load_synthetic_clustering_input() -> pd.DataFrame:

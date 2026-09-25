@@ -86,3 +86,12 @@ blocker:
    reduction). Phase 1 can proceed now; the fixture generation should just
    land before Phase 2's segmentation/measurement work needs something to
    validate against.
+
+## Follow-up (2026-09-25)
+
+Neither caveat above was closed. The Java workflow was never triggered, so
+the generator has never compiled and `tests/golden/fixtures/` has never
+existed; Phases 1-4 went ahead without it. `test_parity.py` has since been
+given real assertions against the ported functions (it only exercised the
+loaders before), so the fixtures are now the only missing piece. Closing
+this is milestone M1 in `PORT_PLAN.md`'s "Path forward".

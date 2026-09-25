@@ -155,7 +155,8 @@ class ObjectStats:
             return self.total / np.maximum(self.count, 1)
 
     def stddevs(self) -> np.ndarray:
-        """Population standard deviation, as `np.std` gives it.
+        """Sample standard deviation (n - 1), matching `extract_measurements`
+        and the Java `StandardDeviation` measurement; 0 below two voxels.
 
         From the sum and the sum of squares rather than a second pass. The
         subtraction can cancel badly in principle; at the magnitudes
@@ -166,6 +167,7 @@ class ObjectStats:
         mean = self.means()
         with np.errstate(invalid="ignore", divide="ignore"):
             variance = self.total_squares / np.maximum(self.count, 1) - mean * mean
+            variance = variance * self.count / np.maximum(self.count - 1, 1)
         return np.sqrt(np.maximum(variance, 0.0))
 
     def cutoffs(self) -> np.ndarray:
@@ -505,6 +507,7 @@ def _weighted_table(
     safe = np.where(weight[index] > 0, weight[index], np.nan)
     mean = value[index] / safe
     variance = np.maximum(square[index] / safe - mean * mean, 0.0)
+    variance = variance * weight[index] / np.maximum(weight[index] - 1, 1)
 
     columns: dict[str, Any] = {}
     if geometry:

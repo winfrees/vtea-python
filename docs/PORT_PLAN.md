@@ -214,13 +214,145 @@ The second round of the same review, and the one that changes what the
 - **Format coverage** — confirm `bioio`'s JVM-backed readers cover every vendor format current users rely on before dropping Bio-Formats from the primary code path.
 - **User pipeline continuity** — saved `.xml` workflow/protocol files from the Java app should have a conversion path into the new format (called out in Phase 5) so existing collaborators aren't blocked mid-migration.
 
-## Status
+## Status (reviewed 2026-09-25)
 
-Phases 0–4 are done (see `packages/vtea-core/README.md` and
-`packages/vtea-napari/README.md` for the current module-by-module status),
-plus a standalone PyInstaller runtime (Linux + Windows, published via
-GitHub Releases - see `packaging/pyinstaller/README.md`). Remaining
-Phase 4-adjacent items, not blocking: the Java workflow-XML import
-converter (tracked above, deferred to Phase 5) and `bioimageio.core`
-generic model inference (Phase 3). Next up: Phase 5 (parity validation
-against the golden-dataset harness).
+The goal in the first paragraph of this document is **replace Java once
+parity is reached**. Measured against that goal, the honest status is:
+
+- **Architecture and GUI: built, and well beyond the Java original.**
+  Phases 1 and 4 are done: the `VolumeDataset`/TIFF/Zarr/OME-NGFF I/O, the
+  headless `Step`/`Pipeline` engine, the protocol builder, the Object
+  Explorer, and a large-image path (`docs/LARGE_IMAGES.md`, L0-L8) that the
+  Java 2.0 work never finished. Association, cells, classes and label sets
+  (`docs/OBJECT_ASSOCIATION.md`, "Classes, label sets and image gates"
+  above) are new capability, not port. About 1,500 core tests pass.
+- **Algorithm coverage (Phases 2-3): partial.** The inventory below lists
+  every `@Plugin` in the Java source. Most of what users reach every day is
+  covered; the Java *default* segmentation (LayerCake3D) and several
+  processors are not.
+- **Parity (the Phase 0 harness and Phase 5): not started.** No Java
+  fixture has ever been generated. `tests/golden/test_parity.py` now holds
+  real assertions (it previously only called the loaders), so fixtures are
+  the only thing missing - but until they exist, no claim that a Python
+  number equals a Java number has been checked. The one Java measurement
+  semantic checked by reading source (standard deviation divides by n - 1)
+  turned out to differ from the port, and has been fixed.
+- **Persistence: not built.** A protocol cannot be saved or reopened, and
+  the measurement table cannot be exported. Java VTEA's primary output is
+  that exported table (`ObjectCSVFileType`), and its users save workflows
+  (`WorkflowFileType`). This is the largest gap between "the GUI works" and
+  "a lab can switch".
+
+So the roadmap table above reads **Phase 0: partial (harness built,
+fixtures never generated); Phases 1 and 4: done; Phases 2-3: partial;
+Phases 5-6: not started.**
+
+### Parity inventory against the Java plugin list
+
+Every class carrying `@Plugin(type = ...)` in the Java source, grouped by
+extension point. "Port" means an equivalent step exists; it does not mean
+it has been validated against Java output (none has - see above).
+
+| Java extension point | Ported | Not ported |
+|---|---|---|
+| `Segmentation` (18) | `SingleThreshold` (`threshold_mask`), `MorphoLibJ`/`Imglib2ConnectedComponents` (`label_components` + `watershed_split`), `CellposeSegmentation`, `Points` (`labels_from_points`), `PreLabelled` (`import_labels`), all `Chunked*` variants (via `vtea_core.blocked`, not as separate methods) | **`LayerCake3DSingleThreshold` / `...kDTree` / `...LargeScale`** (the Java default: 2D objects per slice linked across z - produces different splits from 3D connected components on touching nuclei), `FloodFill3DSingleThreshold`, `Region2DSingleThreshold`, `DeepImageJSegmentation` (`bioimageio.core`), `ImageJROIBased` |
+| `FeatureProcessing` (18) | `KMeans`/`KMeansClust`, `GaussianMix`, `WardCluster`/`CompleteCluster`/`SingleCluster` (`hierarchical` linkage), `Xmeans`/`GMeansClust` (both as `auto_k_kmeans`, BIC - not the Smile algorithms), `PCAReduction`, `Isomap`, `LaplacianEigenMap`, `TSNEReductionAdjust`, `DeepLearningClassification` (`classification`, CNN) | `DeterministicAnnealingClust`, the four `VAE*` plugins (anomaly detection, clustering, reduction, feature extraction); the **z-normalisation option** every Java clustering/reduction protocol carries (its first protocol entry) |
+| `Measurements` (8) | `Count`, `Mean`, `Sum`, `StandardDeviation`, `Minimum`, `Maximum`, `ThresholdMean` | (`TheAnswer` is a joke plugin) |
+| `Morphology` (4) | `Ring` (`label_ring`), `Grow_*` (`expand_labels`) | Connectivity semantics: Java grows by 6/26-connected or cross-shaped voxel steps, the port by Euclidean distance in physical units. Same intent, different voxels - needs a parity fixture or an explicit decision |
+| `ImageProcessing` (7) | `Gaussian`, `Median3D`, `Denoise` (a fixed median), `EnhanceContrast`, `BackgroundSubtraction` | `LinearUnmixing`, `IJMacro` (see open question on macros) |
+| `NeighborhoodMeasurements` (3) | - | `ClassFraction`, `ClassSums`, `TotalObjects` (per-object neighbourhood composition - spatial analysis users publish on) |
+| `PlotMaker` (2) | - | `Heatmap`, `ViolinPlot` |
+| `FileType` (7) | `ZarrFileType` | `ObjectCSVFileType` (**measurement export**), `WorkflowFileType`/`XMLFileType`/`ProcessingFileType`/`SegmentationFileType` (**protocol save/load**, and import of existing Java files), `IJ1MacroFileType` |
+| `Processor` (11) | Segmentation, image processing, feature, explorer, gate-math processors (the `Pipeline` engine) | `DatasetNormalizationProcessor`, `ReduceObjectSizeProcessor`, `AddImageFeature*` (adding a per-object feature measured on another image) |
+| `LUT` (6) | Replaced by matplotlib colormaps, plus a categorical LUT | - (deliberately) |
+| `GateMath` | `&`, `\|`, `~` on boolean arrays, and the class expression language | - |
+
+Also outstanding from the original plan: `bioio` for vendor formats (the
+`bioformats` extra is declared but no code uses it), and the entry-point
+plugin groups (declared empty in `pyproject.toml`; `STEP_REGISTRY` is a
+plain dict and nothing reads the groups).
+
+## Path forward
+
+Ordered by what blocks a lab from switching, not by size. Each milestone
+has a check that says it is done.
+
+### M1. Generate the fixtures (owner action, then about a day)
+
+1. Run `generate-golden-fixtures.yml` in the Java repo from its Actions tab.
+   It has never run and `GoldenFixtureGenerator.java` has never been
+   compiled, so expect to fix compile errors first.
+2. Unzip the artifact into `tests/golden/fixtures/` and copy the two sample
+   TIFFs into `tests/golden/data/` (see `tests/golden/README.md`).
+3. Run `pytest tests/golden`. Every disagreement is either a port bug or a
+   Java behaviour to record as a deliberate difference - both outcomes go
+   in this document.
+4. Decide where fixtures live permanently so CI runs them: a release asset
+   on the Java repo that CI downloads is the smallest option (they are
+   tens of MB with the TIFFs).
+
+**Done when** `test-golden-harness` in CI runs, rather than skips, the
+parity tests.
+
+### M2. Make the fixtures mean something (1-2 weeks)
+
+The current generator produces one object per image (`SingleThreshold3D`
+labels everything above threshold as a single object) and a 300-point 2D
+clustering set. That validates I/O and arithmetic, not segmentation.
+Extend `GoldenFixtureGenerator` with:
+
+- `LayerCake3DSingleThreshold` and `MorphoLibJConnectedComponents` label
+  images plus their full measurement tables (hundreds of objects, per
+  channel) on both sample images;
+- `Grow_*`/`Ring` morphology outputs, to settle the connectivity question;
+- `GaussianMix`, `Xmeans`, t-SNE (compare neighbourhood preservation, not
+  coordinates) on the measured features, with and without z-normalisation.
+
+**Done when** object counts, per-object tables (matched by centroid, not
+id) and cluster ARI are compared for real segmentations, and each
+difference is either fixed or documented as intended.
+
+### M3. Persistence: the minimum a lab needs (2-3 weeks)
+
+Tier 1 of `docs/SAVING_AND_ARCHIVING.md` - the protocol as `*.vtea.json`
+(save, open, re-run on a new image) - plus a measurement-table export
+(CSV and Parquet, with the feature catalog as its data dictionary) from the
+Object Explorer. Tiers 2-3 of that document can follow later.
+
+**Done when** a protocol saved in one napari session re-runs identically
+in another, and the explorer's table (with class, cluster and gate columns)
+opens in Excel/R.
+
+### M4. Close the algorithm gaps users will notice (3-5 weeks)
+
+In priority order: LayerCake3D (the Java default, so existing protocols
+and published numbers depend on it); z-normalisation for clustering and
+reduction; neighbourhood measurements (`ClassFraction`, `ClassSums`,
+`TotalObjects`); heatmap and violin plots in the explorer; the Java
+workflow-XML import converter. `bioio` vendor formats if collaborators use
+CZI/LIF/ND2 rather than TIFF.
+
+Deliberately later or dropped, with a decision recorded here:
+`DeterministicAnnealingClust` and the `VAE*` plugins (check with users
+whether anyone runs them), `DeepImageJSegmentation` via `bioimageio.core`,
+`LinearUnmixing`, `IJMacro`, `ImageJROIBased`.
+
+**Done when** every row of the inventory above is either ported with a
+parity test or marked as dropped with a reason.
+
+### M5. Hardware and tissue validation, beta, cutover (Phase 5-6)
+
+The validation `docs/LARGE_IMAGES.md` item 7 lists (a CUDA device, the
+seam-strategy comparison on tissue with vessels and tubules), then a beta
+with real users running their existing protocols side by side in Java and
+Python, then Phase 6.
+
+**Done when** beta users have reproduced a previously published analysis
+without Java.
+
+### What to hold
+
+The last several merges added capability the Java original never had
+(association, ownership, label sets, large-image tiling). It is good work,
+but none of it moves the parity or persistence columns. Until M1 and M3
+land, new analysis features should wait.
