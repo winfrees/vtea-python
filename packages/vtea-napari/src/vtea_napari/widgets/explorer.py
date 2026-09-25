@@ -48,6 +48,7 @@ feature - which is what makes "CD3+ inside the tubule" expressible.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -55,6 +56,7 @@ from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -63,6 +65,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from vtea_core.export import export_table
 from vtea_core.gates import (
     CENTROID,
     SEAM_GATE_COLOR,
@@ -72,8 +75,9 @@ from vtea_core.gates import (
     image_gate,
     seam_gate,
 )
+from vtea_core.measurements import FeatureCatalog, FeatureDescriptor
 
-from vtea_napari.session import AnalysisSession, session_for
+from vtea_napari.session import AnalysisSession, gate_column_name, session_for
 from vtea_napari.widgets.association_review import AssociationReviewWidget
 from vtea_napari.widgets.gallery import GalleryWidget
 from vtea_napari.widgets.gate_manager import GateManagerWidget
@@ -287,6 +291,15 @@ class ExplorerWidget(QWidget):
         refresh_button.setToolTip("Re-read the latest results from the protocol builder")
         refresh_button.clicked.connect(self.reload_from_session)
         header.addWidget(refresh_button)
+        # The table as a file: Java VTEA's main output, and what goes into
+        # R, Excel or a supplementary table. The data dictionary goes with it.
+        self.export_button = QPushButton("Export…")
+        self.export_button.setToolTip(
+            "Save this table (with a column per gate) as CSV or Parquet, plus a "
+            "data dictionary saying what each column is and how it was produced"
+        )
+        self.export_button.clicked.connect(self.export_table_dialog)
+        header.addWidget(self.export_button)
         if self.viewer is not None:
             load_button = QPushButton("Load from active Labels layer")
             load_button.setToolTip("Use a Labels layer's own .features table instead")
@@ -429,6 +442,63 @@ class ExplorerWidget(QWidget):
             self.status_label.setText(f"{len(frame)} {noun}, {len(frame.columns)} features.")
         finally:
             self._restoring = False
+
+    # -- export -----------------------------------------------------------
+
+    def export_frame(self) -> pd.DataFrame | None:
+        """The table as exported: what is plotted, plus one boolean column
+        per gate (`gate_<name>`, the name a class rule uses for it), so a
+        population drawn here can be counted outside VTEA. A column the
+        table already has is not overwritten."""
+        frame = self.frame
+        if frame is None:
+            return None
+        gates = {
+            name: values
+            for name, values in self.session.gate_columns(frame).items()
+            if name not in frame.columns
+        }
+        return frame.assign(**gates) if gates else frame.copy()
+
+    def export_catalog(self):
+        """The session's feature catalog, plus an entry for each gate column
+        saying which gate it is and on which axes it was drawn."""
+        catalog = FeatureCatalog(list(self.session.feature_catalog))
+        for gate in self.gate_set:
+            catalog.add(
+                FeatureDescriptor(
+                    name=gate_column_name(gate.name),
+                    kind="derived",
+                    measurement="gate membership",
+                    produced_by=f"gate '{gate.name}'",
+                    params={"x_axis": gate.x_axis, "y_axis": gate.y_axis},
+                    source_features=[gate.x_axis, gate.y_axis],
+                )
+            )
+        return catalog
+
+    def export_table_to(self, path) -> list[Path]:
+        frame = self.export_frame()
+        if frame is None:
+            raise ValueError("there is no table to export yet - run a measurement step")
+        written = export_table(frame, path, catalog=self.export_catalog())
+        self.status_label.setText(
+            f"Exported {len(frame)} {self.session.row_noun()} to "
+            + " and ".join(path.name for path in written)
+        )
+        return written
+
+    def export_table_dialog(self) -> None:
+        name = (self.session.active_table or "objects").lower().replace(" ", "_")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export table", f"{name}.csv", "CSV (*.csv);;Parquet (*.parquet)"
+        )
+        if not path:
+            return
+        try:
+            self.export_table_to(path)
+        except (OSError, ValueError) as exc:  # report, don't crash napari
+            self.status_label.setText(f"Could not export: {exc}")
 
     def _on_link_selected(self, child, parent) -> None:
         """Show the two objects a contested link is between.

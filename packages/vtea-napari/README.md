@@ -21,7 +21,12 @@ widget and run it):
   (populated from `vtea_core.workflow.STEP_REGISTRY`), see them as an
   ordered stack of cards (position, name, parameter summary, Edit/Delete),
   edit parameters through a form, delete steps - the same operations
-  `vtea.protocol`'s Java UI exposed. The resulting `vtea_core.workflow.Pipeline`
+  `vtea.protocol`'s Java UI exposed. **Save…/Open…** write and read the whole
+  protocol as a `*.vtea.json` file (`vtea_core.workflow.io`): both step
+  stacks, the axis and voxel-size settings, and the gates, which come back
+  on their table at the next run. Opening replaces the steps and drops the
+  old results; an image that records its own voxel size keeps it, and the
+  status line says when the protocol's differs. The resulting `vtea_core.workflow.Pipeline`
   runs the same whether triggered from this widget or a script.
   Every step card has its own Run button - there is no pane-level Run, since
   the analysis steps are a graph rather than a chain - and each run drives
@@ -294,6 +299,9 @@ widget and run it):
   scatter plot docked into napari's side panel is unusable at the width it
   gets there, and gating means working between the plot and the image. It
   reads the shared session rather than owning its own copy of the analysis.
+  **Export…** saves the table on screen as CSV or Parquet, with one boolean
+  `gate_<name>` column per gate and a `<name>.dictionary.csv` beside it
+  saying what every column is and which step produced it.
   Holds the scatter plot with the gate manager beneath it (3:1) on a "Plot"
   tab and the per-object crop grid on a "Gallery" tab; subgate within a
   selection for real gate hierarchy; each gate's members get their own

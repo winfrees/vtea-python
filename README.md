@@ -22,8 +22,8 @@ This is a monorepo with two independently installable packages:
 docs/PORT_PLAN.md      Full porting plan and roadmap
 docs/SAVING_AND_ARCHIVING.md
                        Design for reloadable sessions and FAIR publication
-                       bundles (planned; gate JSON and the feature catalog
-                       are the parts already built)
+                       bundles (protocol files and table export built; the
+                       archive and publication bundle planned)
 docs/OBJECT_ASSOCIATION.md
                        Associating segmentations into cells - derived
                        masks, probabilistic parentage, contested voxels
@@ -50,12 +50,11 @@ packaging/pyinstaller/ Standalone runtime build (see "Standalone runtime" below)
 | napari GUI - protocol builder and Object Explorer (Phase 4) | done |
 | Data larger than memory | built; needs validation on GPU hardware and real tissue |
 | Algorithm coverage (Phases 2-3) | partial - the Java default segmentation (LayerCake3D), neighbourhood measurements, heatmap/violin plots, z-normalisation and the VAE plugins are not ported |
-| Saving a protocol, exporting the measurement table | **not built** |
+| Saving a protocol, exporting the measurement table | done - `*.vtea.json` protocols; CSV/Parquet export with a data dictionary |
 | Parity with Java outputs (Phases 0 and 5) | **not started** - the harness and assertions exist, but no Java fixture has been generated yet |
 
 The next milestones, in order: generate the Java fixtures and run the
-parity tests; protocol save/open and table export; then the algorithm
-gaps. See `packages/vtea-core/README.md` for the module-by-module status.
+parity tests; then the algorithm gaps. See `packages/vtea-core/README.md` for the module-by-module status.
 
 Phase 4 (napari GUI) landed two dock widgets:
 
