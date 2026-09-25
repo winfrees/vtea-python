@@ -10,12 +10,16 @@ numerical/behavioral parity.
   `feature_table_diff`, `cluster_assignment_ari`). Unit-tested in
   `test_compare.py`, no fixtures required.
 - `fixtures.py` — loaders for the fixture files described below.
-- `test_parity.py` — the actual parity tests. Skipped as a whole until
-  `fixtures/` is populated; individual tests are further skipped until the
-  corresponding `vtea-core` functionality lands (each names the phase it's
-  blocked on).
-- `fixtures/` — not checked in (git-ignored, see `.gitignore`). Populate it
-  per the instructions below.
+- `test_parity.py` — the actual parity tests, with real assertions against
+  `vtea-core`. Skipped as a whole until `fixtures/` is populated; the
+  image-derived tests also skip until the sample TIFFs are in `data/`.
+- `fixtures/`, `data/` — not checked in (git-ignored, see `.gitignore`).
+  Populate them per the instructions below.
+
+**Status (2026-09-25): no fixtures have ever been generated.** The Java
+workflow below has not been run, and `GoldenFixtureGenerator.java` has never
+been compiled. Until it is, nothing here has compared a Python number with a
+Java one. This is milestone M1 in `docs/PORT_PLAN.md`'s "Path forward".
 
 ## Generating fixtures
 
@@ -29,6 +33,9 @@ blocked in network-restricted sandboxes.
    want fixtures from.
 2. Download the `golden-fixtures` artifact from the completed run.
 3. Unzip its contents into `tests/golden/fixtures/` in this repo.
+4. Copy `AQtest_human_crop.tif` and `C1-IU_VTEA_ExampleData_001.tif` from the
+   Java repo's root into `tests/golden/data/` - the image-derived tests
+   re-run the segmentation on them.
 
 The generator produces two kinds of fixture:
 
@@ -69,8 +76,14 @@ Not exact bit-for-bit parity — algorithmic equivalence:
   column, row-aligned on `object_id`.
 - **Clustering**: Adjusted Rand Index (ARI) between assignments, not
   cluster-id equality (ids are arbitrary/permutable).
-- **PCA**: compare explained variance, not raw components directly — sign
-  and axis order aren't guaranteed to match across implementations.
+- **PCA**: per-component absolute correlation (> 0.999) — sign, centring
+  and scale aren't guaranteed to match across implementations; the axes are.
+
+Known differences to expect: Java converts the thresholded stack to 8-bit
+before collecting voxels (`SingleThreshold.process`), and truncates the
+threshold to an int; the test does the latter, and the IoU tolerance absorbs
+the former only if the conversion is lossless. Java's standard deviation
+divides by n - 1; `vtea-core` matches it.
 
 ## Running
 

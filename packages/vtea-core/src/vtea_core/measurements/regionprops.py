@@ -50,7 +50,15 @@ def _region_sum(region_mask: np.ndarray, region_intensity: np.ndarray) -> float:
 
 
 def _region_stddev(region_mask: np.ndarray, region_intensity: np.ndarray) -> float:
-    return float(np.std(region_intensity[region_mask]))
+    """Sample standard deviation (n - 1), as vtea.objects.measurements.
+    StandardDeviation computes it - the Java table is what a VTEA number is
+    compared against. A one-voxel object has no spread to estimate; it reads
+    0 rather than the Java NaN, which would otherwise poison every
+    clustering and reduction the table is fed to."""
+    values = region_intensity[region_mask]
+    if values.size < 2:
+        return 0.0
+    return float(np.std(values, ddof=1))
 
 
 def extract_measurements(

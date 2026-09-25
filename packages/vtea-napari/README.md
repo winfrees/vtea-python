@@ -11,9 +11,9 @@ Explorer" sections explaining these widgets' design.
 
 ## Status
 
-Phase 4 done. Implemented and tested (645 tests, including real
-`napari.Viewer` integration tests that load the plugin the way an end user
-would, and end-to-end tests that build a pipeline purely through the
+Phase 4 done (Java parity not yet validated - see `docs/PORT_PLAN.md`).
+Implemented and tested (645 tests, including real `napari.Viewer`
+integration tests that load the plugin the way an end user would, and end-to-end tests that build a pipeline purely through the
 widget and run it):
 
 - **`ProtocolBuilderWidget`** — the protocol builder, registered as a napari

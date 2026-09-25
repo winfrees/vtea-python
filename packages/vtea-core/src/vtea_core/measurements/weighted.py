@@ -108,6 +108,9 @@ def weighted_measurements(
     safe = np.where(weight > 0, weight, np.nan)
     mean = totals["value"][index] / safe
     variance = np.maximum(totals["square"][index] / safe - mean * mean, 0.0)
+    # n - 1 over the expected voxel count, so a certain ownership gives the
+    # same sample standard deviation extract_measurements does.
+    variance = variance * weight / np.maximum(weight - 1, 1)
 
     frame = pd.DataFrame({"object_id": index})
     for axis, centroid in enumerate(totals["centroids"]):

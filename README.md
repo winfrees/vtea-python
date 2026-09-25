@@ -25,9 +25,10 @@ docs/SAVING_AND_ARCHIVING.md
                        bundles (planned; gate JSON and the feature catalog
                        are the parts already built)
 docs/OBJECT_ASSOCIATION.md
-                       Plan for associating segmentations into cells -
-                       derived masks, probabilistic parentage, contested
-                       voxels (planned, under review)
+                       Associating segmentations into cells - derived
+                       masks, probabilistic parentage, contested voxels
+                       (built; saving associations with a protocol waits
+                       on the saving system)
 docs/LARGE_IMAGES.md   Strategy for datasets larger than RAM - memory
                        budgets, tiling, and the rules for objects a tile
                        boundary cuts in half (built; awaiting validation on
@@ -40,11 +41,21 @@ packaging/pyinstaller/ Standalone runtime build (see "Standalone runtime" below)
 
 ## Status
 
-**Phases 0-4 done**, plus a standalone runtime (see below). Phases 0-3
-(package skeletons/CI; `VolumeDataset`/TIFF/Zarr I/O; the algorithm core -
-segmentation, measurements, clustering, reduction, gates, image
-preprocessing; and Cellpose segmentation + a `classification` module) - see
-`packages/vtea-core/README.md` for the full module-by-module status.
+**Where this stands against the goal of replacing the Java application**
+(full review in `docs/PORT_PLAN.md`'s "Status" and "Path forward"):
+
+| | |
+|---|---|
+| Data model, I/O, headless pipeline engine (Phase 1) | done |
+| napari GUI - protocol builder and Object Explorer (Phase 4) | done |
+| Data larger than memory | built; needs validation on GPU hardware and real tissue |
+| Algorithm coverage (Phases 2-3) | partial - the Java default segmentation (LayerCake3D), neighbourhood measurements, heatmap/violin plots, z-normalisation and the VAE plugins are not ported |
+| Saving a protocol, exporting the measurement table | **not built** |
+| Parity with Java outputs (Phases 0 and 5) | **not started** - the harness and assertions exist, but no Java fixture has been generated yet |
+
+The next milestones, in order: generate the Java fixtures and run the
+parity tests; protocol save/open and table export; then the algorithm
+gaps. See `packages/vtea-core/README.md` for the module-by-module status.
 
 Phase 4 (napari GUI) landed two dock widgets:
 

@@ -13,7 +13,12 @@ full porting plan, architecture mapping, and phased roadmap.
 
 ## Status
 
-Phases 0-4 are done. Implemented and tested:
+Implemented and tested below. What that does *not* yet mean: none of it has
+been compared against Java VTEA's output (no golden fixtures exist yet), and
+some Java plugins have no equivalent - see the "Not yet ported" paragraph
+after the list, and `docs/PORT_PLAN.md`'s parity inventory for the full
+table.
+
 
 - **data**: `VolumeDataset`/`InMemoryVolumeDataset`/`ChunkedVolumeDataset`,
   `object_ids`/`object_pixel_indices`/`object_intensity_values`; `Spacing`
@@ -67,8 +72,8 @@ Phases 0-4 are done. Implemented and tested:
   is marked `manual` forever after, and drops out of `uncertain()` because a
   person's decision is not a posterior
 - **measurements**: `MeasurementStore` (DuckDB-backed), `extract_measurements`
-  (regionprops-based - object_id, centroid-*, count, mean, sum, stddev, min,
-  max, threshold_mean), `extract_measurements_by_channel` (one segmentation
+  (regionprops-based - object_id, centroid-*, count, mean, sum, stddev
+  (n - 1, as Java computes it), min, max, threshold_mean), `extract_measurements_by_channel` (one segmentation
   against every channel as one flat table, intensity columns suffixed with
   the channel they were measured on: `mean_ch0`, `mean_ch2`, ...),
   `feature_matrix` (that table as the float array clustering and reduction
@@ -171,14 +176,17 @@ learning isn't a separate module". `cellpose_segmentation` lives in
 supervised classification work lives in the new `classification` module,
 parallel to `clustering`/`reduction`.
 
-Not yet ported: `bioimageio.core`-based generic model inference (the
-DeepImageJ replacement - deferred, more involved than Cellpose), spatial
-statistics (`vtea.spatial` - unregistered/non-plugin utility classes in the
-Java source, lower priority), linear unmixing and ImageJ macro execution
-(`vtea.imageprocessing.builtin.LinearUnmixing`/`IJMacro` - deferred per
-PORT_PLAN.md's open question on macro compatibility), and ImageJ ROI-file
-import (`vtea.objects.Segmentation.ImageJROIBased` - an I/O format concern,
-not an algorithm).
+Not yet ported (see `docs/PORT_PLAN.md`'s parity inventory and "Path
+forward" for the order): the LayerCake3D, FloodFill3D and Region2D
+segmentations (LayerCake3D is the Java default); z-normalisation of the
+feature table before clustering/reduction; neighbourhood measurements
+(`ClassFraction`, `ClassSums`, `TotalObjects`); deterministic-annealing
+clustering and the four VAE plugins; protocol save/open and measurement
+export (only gates and associations save today); `bioio` vendor-format
+readers (the `bioformats` extra is declared, nothing uses it yet);
+`bioimageio.core` generic model inference (the DeepImageJ replacement);
+linear unmixing and ImageJ macro execution (deferred per PORT_PLAN.md's open
+question on macro compatibility); and ImageJ ROI-file import.
 
 ## Layout
 
@@ -218,10 +226,10 @@ src/vtea_core/
                     bars (cost.py)
 ```
 
-Each subpackage's built-in implementations register into an
-`vtea_core.<group>` entry-point group (see `pyproject.toml`), mirroring the
-Java `vtea.services` plugin registry so the same algorithm-discovery pattern
-carries over.
+Steps are found through `vtea_core.workflow.STEP_REGISTRY`, a plain dict.
+`pyproject.toml` reserves `vtea_core.<group>` entry-point groups for
+third-party plugins (the role Java's `vtea.services` played), but they are
+empty and nothing reads them yet.
 
 ## The `deeplearning` extra
 
