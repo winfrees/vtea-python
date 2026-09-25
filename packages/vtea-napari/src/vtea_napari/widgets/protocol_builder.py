@@ -1966,8 +1966,10 @@ class ProtocolBuilderWidget(QWidget):
             return [f"Voxel size set from the protocol: {saved.describe()}."]
         if tuple(current.values) != tuple(saved.values) or current.unit != saved.unit:
             return [
-                f"Kept this image's voxel size ({current.describe()}); "
-                f"the protocol was built at {saved.describe()}."
+                (
+                    f"Kept this image's voxel size ({current.describe()}); "
+                    f"the protocol was built at {saved.describe()}."
+                )
             ]
         return []
 
