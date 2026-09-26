@@ -427,15 +427,15 @@ def train_vae(
     in_channels = 1
     if channel is None and channel_axis is not None and np.asarray(intensity).ndim > spatial:
         in_channels = int(np.asarray(intensity).shape[channel_axis])
-    shared = dict(
-        in_channels=in_channels,
-        spatial_dims=spatial,
-        beta=beta,
-        warmup_epochs=warmup_epochs,
-        learning_rate=learning_rate,
-        batch_size=batch_size,
-        epochs=epochs,
-    )
+    shared = {
+        "in_channels": in_channels,
+        "spatial_dims": spatial,
+        "beta": beta,
+        "warmup_epochs": warmup_epochs,
+        "learning_rate": learning_rate,
+        "batch_size": batch_size,
+        "epochs": epochs,
+    }
     if architecture == "custom":
         config = VAEConfig(
             crop_size=crop_size, latent_dim=latent_dim, channels=ARCHITECTURES["small"][2], **shared
@@ -445,7 +445,7 @@ def train_vae(
     crops = _crops_for(config.crop_size, labels, intensity, channel_axis, channel, mask_outside)
     model, history = fit_vae(crops, config, device=device or None, random_state=random_state)
     model.history = history
-    model.metadata = {"n_objects": int(len(crops)), "mask_outside": bool(mask_outside)}
+    model.metadata = {"n_objects": len(crops), "mask_outside": bool(mask_outside)}
     if save_to:
         save_vae(model, save_to, history=history, metadata=model.metadata)
     return model

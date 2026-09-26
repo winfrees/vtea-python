@@ -22,10 +22,10 @@ from fixtures import (
     load_synthetic_kmeans_k3,
     load_synthetic_pca,
 )
+from scipy.spatial import cKDTree
 from vtea_core.clustering import kmeans
 from vtea_core.measurements import extract_measurements
 from vtea_core.reduction import pca
-from scipy.spatial import cKDTree
 from vtea_core.segmentation import layercake_3d, threshold_mask
 
 pytestmark = pytest.mark.skipif(

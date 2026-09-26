@@ -103,7 +103,7 @@ def extract_crops(
     for row, (object_id, centre) in enumerate(zip(wanted, centres)):
         if np.any(np.isnan(centre)):
             continue  # not in the image; left as zeros rather than guessed
-        start = [int(round(value)) - half for value in centre]
+        start = [int(np.round(value)) - half for value in centre]
         stop = [begin + size for begin in start]
         clipped = tuple(
             slice(max(begin, 0), min(end, extent))
