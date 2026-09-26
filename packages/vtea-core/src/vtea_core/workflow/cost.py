@@ -63,7 +63,7 @@ class StepCost:
 # Categories whose steps all consume the per-object table rather than the
 # image, used to cost a step nobody has timed - see cost_for.
 TABLE_CATEGORIES = frozenset(
-    {"clustering", "reduction", "classes", "gates", "association", "cells"}
+    {"clustering", "reduction", "classes", "gates", "association", "cells", "neighborhoods"}
 )
 
 # A step nobody has timed: assume it walks its input once, cheaply, and be
@@ -96,6 +96,9 @@ STEP_COSTS: dict[tuple[str, str], StepCost] = {
     ("segmentation", "cellpose_segmentation"): StepCost(
         per_voxel_ns=2500.0, notes="assumes a GPU; CPU inference is several times slower"
     ),
+    ("segmentation", "layercake_3d"): StepCost(
+        per_voxel_ns=250.0, notes="a 2D watershed per slice, then linking regions across z"
+    ),
     ("segmentation", "expand_labels"): StepCost(per_voxel_ns=200.0),
     ("segmentation", "label_ring"): StepCost(per_voxel_ns=250.0),
     ("segmentation", "label_shell"): StepCost(per_voxel_ns=300.0),
@@ -117,6 +120,16 @@ STEP_COSTS: dict[tuple[str, str], StepCost] = {
     ("association", "merge_associations"): StepCost(per_object_ns=1500.0),
     ("cells", "build_cells"): StepCost(per_object_ns=3000.0),
     ("cells", "cell_features"): StepCost(per_object_ns=4000.0, per_object_feature_ns=200.0),
+    ("neighborhoods", "build_neighborhoods"): StepCost(
+        per_object_ns=30000.0, notes="a kd-tree query per object"
+    ),
+    ("neighborhoods", "neighborhood_features"): StepCost(
+        per_object_ns=20000.0, notes="per member of every neighbourhood, not per object"
+    ),
+    ("neighborhoods", "classify_neighborhoods"): StepCost(
+        per_object_ns=3000.0, per_object_feature_ns=400.0
+    ),
+    ("neighborhoods", "reflect_neighborhoods"): StepCost(per_object_ns=5000.0),
     ("clustering", "kmeans"): StepCost(per_object_ns=3000.0, per_object_feature_ns=400.0),
     ("clustering", "gaussian_mixture"): StepCost(per_object_ns=6000.0, per_object_feature_ns=900.0),
     # Every one of these is either quadratic in the object count or an
@@ -152,6 +165,13 @@ STEP_COSTS: dict[tuple[str, str], StepCost] = {
     ("classification", "class_map"): StepCost(per_voxel_ns=10.0),
     ("classification", "train_classifier"): StepCost(superlinear=True, notes="epochs over crops"),
     ("classification", "predict"): StepCost(per_object_ns=200000.0, notes="a forward pass per crop"),
+    ("vae", "train_vae"): StepCost(superlinear=True, notes="epochs over crops"),
+    ("vae", "vae_features"): StepCost(per_object_ns=200000.0, notes="a forward pass per crop"),
+    ("vae", "vae_reduction"): StepCost(per_object_ns=200000.0, notes="a forward pass per crop"),
+    ("vae", "vae_clustering"): StepCost(per_object_ns=220000.0, notes="a forward pass per crop"),
+    ("vae", "vae_anomaly"): StepCost(
+        per_object_ns=400000.0, notes="an encode and a decode per crop"
+    ),
 }
 
 

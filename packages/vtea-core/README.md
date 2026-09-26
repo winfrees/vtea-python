@@ -29,7 +29,12 @@ table.
 - **io**: `read_tiff`/`write_tiff`/`read_zarr`/`write_zarr`/`open_volume`
 - **segmentation**: `threshold_mask`, `label_components`, `watershed_split`,
   `filter_by_size`, `labels_from_points`, `import_labels`,
-  `cellpose_segmentation`; plus the derived segmentations (new), which build
+  `cellpose_segmentation`; `layercake_3d` (new) - the Java default,
+  LayerCake3D, ported for continuity: 2D regions per slice (after an
+  ImageJ-style per-slice watershed) linked across z by bounding-box centre.
+  Touching nuclei split differently from a 3D labelling, and published Java
+  numbers depend on those splits; the module docstring lists where it
+  deliberately differs from the Java loop; plus the derived segmentations (new), which build
   one label image out of another by morphology rather than by intensity -
   `expand_labels`, `label_ring` (a cytosol band around a nucleus),
   `label_shell` (a nuclear envelope straddling the boundary),
@@ -87,7 +92,22 @@ table.
   (new) - what each column of the table is and how it was produced (what was
   measured, on which channel and segmentation, by which step with what
   parameters, and for a derived feature which features were fed to it),
-  saved as JSON and rendered as the publication data dictionary
+  saved as JSON and rendered as the publication data dictionary;
+  `normalize_features` (new) - `zscore` (the Java "Z-scale all data"
+  checkbox, population standard deviation as the Java computes it),
+  `robust` (median and interquartile range, for tables where a few huge
+  objects flatten a z-score) and `minmax`. Every clustering and reduction
+  step takes it as `normalize=`, off by default as the Java checkbox was
+- **neighborhoods** (new): neighbourhoods as a second level of objects, made
+  of the first - `build_neighborhoods` (the Java Nearest-k, Spatial by cell
+  and Spatial by point, and a randomised null model), `neighborhood_features`
+  (the Java `ClassFraction`/`ClassSums`/`TotalObjects` under their Java
+  column names, plus density and aggregated member features),
+  `classify_neighborhoods` (neighbourhood types) and `reflect_neighborhoods`,
+  which hands each neighbourhood's characteristics back to its members so a
+  cell carries the kind of neighbourhood it lives in. Membership is a
+  many-to-many table, not an association, because neighbourhoods overlap.
+  See docs/NEIGHBORHOODS.md
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`,
   `auto_k_kmeans`; plus `louvain` and `leiden` (new) - community detection
   over a shared-nearest-neighbour graph (`shared_neighbor_graph`), which
@@ -135,9 +155,18 @@ table.
   archived with it
 - **imageprocessing**: `gaussian_blur`, `median_filter`, `enhance_contrast`,
   `subtract_background`
-- **classification**: `class_map` (no extra dependencies);
-  `Cell3DClassifier`/`train_classifier`/`predict` (require the
-  `deeplearning` extra - torch)
+- **classification**: `class_map` and `extract_crops` (a fixed-size,
+  per-crop z-scored cube around every object, edge-replicated, in
+  measurement-table order - no extra dependencies);
+  `Cell3DClassifier`/`train_classifier`/`predict` and the variational
+  autoencoders (new, `vae.py`) - `train_vae`, `vae_features`,
+  `vae_reduction`, `vae_clustering`, `vae_anomaly`, the four Java VAE
+  plugins plus their training as protocol steps (the `vae` category), with
+  the Java architecture, beta-VAE loss, KL warm-up and small/medium/large
+  presets, in 2D or 3D, and checkpoints as a directory of model.pt,
+  config.json and metadata.json. The Java decoder's sigmoid (which cannot
+  reproduce z-scored crops) is dropped. All of these require the
+  `deeplearning` extra - torch
 - **workflow** (new): `Step`/`Pipeline` - the headless engine behind
   `vtea-napari`'s protocol builder widget, and `STEP_REGISTRY`/
   `available_steps`/`get_step_function`, the category -> function registry
@@ -187,11 +216,9 @@ supervised classification work lives in the new `classification` module,
 parallel to `clustering`/`reduction`.
 
 Not yet ported (see `docs/PORT_PLAN.md`'s parity inventory and "Path
-forward" for the order): the LayerCake3D, FloodFill3D and Region2D
-segmentations (LayerCake3D is the Java default); z-normalisation of the
-feature table before clustering/reduction; neighbourhood measurements
-(`ClassFraction`, `ClassSums`, `TotalObjects`); deterministic-annealing
-clustering and the four VAE plugins; import of Java workflow XML files;
+forward" for the order): the FloodFill3D and Region2D segmentations;
+deterministic-annealing clustering (disabled in the Java source itself);
+import of Java workflow XML files;
 `bioio` vendor-format
 readers (the `bioformats` extra is declared, nothing uses it yet);
 `bioimageio.core` generic model inference (the DeepImageJ replacement);
@@ -223,11 +250,15 @@ src/vtea_core/
                     plus Gate/GateSet (named, hierarchical gates over a
                     measurement DataFrame) and image gates (which napari ROI
                     each object is in)
+  neighborhoods/    Neighbourhoods as objects made of objects: built, measured
+                    by composition, typed, and reflected back onto members
   classes/          Class rules (range / values / boolean expression), the
                     label sets an object's n labels live in, and the
                     hierarchies two sets combine into
   imageprocessing/  Gaussian blur, median filter, contrast, background subtraction
-  classification/   class_map (label-remap) + a small torch 3D CNN
+  classification/   class_map (label-remap), per-object crops, a small torch
+                    3D CNN and the variational autoencoders (the Java VAE
+                    plugins)
                     (train_classifier/predict) for supervised object classification
   export/           Feature table + data dictionary as CSV/Parquet
   workflow/         Step/Pipeline engine + the category -> function step registry

@@ -1,6 +1,7 @@
 import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QLabel, QPushButton
+from vtea_core.workflow import STEP_REGISTRY
 
 from vtea_napari.widgets.protocol_builder import ProtocolBuilderWidget
 
@@ -96,14 +97,20 @@ class TestAddStep:
         # "classes" rather than "gates": the polygon and rectangle steps are
         # gone from the protocol (they need vertices nothing produces), and
         # what is left is the rule half - see vtea_core.classes.
-        assert analysis == {
+        # "neighborhoods" builds a second level of objects out of the table;
+        # "vae" (the Java VAE plugins) only exists where torch is installed.
+        expected = {
             "measurements",
             "association",
             "cells",
             "clustering",
             "reduction",
             "classes",
+            "neighborhoods",
         }
+        if "vae" in STEP_REGISTRY:
+            expected.add("vae")
+        assert analysis == expected
         assert processing.isdisjoint(analysis)
 
     def test_classification_is_not_offered(self, qtbot):
@@ -3527,3 +3534,159 @@ class TestClassSteps:
 
         explorer = _explorer_for(widget, qtbot)
         assert step.name in _axis_choices(explorer)
+
+
+class TestNeighborhoodsFromTheBuilder:
+    """Neighbourhoods as protocol steps: a second level of objects in its own
+    table, and what they reflect back joined onto the object table."""
+
+    def _builder(self, qtbot):
+        import numpy as np
+
+        from vtea_core.workflow import Step
+
+        viewer = _model_viewer()
+        image = np.zeros((60, 60))
+        for row in range(6):
+            for column in range(6):
+                y, x = 5 + row * 10, 5 + column * 10
+                image[y - 1 : y + 2, x - 1 : x + 2] = 100.0 if column < 3 else 200.0
+        viewer.add_image(image, name="field")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        for step in (
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            ),
+            Step.for_function("segmentation", "label_components", available={"mask"}),
+        ):
+            widget.pipeline.add_step(step)
+        widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements", available={"labels", "intensity"})
+        )
+        widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "classes",
+                "class_from_range",
+                params={"column": "mean", "minimum": 150.0},
+                taken_names=widget.step_names(),
+            )
+        )
+        for function, params in (
+            ("build_neighborhoods", {"radius": 12.0}),
+            ("neighborhood_features", {"class_column": "class_from_range_1"}),
+            ("classify_neighborhoods", {"n_clusters": 2}),
+            ("reflect_neighborhoods", {}),
+        ):
+            widget.analysis_pipeline.add_step(
+                Step.for_function(
+                    "neighborhoods",
+                    function,
+                    available=widget.analysis_pipeline.available_keys({"data", "spacing"}),
+                    taken_names=widget.step_names(),
+                    params=params,
+                )
+            )
+        widget.run_pipeline(widget.seed_context())
+        return widget
+
+    def test_the_neighbourhood_table_is_its_own_table(self, qtbot):
+        from vtea_core.neighborhoods import NEIGHBORHOOD_ID, NEIGHBORHOOD_TYPE
+
+        widget = self._builder(qtbot)
+        tables = widget.session.tables
+        # the classified table replaces the measured one it was built from
+        assert "classify_neighborhoods_1" in tables
+        assert "neighborhood_features_1" not in tables
+        view = tables["classify_neighborhoods_1"]
+        assert view.id_column == NEIGHBORHOOD_ID
+        assert view.noun == "neighborhoods"
+        assert NEIGHBORHOOD_TYPE in view.frame.columns
+        assert len(view.frame) == 36
+
+    def test_objects_carry_the_type_of_neighbourhood_they_live_in(self, qtbot):
+        from vtea_core.neighborhoods import NEIGHBORHOOD_TYPE
+
+        widget = self._builder(qtbot)
+        objects = widget.results_table()
+        column = f"reflect_neighborhoods_1.{NEIGHBORHOOD_TYPE}"
+        assert column in objects.columns
+        # left half dim, right half bright: two kinds of neighbourhood
+        halves = objects["mean"] > 150
+        agreement = pd.crosstab(halves, objects[column])
+        assert (agreement.max(axis=1) / agreement.sum(axis=1)).min() > 0.9
+        assert column in widget.session.categorical_columns(objects)
+
+    def test_the_neighbourhood_type_is_a_category_on_its_own_table(self, qtbot):
+        from vtea_core.neighborhoods import NEIGHBORHOOD_TYPE
+
+        widget = self._builder(qtbot)
+        frame = widget.session.tables["classify_neighborhoods_1"].frame
+        assert NEIGHBORHOOD_TYPE in widget.session.categorical_columns(frame)
+
+    def test_the_explorer_can_plot_neighbourhoods(self, qtbot):
+        widget = self._builder(qtbot)
+        explorer = _explorer_for(widget, qtbot)
+        widget.session.set_active_table("classify_neighborhoods_1")
+        assert "Class_1_ClassFraction" in _axis_choices(explorer)
+
+
+class TestVAEFromTheBuilder:
+    def test_latent_features_join_the_table_even_when_wide(self, qtbot):
+        import numpy as np
+        import pytest
+        from vtea_core.workflow import Step
+
+        if "vae" not in STEP_REGISTRY:
+            pytest.skip("the VAE steps need torch (the deeplearning extra)")
+
+        viewer = _model_viewer()
+        image = np.random.default_rng(0).normal(10, 1, (8, 40, 40)).astype(np.float32)
+        for index in range(6):
+            y, x = 6 + (index // 3) * 20, 6 + (index % 3) * 12
+            image[2:6, y - 2 : y + 3, x - 2 : x + 3] += 100.0
+        viewer.add_image(image, name="field")
+        widget = ProtocolBuilderWidget(napari_viewer=viewer)
+        qtbot.addWidget(widget)
+        widget.pipeline.add_step(
+            Step.for_function(
+                "segmentation", "threshold_mask", params={"method": "fixed", "value": 50.0}
+            )
+        )
+        widget.pipeline.add_step(
+            Step.for_function("segmentation", "label_components", available={"mask"})
+        )
+        widget.analysis_pipeline.add_step(
+            Step.for_function("measurements", "extract_measurements", available={"labels", "intensity"})
+        )
+        widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "vae",
+                "train_vae",
+                available={"labels", "intensity", "channel_axis"},
+                params={
+                    "architecture": "custom",
+                    "crop_size": 8,
+                    "latent_dim": 12,
+                    "epochs": 1,
+                    "device": "cpu",
+                },
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.analysis_pipeline.add_step(
+            Step.for_function(
+                "vae",
+                "vae_features",
+                available=widget.analysis_pipeline.available_keys(
+                    {"labels", "intensity", "channel_axis"}
+                ),
+                taken_names=widget.step_names(),
+            )
+        )
+        widget.run_pipeline(widget.seed_context())
+        objects = widget.results_table()
+        latent = [column for column in objects.columns if column.startswith("vae_features_1_")]
+        assert len(latent) == 12  # wider than the usual cap of 8
+        catalog = {d.name: d for d in widget.session.feature_catalog}
+        assert catalog["vae_features_1_1"].measurement == "latent feature"

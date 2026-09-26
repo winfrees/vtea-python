@@ -29,6 +29,8 @@ docs/OBJECT_ASSOCIATION.md
                        masks, probabilistic parentage, contested voxels
                        (built; saving associations with a protocol waits
                        on the saving system)
+docs/NEIGHBORHOODS.md  Neighbourhoods as a second level of objects, and what
+                       they reflect back onto the objects in them (built)
 docs/LARGE_IMAGES.md   Strategy for datasets larger than RAM - memory
                        budgets, tiling, and the rules for objects a tile
                        boundary cuts in half (built; awaiting validation on
@@ -49,7 +51,7 @@ packaging/pyinstaller/ Standalone runtime build (see "Standalone runtime" below)
 | Data model, I/O, headless pipeline engine (Phase 1) | done |
 | napari GUI - protocol builder and Object Explorer (Phase 4) | done |
 | Data larger than memory | built; needs validation on GPU hardware and real tissue |
-| Algorithm coverage (Phases 2-3) | partial - the Java default segmentation (LayerCake3D), neighbourhood measurements, heatmap/violin plots, z-normalisation and the VAE plugins are not ported |
+| Algorithm coverage (Phases 2-3) | partial - LayerCake3D (the Java default segmentation), z-normalisation, neighbourhood measurements and the VAE plugins are ported; FloodFill3D, Region2D, heatmap/violin plots and Java workflow-XML import are not |
 | Saving a protocol, exporting the measurement table | done - `*.vtea.json` protocols; CSV/Parquet export with a data dictionary |
 | Parity with Java outputs (Phases 0 and 5) | **not started** - the harness and assertions exist, but no Java fixture has been generated yet |
 
@@ -106,6 +108,13 @@ The two panes are views of one analysis, sharing a
 `vtea_napari.session.AnalysisSession` keyed by the napari viewer: the
 builder publishes each run into it, the explorer plots and gates it, and
 hiding or closing either pane loses nothing.
+
+A third pane, **Neighborhoods**, builds neighbourhoods from those results:
+a second level of objects made of the first, measured by composition (the
+Java `ClassFraction`/`ClassSums`) and clustered into types. It draws them on
+the same viewer as the objects, and hands each neighbourhood's
+characteristics back to its members, so a cell can be gated on the kind of
+neighbourhood it lives in. See `docs/NEIGHBORHOODS.md`.
 
 **Data larger than memory** runs through the same protocol, a tile at a
 time: `vtea_core.blocked` carries the memory budget, the tile plan, the

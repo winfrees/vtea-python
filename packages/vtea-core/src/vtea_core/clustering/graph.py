@@ -40,6 +40,8 @@ from contextlib import contextmanager
 
 import numpy as np
 
+from vtea_core.measurements.normalize import Normalization, normalize_features
+
 # What a neighbourhood is worth keeping: an edge weaker than this is two
 # objects that share almost none of their neighbours, which is noise in the
 # graph rather than evidence of a community.
@@ -149,6 +151,7 @@ def louvain(
     resolution: float = 1.0,
     metric: str = "euclidean",
     random_state: int | None = None,
+    normalize: Normalization = "none",
 ) -> np.ndarray:
     """Community assignments via Louvain modularity maximisation.
 
@@ -161,6 +164,7 @@ def louvain(
     implement the same algorithm, and neither is a hard dependency of
     vtea-core.
     """
+    data = normalize_features(data, normalize)
     edges, weights = shared_neighbor_graph(data, n_neighbors=n_neighbors, metric=metric)
     n_nodes = len(np.asarray(data))
 
@@ -218,6 +222,7 @@ def leiden(
     metric: str = "euclidean",
     n_iterations: int = 2,
     random_state: int | None = None,
+    normalize: Normalization = "none",
 ) -> np.ndarray:
     """Community assignments via the Leiden algorithm.
 
@@ -230,6 +235,7 @@ def leiden(
     it stops improving), and `resolution` moves the granularity as it does
     for Louvain.
     """
+    data = normalize_features(data, normalize)
     edges, weights = shared_neighbor_graph(data, n_neighbors=n_neighbors, metric=metric)
     n_nodes = len(np.asarray(data))
 

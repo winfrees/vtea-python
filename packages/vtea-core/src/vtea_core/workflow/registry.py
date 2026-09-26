@@ -40,6 +40,12 @@ from vtea_core.measurements import (
     extract_measurements_by_channel,
     weighted_measurements_by_channel,
 )
+from vtea_core.neighborhoods import (
+    build_neighborhoods,
+    classify_neighborhoods,
+    neighborhood_features,
+    reflect_neighborhoods,
+)
 from vtea_core.objects import (
     associate_by_identity,
     associate_objects,
@@ -57,6 +63,7 @@ from vtea_core.segmentation import (
     label_ring,
     label_shell,
     labels_from_points,
+    layercake_3d,
     restrict_labels_to,
     subtract_labels,
     threshold_mask,
@@ -78,6 +85,9 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
         "filter_by_size": filter_by_size,
         "labels_from_points": labels_from_points,
         "cellpose_segmentation": cellpose_segmentation,
+        # The Java VTEA's default segmentation: 2D regions per slice linked
+        # across z. Kept so a Java protocol's objects can be reproduced.
+        "layercake_3d": layercake_3d,
         # Derived from another segmentation by morphology, keeping its ids -
         # a nuclear envelope, a cytosol band - so the association between
         # them is exact rather than inferred.
@@ -103,6 +113,16 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
     "cells": {
         "build_cells": build_cells,
         "cell_features": cell_features,
+    },
+    # Neighbourhoods are a second level of objects, made of the first: drawn
+    # around each object (or on a grid), measured by their composition,
+    # clustered into types - and reflected back, so each object carries the
+    # kind of neighbourhood it lives in. See vtea_core.neighborhoods.
+    "neighborhoods": {
+        "build_neighborhoods": build_neighborhoods,
+        "neighborhood_features": neighborhood_features,
+        "classify_neighborhoods": classify_neighborhoods,
+        "reflect_neighborhoods": reflect_neighborhoods,
     },
     "measurements": {
         "extract_measurements": extract_measurements,
@@ -159,6 +179,29 @@ try:
 
     STEP_REGISTRY["classification"]["train_classifier"] = train_classifier
     STEP_REGISTRY["classification"]["predict"] = predict
+except ImportError:
+    pass  # torch (the deeplearning extra) not installed
+
+try:
+    from vtea_core.classification import (
+        train_vae,
+        vae_anomaly,
+        vae_clustering,
+        vae_features,
+        vae_reduction,
+    )
+
+    # The Java VAE plugins, plus the training they assumed had happened
+    # somewhere else. Their own category rather than "classification": they
+    # need only the labels and the image, which every protocol has, so -
+    # unlike the CNN steps - they can be run from the protocol builder.
+    STEP_REGISTRY["vae"] = {
+        "train_vae": train_vae,
+        "vae_features": vae_features,
+        "vae_reduction": vae_reduction,
+        "vae_clustering": vae_clustering,
+        "vae_anomaly": vae_anomaly,
+    }
 except ImportError:
     pass  # torch (the deeplearning extra) not installed
 

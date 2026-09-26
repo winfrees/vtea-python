@@ -14,6 +14,7 @@ from vtea_core.measurements.catalog import (
     FeatureDescriptor,
     classify_column,
 )
+from vtea_core.measurements.normalize import NORMALIZATIONS, normalize_features
 from vtea_core.measurements.regionprops import (
     GEOMETRY_COLUMNS,
     extract_measurements,
@@ -39,6 +40,7 @@ __all__ = [
     "GEOMETRY_COLUMNS",
     "IDENTIFIER",
     "INTENSITY",
+    "NORMALIZATIONS",
     "FeatureCatalog",
     "FeatureDescriptor",
     "MeasurementStore",
@@ -47,6 +49,7 @@ __all__ = [
     "extract_measurements_by_channel",
     "feature_matrix",
     "is_feature_column",
+    "normalize_features",
     "parse_feature_name",
     "read_measurements",
     "threshold_mean",

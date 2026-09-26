@@ -18,20 +18,47 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.cluster import KMeans as _KMeans
 from sklearn.mixture import GaussianMixture as _GaussianMixture
 
+from vtea_core.measurements.normalize import Normalization, normalize_features
+
 _LINKAGES = ("ward", "single", "complete")
 
 
-def kmeans(data: np.ndarray, n_clusters: int, *, random_state: int | None = None) -> np.ndarray:
-    """Cluster assignments via KMeans."""
+def kmeans(
+    data: np.ndarray,
+    n_clusters: int,
+    *,
+    random_state: int | None = None,
+    normalize: Normalization = "none",
+) -> np.ndarray:
+    """Cluster assignments via KMeans.
+
+    `normalize` rescales each feature first - Java's "Z-scale all data" is
+    `"zscore"`; see vtea_core.measurements.normalize. Every clustering and
+    reduction step takes it.
+    """
+    data = normalize_features(data, normalize)
     return _KMeans(n_clusters=n_clusters, n_init="auto", random_state=random_state).fit_predict(data)
 
 
-def gaussian_mixture(data: np.ndarray, n_clusters: int, *, random_state: int | None = None) -> np.ndarray:
+def gaussian_mixture(
+    data: np.ndarray,
+    n_clusters: int,
+    *,
+    random_state: int | None = None,
+    normalize: Normalization = "none",
+) -> np.ndarray:
     """Cluster assignments via Gaussian Mixture Model."""
+    data = normalize_features(data, normalize)
     return _GaussianMixture(n_components=n_clusters, random_state=random_state).fit_predict(data)
 
 
-def hierarchical(data: np.ndarray, n_clusters: int, *, linkage: str = "ward") -> np.ndarray:
+def hierarchical(
+    data: np.ndarray,
+    n_clusters: int,
+    *,
+    linkage: str = "ward",
+    normalize: Normalization = "none",
+) -> np.ndarray:
     """Cluster assignments via agglomerative hierarchical clustering.
 
     linkage: "ward", "single", or "complete" - replaces
@@ -39,6 +66,7 @@ def hierarchical(data: np.ndarray, n_clusters: int, *, linkage: str = "ward") ->
     """
     if linkage not in _LINKAGES:
         raise ValueError(f"unknown linkage {linkage!r}, expected one of {_LINKAGES}")
+    data = normalize_features(data, normalize)
     return AgglomerativeClustering(n_clusters=n_clusters, linkage=linkage).fit_predict(data)
 
 
@@ -71,7 +99,12 @@ def _kmeans_bic(data: np.ndarray, labels: np.ndarray, centers: np.ndarray) -> fl
 
 
 def auto_k_kmeans(
-    data: np.ndarray, *, k_min: int = 2, k_max: int = 10, random_state: int | None = None
+    data: np.ndarray,
+    *,
+    k_min: int = 2,
+    k_max: int = 10,
+    random_state: int | None = None,
+    normalize: Normalization = "none",
 ) -> tuple[np.ndarray, dict[int, float]]:
     """Runs KMeans for k in [k_min, k_max] and returns the BIC-best labels.
 
@@ -83,6 +116,7 @@ def auto_k_kmeans(
     """
     if k_max < k_min:
         raise ValueError(f"k_max ({k_max}) must be >= k_min ({k_min})")
+    data = normalize_features(data, normalize)
 
     scores: dict[int, float] = {}
     best_labels: np.ndarray | None = None

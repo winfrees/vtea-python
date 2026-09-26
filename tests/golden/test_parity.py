@@ -12,7 +12,9 @@ from compare import cluster_assignment_ari, feature_table_diff, segmentation_iou
 from fixtures import (
     DATA_DIR,
     fixtures_available,
+    layercake_fixture_path,
     load_label_mask,
+    load_layercake_labels,
     load_measurements,
     load_metadata,
     load_source_channel,
@@ -20,10 +22,11 @@ from fixtures import (
     load_synthetic_kmeans_k3,
     load_synthetic_pca,
 )
+from scipy.spatial import cKDTree
 from vtea_core.clustering import kmeans
 from vtea_core.measurements import extract_measurements
 from vtea_core.reduction import pca
-from vtea_core.segmentation import threshold_mask
+from vtea_core.segmentation import layercake_3d, threshold_mask
 
 pytestmark = pytest.mark.skipif(
     not fixtures_available(),
@@ -59,6 +62,45 @@ def test_measurements_match_java(dataset):
     actual = extract_measurements(labels, volume)[list(expected.columns)]
     diff = feature_table_diff(actual, expected, key="object_id", rtol=1e-3)
     assert diff.empty, diff
+
+
+def _centroids(labels):
+    from scipy import ndimage as ndi
+
+    ids = np.unique(labels)
+    ids = ids[ids != 0]
+    return np.array(ndi.center_of_mass(np.ones(labels.shape), labels, ids))
+
+
+@pytest.mark.parametrize("dataset", DATASETS)
+def test_layercake3d_matches_java(dataset):
+    """The Java default segmentation. Objects are matched by centroid, not
+    id: the Java's region order is not reproducible even between Java runs
+    (see vtea_core.segmentation.layercake), and it skips regions a loop bug
+    steps over - so a few per cent of objects are expected to differ, and
+    the rest must be the same objects."""
+    if not layercake_fixture_path(dataset).exists():
+        pytest.skip("no LayerCake3D fixture yet - milestone M2 in docs/PORT_PLAN.md")
+    if not (DATA_DIR / f"{dataset}.tif").exists():
+        pytest.skip(f"{dataset}.tif not in tests/golden/data/ - see README.md")
+    metadata = load_metadata(dataset)
+    volume = load_source_channel(dataset)
+    labels = layercake_3d(
+        volume,
+        low_threshold=float(metadata["layercake_threshold"]),
+        centroid_offset=float(metadata["layercake_offset"]),
+        min_size=int(metadata["layercake_min"]),
+        max_size=int(metadata["layercake_max"]),
+        watershed=metadata.get("layercake_watershed", "true").lower() == "true",
+    )
+    expected = load_layercake_labels(dataset)
+    assert labels.shape == expected.shape
+    assert segmentation_iou(labels > 0, expected > 0) > 0.95
+
+    actual_centres, expected_centres = _centroids(labels), _centroids(expected)
+    assert abs(len(actual_centres) - len(expected_centres)) <= 0.05 * len(expected_centres)
+    distances, _ = cKDTree(expected_centres).query(actual_centres)
+    assert np.mean(distances < 2.0) > 0.9
 
 
 def test_kmeans_matches_java_on_synthetic_data():

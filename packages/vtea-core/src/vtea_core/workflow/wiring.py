@@ -273,6 +273,22 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
             ),
         ),
     ),
+    # 2D regions per slice, linked into objects across z. Each region is
+    # found from its own slice and linked to neighbours no further than one
+    # object away, so a halo of one object's extent holds everything a
+    # tile-local run needs; the ids are the tile's own and are reconciled.
+    ("segmentation", "layercake_3d"): StepIO(
+        ("volume",),
+        "labels",
+        scaling=Scaling(
+            mode=NEIGHBORHOOD,
+            halo=HaloSpec(object_extent=True, minimum=8),
+            bytes_per_voxel=30,
+            exactness=EXACT_WITH_HALO,
+            needs_reconciliation=True,
+            notes="a per-slice distance transform for the watershed, then a table of regions",
+        ),
+    ),
     # Derived segmentations. They consume a label image, so a channel choice
     # is meaningless; thicknesses are physical when a spacing is available -
     # and so are their halos, which is why a 5 um dilation is a different
@@ -379,6 +395,40 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ("cells", "cell_features"): StepIO(
         ("cells", "measurement_tables"),
         "cell_table",
+        channel_mode=CHANNEL_NONE,
+        scaling=_TABLE_STEP,
+    ),
+    # Neighbourhoods read the per-object table (`data`, seeded by the caller
+    # the way it is for clustering) as a table - they need its centroid and
+    # class columns by name, so there is no `feature_input` to turn it into
+    # a matrix. A kd-tree over the centroids keeps them O(n log n).
+    ("neighborhoods", "build_neighborhoods"): StepIO(
+        ("data", "spacing"),
+        "neighborhoods",
+        channel_mode=CHANNEL_NONE,
+        scaling=Scaling(
+            mode=TABLE,
+            bytes_per_voxel=0,
+            notes="a kd-tree query per object; membership grows with the neighbourhood size",
+        ),
+    ),
+    ("neighborhoods", "neighborhood_features"): StepIO(
+        ("neighborhoods", "data"),
+        "neighborhood_table",
+        channel_mode=CHANNEL_NONE,
+        scaling=_TABLE_STEP,
+    ),
+    ("neighborhoods", "classify_neighborhoods"): StepIO(
+        ("neighborhood_table",),
+        "neighborhood_table",
+        channel_mode=CHANNEL_NONE,
+        scaling=_TABLE_STEP,
+    ),
+    # Back onto the objects: one row per object of `data`, so it joins the
+    # object table like a clustering's column does.
+    ("neighborhoods", "reflect_neighborhoods"): StepIO(
+        ("neighborhoods", "neighborhood_table", "data"),
+        "neighborhood_reflection",
         channel_mode=CHANNEL_NONE,
         scaling=_TABLE_STEP,
     ),
@@ -602,6 +652,45 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
     ),
     ("classification", "predict"): StepIO(
         ("model", "crops"), "predictions", channel_mode=CHANNEL_NONE, scaling=_TABLE_STEP
+    ),
+    # The VAE steps crop around every object themselves, so they read the
+    # labels and the whole multi-channel image, and take the channel as an
+    # argument: None trains on every channel at once. A later step picks up
+    # the model a train_vae step produced as `vae_model`; without one it
+    # loads a checkpoint from `model_path`.
+    ("vae", "train_vae"): StepIO(
+        ("labels", "intensity", "channel_axis"),
+        "vae_model",
+        channel_mode=CHANNEL_ARGUMENT,
+        scaling=Scaling(
+            mode=TABLE,
+            bytes_per_voxel=0,
+            notes="a crop per object; epochs over the crops, not the volume",
+        ),
+    ),
+    ("vae", "vae_features"): StepIO(
+        ("labels", "intensity", "channel_axis", "vae_model"),
+        "vae_latent",
+        channel_mode=CHANNEL_ARGUMENT,
+        scaling=_TABLE_STEP,
+    ),
+    ("vae", "vae_reduction"): StepIO(
+        ("labels", "intensity", "channel_axis", "vae_model"),
+        "reduced",
+        channel_mode=CHANNEL_ARGUMENT,
+        scaling=_TABLE_STEP,
+    ),
+    ("vae", "vae_clustering"): StepIO(
+        ("labels", "intensity", "channel_axis", "vae_model"),
+        "clusters",
+        channel_mode=CHANNEL_ARGUMENT,
+        scaling=_TABLE_STEP,
+    ),
+    ("vae", "vae_anomaly"): StepIO(
+        ("labels", "intensity", "channel_axis", "vae_model"),
+        "anomaly",
+        channel_mode=CHANNEL_ARGUMENT,
+        scaling=_TABLE_STEP,
     ),
 }
 

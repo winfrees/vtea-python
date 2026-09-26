@@ -10,7 +10,10 @@ connected-components implementation - scikit-image/scipy provide that
 directly. Large-volume handling is Dask's job (see vtea_core.data), not a
 separate algorithm. Cellpose lives here rather than in a separate
 "deep learning" module - see PORT_PLAN.md's "Why deep learning isn't a
-separate module". ImageJ ROI import and DeepImageJ/bioimageio.core generic
+separate module". `layercake_3d` is the exception to "one implementation
+replaces all of them": it is the Java default, its 2D-regions-linked-in-z
+splits differ from a 3D labelling, and published numbers depend on those
+splits - so it is ported as it was, for continuity. ImageJ ROI import and DeepImageJ/bioimageio.core generic
 model inference are deferred.
 """
 
@@ -24,6 +27,7 @@ from vtea_core.segmentation.derived import (
     watershed_ownership,
 )
 from vtea_core.segmentation.labeling import filter_by_size, label_components, watershed_split
+from vtea_core.segmentation.layercake import layercake_3d
 from vtea_core.segmentation.manual import import_labels, labels_from_points
 from vtea_core.segmentation.threshold import threshold_mask
 
@@ -36,6 +40,7 @@ __all__ = [
     "label_ring",
     "label_shell",
     "labels_from_points",
+    "layercake_3d",
     "restrict_labels_to",
     "subtract_labels",
     "threshold_mask",

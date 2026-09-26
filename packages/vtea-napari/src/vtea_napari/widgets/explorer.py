@@ -211,6 +211,46 @@ def _apply_gate_color(layer, colormap) -> bool:
     return True
 
 
+def find_source_layer(viewer, session):
+    """The image layer the analysis was run on, when it is still loaded."""
+    name = session.source_layer_name
+    if viewer is None or not name:
+        return None
+    for layer in viewer.layers:
+        if str(layer.name) == str(name):
+            return layer
+    return None
+
+
+def placement_over(layer, data) -> dict:
+    """`scale` and `translate` for a layer that should sit exactly over
+    `layer` - empty when there is no layer, or when they would not fit this
+    array's dimensionality."""
+    if layer is None:
+        return {}
+    placement = {}
+    for key in ("scale", "translate"):
+        try:
+            values = tuple(float(value) for value in getattr(layer, key))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if len(values) == getattr(data, "ndim", 0):
+            placement[key] = list(values)
+    return placement
+
+
+def align_to(array, source, channel_axis: int | None):
+    """`array` (a segmentation-shaped result) with the channel axis the
+    source image has and it lacks, as a singleton - see
+    ExplorerWidget.align_to_source for why."""
+    source_ndim = getattr(getattr(source, "data", None), "ndim", None)
+    if channel_axis is None or source_ndim is None:
+        return array
+    if array.ndim == source_ndim - 1 and channel_axis <= array.ndim:
+        return array[(slice(None),) * channel_axis + (np.newaxis,)]
+    return array
+
+
 class ExplorerWidget(QWidget):
     """A napari dock widget: `napari_viewer` is auto-injected by napari's
     plugin engine when opened from the Plugins menu; pass None to use
@@ -890,30 +930,13 @@ class ExplorerWidget(QWidget):
         with a physical voxel size places its data in microns, and a
         highlight left at scale 1 sits somewhere the user is not looking.
         """
-        name = self.session.source_layer_name
-        if self.viewer is None or not name:
-            return None
-        for layer in self.viewer.layers:
-            if str(layer.name) == str(name):
-                return layer
-        return None
+        return find_source_layer(self.viewer, self.session)
 
     def source_placement(self, data) -> dict:
         """`scale` and `translate` for a layer that should sit exactly over
         the source image - empty when there is nothing to copy them from, or
         when they would not fit this array's dimensionality."""
-        layer = self.source_layer()
-        if layer is None:
-            return {}
-        placement = {}
-        for key in ("scale", "translate"):
-            try:
-                values = tuple(float(value) for value in getattr(layer, key))
-            except (AttributeError, TypeError, ValueError):
-                continue
-            if len(values) == getattr(data, "ndim", 0):
-                placement[key] = list(values)
-        return placement
+        return placement_over(self.source_layer(), data)
 
     def align_to_source(self, array):
         """Give a highlight the source image's dimensionality again.
@@ -926,14 +949,7 @@ class ExplorerWidget(QWidget):
         the volume it is. Re-inserting the channel axis as a singleton puts
         it back on the same axes as the data.
         """
-        channel_axis = self.session.channel_axis
-        source = self.source_layer()
-        source_ndim = getattr(getattr(source, "data", None), "ndim", None)
-        if channel_axis is None or source_ndim is None:
-            return array
-        if array.ndim == source_ndim - 1 and channel_axis <= array.ndim:
-            return array[(slice(None),) * channel_axis + (np.newaxis,)]
-        return array
+        return align_to(array, self.source_layer(), self.session.channel_axis)
 
     def _remove_highlight(self, gate_id: str) -> None:
         layer, _signature = self._highlight_layers.pop(gate_id, (None, None))

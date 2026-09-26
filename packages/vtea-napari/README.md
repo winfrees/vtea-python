@@ -312,6 +312,22 @@ widget and run it):
   "Object Explorer" section for what was simplified vs. the Java original
   (one gate type, no dead `GateManager` port, real hierarchy where Java had
   none).
+- **`NeighborhoodWidget`** — the "Neighborhoods" dock widget (also opened
+  from the builder's **Neighborhoods** button): neighbourhoods as a second
+  level of objects, on the same viewer as the first. It builds them from
+  any table the protocol produced (objects or cells), by the Java methods
+  (around each object within a radius, the k nearest, or grid points, with
+  a randomised null model), measures their class composition, clusters them
+  into types, and hands each neighbourhood's characteristics back to its
+  members as `<name>.*` columns on their table, merged by id so they
+  survive a re-run. On the viewer: a Points layer of neighbourhood centres
+  coloured by any neighbourhood feature (click one to select it), a Labels
+  layer painting every object by its neighbourhood type, and a layer
+  showing only the selected neighbourhood's members. The neighbourhood
+  table joins the Object Explorer's table menu, and a gate on neighbourhoods
+  centred on cells lights up those cells. The protocol builder's
+  `neighborhoods` analysis category does the same as protocol steps. See
+  [`/docs/NEIGHBORHOODS.md`](../../docs/NEIGHBORHOODS.md).
 - **`ScatterPlotWidget`** — the matplotlib-backed plot: click to add a gate
   vertex, double-click to close it, right-click to cancel; in rectangle mode
   two clicks (opposite corners) make the gate, still stored as a 4-vertex
@@ -371,5 +387,5 @@ widget and run it):
 ```bash
 pip install -e "../vtea-core" -e ".[dev]"
 napari
-# Plugins menu -> VTEA -> Protocol Builder, or -> Object Explorer
+# Plugins menu -> VTEA -> Protocol Builder, -> Object Explorer, or -> Neighborhoods
 ```
