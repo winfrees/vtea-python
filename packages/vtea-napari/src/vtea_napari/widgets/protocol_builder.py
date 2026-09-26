@@ -48,6 +48,7 @@ from qtpy.QtWidgets import (
 from vtea_core.blocked import format_bytes
 from vtea_core.classes import LabelSet
 from vtea_core.measurements import FeatureCatalog, feature_matrix
+from vtea_core.neighborhoods import NEIGHBORHOOD_ID, NEIGHBORHOOD_TYPE, NeighborhoodSet
 from vtea_core.objects import AssociationSet, CellCollection, Ownership
 from vtea_core.workflow import (
     PROTOCOL_SUFFIX,
@@ -92,6 +93,17 @@ RUN_BUTTON_STYLE = (
 # matrix, not a handful of features to plot against each other.
 MAX_DERIVED_FEATURES = 8
 
+# The exception: a VAE's latent vector is per-object features by
+# construction, and its width is a model setting (16-64 for the Java
+# presets) rather than a sign the result is something else.
+WIDE_FEATURE_OUTPUTS = frozenset({"vae_latent"})
+MAX_LATENT_FEATURES = 128
+
+
+def feature_width(step: Step) -> int:
+    """How many columns one step's per-object matrix may contribute."""
+    return MAX_LATENT_FEATURES if step.output_key in WIDE_FEATURE_OUTPUTS else MAX_DERIVED_FEATURES
+
 # What a preview block is assumed to cost per voxel: the input plus a couple
 # of intermediates, which is what a short protocol actually holds. Only used
 # to refuse a view too large to preview, so an approximation that errs
@@ -108,7 +120,15 @@ PROTOCOL_FILE_FILTER = "VTEA protocol (*.vtea.json);;JSON (*.json);;All files (*
 SOURCE_HASH_LIMIT_BYTES = 512 * 1024**2
 
 
-def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
+def feature_columns(
+    name: str,
+    result,
+    n_objects: int,
+    *,
+    ids=None,
+    id_column: str = "object_id",
+    max_width: int = MAX_DERIVED_FEATURES,
+) -> dict[str, np.ndarray]:
     """The columns a step's result contributes to the measurement table.
 
     A per-object vector (cluster ids) becomes one column named after the
@@ -120,16 +140,41 @@ def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
     Naming after the step is what keeps a second reduction from overwriting
     the first one's columns, and is what makes those columns findable in the
     plot's X/Y menus.
+
+    A per-object *table* - what reflecting neighbourhoods back onto their
+    members produces - is matched to the rows by `ids` (the table's
+    `id_column`) rather than by position, and each of its columns becomes
+    `name.column`.
     """
     if isinstance(result, LabelSet):
         return label_set_columns(name, result, n_objects)
+    if isinstance(result, pd.DataFrame):
+        return table_columns(name, result, ids, id_column)
     if not isinstance(result, np.ndarray) or result.shape[:1] != (n_objects,):
         return {}
     if result.ndim == 1:
         return {name: result}
-    if result.ndim == 2 and result.shape[1] <= MAX_DERIVED_FEATURES:
+    if result.ndim == 2 and result.shape[1] <= max_width:
         return {f"{name}_{index + 1}": result[:, index] for index in range(result.shape[1])}
     return {}
+
+
+def table_columns(name: str, result: pd.DataFrame, ids, id_column: str) -> dict[str, np.ndarray]:
+    """A per-object table's columns, lined up with the rows by id.
+
+    Only a table keyed by the same ids as the measurement table - a
+    neighbourhood *table* (rows are neighbourhoods) is its own table in the
+    explorer, not columns of this one.
+    """
+    if ids is None or id_column not in result.columns or NEIGHBORHOOD_ID in result.columns:
+        return {}
+    keyed = result.drop_duplicates(id_column).set_index(id_column)
+    ids = pd.Series(np.asarray(ids))
+    return {
+        f"{name}.{column}": ids.map(keyed[column]).to_numpy()
+        for column in keyed.columns
+        if pd.api.types.is_numeric_dtype(keyed[column])
+    }
 
 
 def label_set_columns(name: str, label_set: LabelSet, n_objects: int) -> dict[str, np.ndarray]:
@@ -407,6 +452,15 @@ class ProtocolBuilderWidget(QWidget):
         # id, an ROI, or any boolean combination of them - which is what a
         # class is. See vtea_core.classes.
         "classes",
+        # A second level of objects made of the first, and what they hand
+        # back to their members - see vtea_core.neighborhoods. The
+        # Neighborhoods pane does the same interactively, with the
+        # neighbourhoods drawn on the viewer.
+        "neighborhoods",
+        # The Java VAE plugins. They read the labels and the image, which
+        # every protocol has, so unlike "classification" they can run here;
+        # present only where torch is installed.
+        "vae",
     )
 
     def __init__(
@@ -555,6 +609,13 @@ class ProtocolBuilderWidget(QWidget):
         self.explorer_button.setToolTip("Open the plot and gate manager for these results")
         self.explorer_button.clicked.connect(self.open_object_explorer)
         top_row.addWidget(self.explorer_button)
+        self.neighborhoods_button = QPushButton("Neighborhoods")
+        self.neighborhoods_button.setToolTip(
+            "Build neighbourhoods from these results - a second level of objects, made of "
+            "the objects - and see both on this viewer"
+        )
+        self.neighborhoods_button.clicked.connect(self.open_neighborhoods)
+        top_row.addWidget(self.neighborhoods_button)
 
         root.addLayout(top_row)
 
@@ -1337,6 +1398,15 @@ class ProtocolBuilderWidget(QWidget):
             # goes to the table and the plot's legend. What is worth saying
             # is how many carry each label, and how many carry none.
             self.status_label.setText(f"{step.result_key}: {result.summary()}")
+        elif isinstance(result, NeighborhoodSet):
+            self.status_label.setText(f"{step.result_key}: {result.summary()}")
+        elif isinstance(result, pd.DataFrame) and NEIGHBORHOOD_ID in result.columns:
+            # A neighbourhood table is its own table in the explorer, whose
+            # rows are neighbourhoods - not columns of this one.
+            self.status_label.setText(
+                f"{step.result_key}: {len(result)} neighbourhoods measured - "
+                f"'{step.result_key}' in the Object Explorer's table menu"
+            )
         elif isinstance(result, CellCollection):
             # Same reason as an association: nothing to draw, and how many
             # cells are missing a part is the number worth seeing.
@@ -1440,6 +1510,10 @@ class ProtocolBuilderWidget(QWidget):
             return
         for column, mask in self.session.gate_columns(frame).items():
             frame[column] = mask
+        # Not the columns the Neighborhoods pane reflected onto the objects:
+        # a clustering with no feature selection uses every numeric column,
+        # and its input changing because a pane was used would be invisible.
+        # A protocol that wants them carries the neighbourhood steps itself.
         context["data"] = frame
 
     def _seed_measurement_tables(self, context: dict) -> None:
@@ -1534,6 +1608,18 @@ class ProtocolBuilderWidget(QWidget):
         `clusters` column.
         """
         frame = self.last_context.get("measurements")
+        if step.output_key == "neighborhood_table" and isinstance(result, pd.DataFrame):
+            # Its own table, not columns of this one - but its type column is
+            # a category, and the explorer colours it as one only if the
+            # catalog says so.
+            if NEIGHBORHOOD_TYPE in result.columns:
+                self.session.feature_catalog.record_derived(
+                    [NEIGHBORHOOD_TYPE],
+                    produced_by=step.result_key,
+                    function=f"{step.category}.{step.function_name}",
+                    params=step.params,
+                )
+            return
         if step.output_key == "measurements":
             if isinstance(result, pd.DataFrame):
                 self.session.feature_catalog.drop_missing(result.columns)
@@ -1545,7 +1631,13 @@ class ProtocolBuilderWidget(QWidget):
         # columns to it, or a step with no explicit selection would record
         # itself as one of its own inputs.
         sources = step.selected_features(frame) if step.feature_input else []
-        columns = feature_columns(step.result_key, result, len(frame))
+        columns = feature_columns(
+            step.result_key,
+            result,
+            len(frame),
+            ids=frame["object_id"] if "object_id" in frame.columns else None,
+            max_width=feature_width(step),
+        )
         for column, values in columns.items():
             frame[column] = values
         if columns:
@@ -1864,7 +1956,14 @@ class ProtocolBuilderWidget(QWidget):
             if not step.name or step.output_key == "measurements":
                 continue
             result = self.last_context.get(step.name)
-            for column, values in feature_columns(step.name, result, len(frame)).items():
+            columns = feature_columns(
+                step.name,
+                result,
+                len(frame),
+                ids=frame["object_id"] if "object_id" in frame.columns else None,
+                max_width=feature_width(step),
+            )
+            for column, values in columns.items():
                 frame[column] = values
         return frame
 
@@ -2017,6 +2116,24 @@ class ProtocolBuilderWidget(QWidget):
         self.viewer.window.add_dock_widget(explorer, name="Object Explorer", area="right")
         return explorer
 
+    def open_neighborhoods(self):
+        """Open (or raise) the Neighborhoods pane on the same session."""
+        if self.viewer is None:
+            self.status_label.setText("The Neighborhoods pane needs a napari viewer.")
+            return None
+        from vtea_napari.widgets.neighborhoods import NeighborhoodWidget
+
+        for widget in QApplication.topLevelWidgets():
+            for existing in widget.findChildren(NeighborhoodWidget):
+                if existing.session is self.session:
+                    existing.show()
+                    existing.raise_()
+                    return existing
+
+        pane = NeighborhoodWidget(napari_viewer=self.viewer, session=self.session)
+        self.viewer.window.add_dock_widget(pane, name="Neighborhoods", area="right")
+        return pane
+
     def _publish_results(self) -> None:
         """Hand the run context and the flat feature table to the shared
         session, which is what the Object Explorer plots and gates. Doing it
@@ -2033,7 +2150,7 @@ class ProtocolBuilderWidget(QWidget):
         self.session.set_context(
             self.last_context,
             self.results_table(),
-            {**self.measurement_tables(), **self.cell_tables()},
+            {**self.measurement_tables(), **self.cell_tables(), **self.neighborhood_tables()},
         )
 
     def measurement_ledger(self):
@@ -2109,6 +2226,51 @@ class ProtocolBuilderWidget(QWidget):
                 noun="cells",
             )
         return tables
+
+    def neighborhood_tables(self) -> dict:
+        """The neighbourhood tables this protocol measured, as tables of their
+        own - their rows are neighbourhoods, a second level of objects.
+
+        A classify step returns the table it was given with the types added,
+        so it replaces that table rather than being listed beside it. A
+        centred neighbourhood's id is its seed object's id, so it highlights
+        the objects at the centres; a grid neighbourhood has no object to
+        highlight.
+        """
+        tables = {}
+        last = None
+        for step in self.all_steps():
+            if step.output_key != "neighborhood_table" or not step.name:
+                continue
+            consumed = step.input_keys.get("neighborhood_table")
+            if consumed:
+                # Wired by the shared key, it read whichever table came last.
+                tables.pop(last if consumed == "neighborhood_table" else consumed, None)
+            frame = self.last_context.get(step.name)
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                continue
+            neighborhoods = self._neighborhoods_behind(step)
+            labels_key = ""
+            if neighborhoods is not None and neighborhoods.centred:
+                labels_key = self._segmentation_behind_the_table() or "labels"
+            last = step.name
+            tables[step.name] = TableView(
+                frame=frame, id_column=NEIGHBORHOOD_ID, labels_key=labels_key, noun="neighborhoods"
+            )
+        return tables
+
+    def _neighborhoods_behind(self, step: Step) -> NeighborhoodSet | None:
+        """The NeighborhoodSet a neighbourhood-table step was built from,
+        following a classify step back to the measure step it typed."""
+        seen = set()
+        while step is not None and step.name not in seen:
+            seen.add(step.name)
+            source = self.last_context.get(step.input_keys.get("neighborhoods", ""))
+            if isinstance(source, NeighborhoodSet):
+                return source
+            upstream = step.input_keys.get("neighborhood_table", "")
+            step = next((s for s in self.all_steps() if s.name == upstream), None)
+        return None
 
     # -- channel axis -----------------------------------------------------
 

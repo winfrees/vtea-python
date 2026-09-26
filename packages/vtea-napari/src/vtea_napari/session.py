@@ -27,6 +27,7 @@ from qtpy.QtCore import QObject, Signal
 from vtea_core.data import Spacing
 from vtea_core.gates import GateSet
 from vtea_core.measurements import FeatureCatalog
+from vtea_core.neighborhoods import NEIGHBORHOOD_ID, NeighborhoodSet
 from vtea_core.objects import AssociationSet, CellCollection, ObjectRef
 from vtea_core.workflow import Pipeline
 
@@ -34,7 +35,9 @@ OBJECT_TABLE = "Objects"
 
 # What a feature catalog entry's `measurement` says when the column holds a
 # category rather than a quantity - the columns a discrete LUT is for.
-CATEGORICAL_MEASUREMENTS = frozenset({"cluster assignment", "class", "label set"})
+CATEGORICAL_MEASUREMENTS = frozenset(
+    {"cluster assignment", "class", "label set", "neighborhood type"}
+)
 
 # The prefix a gate's membership column gets when a gate is handed to a
 # protocol step - see gate_columns.
@@ -74,6 +77,41 @@ class TableView:
     gate_set: GateSet = field(default_factory=GateSet)
 
 
+@dataclass
+class NeighborhoodResult:
+    """A neighbourhood analysis made in the Neighborhoods pane.
+
+    Two levels of objects and the link between them: the neighbourhoods and
+    their table (rows are neighbourhoods), which table their members are
+    rows of (`source_table`), and `reflected` - what each member took on from
+    the neighbourhoods it belongs to, keyed by the member's id and merged
+    onto `source_table` whenever that table is published.
+
+    `labels_key` is the label image a neighbourhood row highlights. For a
+    neighbourhood centred on an object, its id is that object's id, so it is
+    the source table's own label image; a grid neighbourhood has no object to
+    light up and leaves it empty.
+    """
+
+    neighborhoods: NeighborhoodSet
+    table: pd.DataFrame
+    source_table: str = OBJECT_TABLE
+    labels_key: str = ""
+    reflected: pd.DataFrame | None = None
+
+    @property
+    def member_id_column(self) -> str:
+        return self.neighborhoods.id_column
+
+    def view(self) -> TableView:
+        return TableView(
+            frame=self.table,
+            id_column=NEIGHBORHOOD_ID,
+            labels_key=self.labels_key,
+            noun="neighborhoods",
+        )
+
+
 class AnalysisSession(QObject):
     """One analysis: the run context, the table derived from it, and the
     gates drawn on that table.
@@ -87,6 +125,8 @@ class AnalysisSession(QObject):
 
     data_changed = Signal()
     gates_changed = Signal()
+    # A neighbourhood analysis was added, replaced or removed.
+    neighborhoods_changed = Signal()
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -138,6 +178,17 @@ class AnalysisSession(QObject):
         # discards is barely a correction at all.
         self.manual_links: dict[ObjectRef, ObjectRef | None] = {}
         self._table: pd.DataFrame | None = None
+        # What the builder last published, before anything the session adds
+        # to it (image gates, reflected neighbourhood columns) - kept so those
+        # can be re-applied when they change without re-running the builder.
+        self._source_table: pd.DataFrame | None = None
+        self._source_views: dict[str, TableView] = {}
+        # Neighbourhood analyses made in the Neighborhoods pane, by name. Kept
+        # here for the same reason image gates are: the builder rebuilds its
+        # tables on every run, and an analysis made on them has to survive
+        # that - its neighbourhood table is published beside them, and what
+        # it reflected onto the objects is merged back onto theirs by id.
+        self.neighborhood_results: dict[str, NeighborhoodResult] = {}
         # Gates drawn before any table was published - the explorer can be
         # driven directly, without the builder.
         self._loose_gates = GateSet()
@@ -162,16 +213,26 @@ class AnalysisSession(QObject):
         since they are drawn on features that still exist.
         """
         self.context = context
-        table = self.apply_image_gates(table)
+        self._source_table = table
+        self._source_views = dict(tables or {})
+        self._assemble_tables()
+        self.data_changed.emit()
+
+    def _assemble_tables(self) -> None:
+        """Publish the builder's tables with everything the session adds to
+        them: image-gate columns, the neighbourhood tables made in the
+        Neighborhoods pane, and the columns those reflected onto their
+        members."""
+        table = self._decorate(OBJECT_TABLE, "object_id", self._source_table)
         self._table = table
         published = {
-            name: replace(view, frame=self.apply_image_gates(view.frame))
-            if view.id_column == "object_id"
-            else view
-            for name, view in (tables or {}).items()
+            name: replace(view, frame=self._decorate(name, view.id_column, view.frame))
+            for name, view in self._source_views.items()
         }
         if table is not None:
             published.setdefault(OBJECT_TABLE, TableView(table))
+        for name, result in self.neighborhood_results.items():
+            published.setdefault(name, result.view())
         for name, view in published.items():
             existing = self.tables.get(name)
             if existing is not None:
@@ -183,7 +244,65 @@ class AnalysisSession(QObject):
             self.active_table = OBJECT_TABLE if OBJECT_TABLE in self.tables else (
                 next(iter(self.tables), OBJECT_TABLE)
             )
+
+    def _decorate(self, name: str, id_column: str, frame: pd.DataFrame | None):
+        if frame is None:
+            return None
+        if id_column == "object_id":
+            frame = self.apply_image_gates(frame)
+        return self.apply_reflections(frame, name)
+
+    # -- neighbourhoods ---------------------------------------------------
+
+    def source_frame(self, name: str) -> pd.DataFrame | None:
+        """A table as the builder published it, before the session's own
+        additions - what a neighbourhood analysis should be built from, so
+        a second analysis is not built on the first one's reflected
+        columns."""
+        if name == OBJECT_TABLE and OBJECT_TABLE not in self._source_views:
+            return self._source_table
+        view = self._source_views.get(name)
+        return None if view is None else view.frame
+
+    def apply_reflections(self, frame: pd.DataFrame | None, table: str = OBJECT_TABLE):
+        """Merge what neighbourhoods reflected onto `table`'s rows, by id.
+
+        By id rather than by row, like an image gate, so a re-run that adds
+        or drops objects leaves the rest with their values and the new ones
+        with none - rather than every value shifting a row.
+        """
+        if frame is None:
+            return None
+        results = [
+            result
+            for result in self.neighborhood_results.values()
+            if result.source_table == table
+            and result.reflected is not None
+            and result.member_id_column in frame.columns
+        ]
+        if not results:
+            return frame
+        frame = frame.copy()
+        for result in results:
+            reflected = result.reflected.set_index(result.member_id_column)
+            ids = frame[result.member_id_column]
+            for column in reflected.columns:
+                frame[column] = ids.map(reflected[column]).to_numpy()
+        return frame
+
+    def set_neighborhood_result(self, name: str, result: NeighborhoodResult) -> None:
+        """Add or replace a neighbourhood analysis and republish the tables."""
+        self.neighborhood_results[name] = result
+        self._assemble_tables()
         self.data_changed.emit()
+        self.neighborhoods_changed.emit()
+
+    def remove_neighborhood_result(self, name: str) -> None:
+        if self.neighborhood_results.pop(name, None) is None:
+            return
+        self._assemble_tables()
+        self.data_changed.emit()
+        self.neighborhoods_changed.emit()
 
     # -- image gates ------------------------------------------------------
 
@@ -429,12 +548,17 @@ class AnalysisSession(QObject):
         """
         self.context = {}
         self._table = None
+        self._source_table = None
+        self._source_views = {}
+        # Made from the old results, so they describe tables that are gone.
+        self.neighborhood_results = {}
         self.tables = {}
         self._loose_gates = GateSet()
         self.active_table = OBJECT_TABLE
         self.feature_catalog = FeatureCatalog()
         self.ledger = None
         self.data_changed.emit()
+        self.neighborhoods_changed.emit()
 
     def set_gate_set(self, gate_set: GateSet) -> None:
         self.gate_set = gate_set
