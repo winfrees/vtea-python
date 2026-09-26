@@ -97,8 +97,8 @@ class TestAddStep:
         # "classes" rather than "gates": the polygon and rectangle steps are
         # gone from the protocol (they need vertices nothing produces), and
         # what is left is the rule half - see vtea_core.classes.
-        # "neighborhoods" builds a second level of objects out of the table;
         # "vae" (the Java VAE plugins) only exists where torch is installed.
+        # "neighborhoods" is not offered: the Neighborhoods pane builds them.
         expected = {
             "measurements",
             "association",
@@ -106,7 +106,6 @@ class TestAddStep:
             "clustering",
             "reduction",
             "classes",
-            "neighborhoods",
         }
         if "vae" in STEP_REGISTRY:
             expected.add("vae")
@@ -1191,17 +1190,12 @@ class TestPlotIsFedByMeasurements:
 
 
 class TestCompactStyling:
-    def test_text_is_scaled_down(self, qtbot):
-        from qtpy.QtWidgets import QApplication
-
-        from vtea_napari.widgets.protocol_builder import COMPACT_FONT_SCALE
-
+    def test_text_follows_napari_font_size(self, qtbot):
+        """No font-size override: the builder reads at the same size as the
+        rest of napari, and so do the dialogs it opens."""
         widget = ProtocolBuilderWidget()
         qtbot.addWidget(widget)
-
-        expected = QApplication.font().pointSizeF() * COMPACT_FONT_SCALE
-        assert f"{expected:.1f}pt" in widget.styleSheet()
-        assert COMPACT_FONT_SCALE == 0.75
+        assert "font-size" not in widget.styleSheet()
 
     def test_layout_padding_is_tightened(self, qtbot):
         widget = ProtocolBuilderWidget()

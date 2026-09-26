@@ -78,10 +78,6 @@ from vtea_napari.widgets.step_stack import StepStackWidget
 
 ALL_CHANNELS = "All channels"
 
-# The dock was taking more screen than its contents warranted; scale text
-# to 75% of the application font and tighten the surrounding padding.
-COMPACT_FONT_SCALE = 0.75
-
 RUN_BUTTON_STYLE = (
     "QPushButton { background-color: #f0a500; color: #202020; font-weight: bold; "
     "border: 1px solid #c78500; border-radius: 3px; padding: 2px 8px; }"
@@ -452,11 +448,11 @@ class ProtocolBuilderWidget(QWidget):
         # id, an ROI, or any boolean combination of them - which is what a
         # class is. See vtea_core.classes.
         "classes",
-        # A second level of objects made of the first, and what they hand
-        # back to their members - see vtea_core.neighborhoods. The
-        # Neighborhoods pane does the same interactively, with the
-        # neighbourhoods drawn on the viewer.
-        "neighborhoods",
+        # Not "neighborhoods": the Neighborhoods pane is where they are built,
+        # and offering the same four steps here as well was confusing. The
+        # steps stay registered in vtea_core, so a script can still run them,
+        # a saved protocol that carries them still opens and runs, and the
+        # builder still publishes their tables.
         # The Java VAE plugins. They read the labels and the image, which
         # every protocol has, so unlike "classification" they can run here;
         # present only where torch is installed.
@@ -686,19 +682,15 @@ class ProtocolBuilderWidget(QWidget):
         self._apply_width_budget()
 
     def _apply_compact_style(self, root: QVBoxLayout) -> None:
-        """Shrink text ~25% and tighten the padding around everything.
+        """Tighten the padding around everything; leave the text alone.
 
-        The dock was claiming a lot of screen for the amount it shows. Scaled
-        off the application font rather than a hard-coded point size, so it
-        stays proportional on a high-DPI display or when the user has already
-        changed napari's font size.
+        The dock was claiming a lot of screen for the amount it shows, so the
+        spacing is tight. The text is not shrunk: it follows napari's own
+        font, so the builder reads at the same size as the rest of the
+        window (a 75% scale made it hard to read, and it cascaded into every
+        dialog the builder opened).
         """
-        base = QApplication.font().pointSizeF()
-        if base > 0:
-            self.setStyleSheet(
-                f"QWidget {{ font-size: {base * COMPACT_FONT_SCALE:.1f}pt; }}"
-                f"{RUN_BUTTON_STYLE}"
-            )
+        self.setStyleSheet(RUN_BUTTON_STYLE)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(3)
         for layout in self.findChildren(QHBoxLayout) + self.findChildren(QVBoxLayout):

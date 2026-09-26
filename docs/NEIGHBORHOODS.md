@@ -108,15 +108,16 @@ and -1 for a category; it is never dropped.
 
 ## Where it runs
 
-**In a protocol**: the `neighborhoods` category of the protocol builder's
-analysis menu holds `build_neighborhoods`, `neighborhood_features`,
-`classify_neighborhoods` and `reflect_neighborhoods`, which are the same
-functions. They read the object table the way clustering does. The
-neighbourhood table is published to the Object Explorer as its own table
-(rows are neighbourhoods), and the reflected columns join the object table
-as `reflect_neighborhoods_1.neighborhood_type` and so on. A protocol
-therefore carries the whole analysis and re-runs it on the next
-acquisition.
+**As steps**: `build_neighborhoods`, `neighborhood_features`,
+`classify_neighborhoods` and `reflect_neighborhoods` are registered
+pipeline steps (the `neighborhoods` category), usable from a script or a
+saved protocol. They are deliberately *not* in the protocol builder's
+analysis menu: offering the same analysis in two places was confusing, and
+the pane below is where it is built. A protocol that carries the steps
+still opens and runs in the builder: the neighbourhood table is published
+to the Object Explorer as its own table (rows are neighbourhoods), and the
+reflected columns join the object table as
+`reflect_neighborhoods_1.neighborhood_type` and so on.
 
 **Interactively**: the **Neighborhoods** pane (Plugins → VTEA →
 Neighborhoods, or the button beside "Object Explorer" in the builder) does
@@ -145,8 +146,8 @@ deliberately *not* handed to the builder's steps, because a clustering with
 no feature selection uses every numeric column and would change silently
 the moment a pane analysis existed. A protocol that wants to classify cells
 by their neighbourhood (`cd8 AND reflect_neighborhoods_1.neighborhood_type == 2`)
-carries the four neighbourhood steps itself, which also makes the analysis
-re-run on the next acquisition.
+has to carry the four neighbourhood steps itself, which today means adding
+them from a script (see "As steps" above).
 
 ## Not done
 

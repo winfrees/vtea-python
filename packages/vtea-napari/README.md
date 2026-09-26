@@ -325,8 +325,9 @@ widget and run it):
   layer painting every object by its neighbourhood type, and a layer
   showing only the selected neighbourhood's members. The neighbourhood
   table joins the Object Explorer's table menu, and a gate on neighbourhoods
-  centred on cells lights up those cells. The protocol builder's
-  `neighborhoods` analysis category does the same as protocol steps. See
+  centred on cells lights up those cells. The same analysis exists as
+  `vtea_core.neighborhoods` pipeline steps for scripts, deliberately not in
+  the protocol builder's menu. See
   [`/docs/NEIGHBORHOODS.md`](../../docs/NEIGHBORHOODS.md).
 - **`ScatterPlotWidget`** — the matplotlib-backed plot: click to add a gate
   vertex, double-click to close it, right-click to cancel; in rectangle mode
