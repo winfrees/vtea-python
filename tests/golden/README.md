@@ -52,8 +52,22 @@ fixtures/
 
 Note: `SingleThreshold3D` produces exactly one object (all above-threshold
 voxels) — it validates image I/O, thresholding, and measurement extraction
-end-to-end, but isn't a multi-object fixture. Multi-object segmentation
-fixtures should be added once those methods are ported in Phase 2.
+end-to-end, but isn't a multi-object fixture.
+
+**LayerCake3D** (the Java default segmentation, ported as
+`vtea_core.segmentation.layercake_3d`) has a parity test waiting for its
+fixture, which the generator does not write yet (milestone M2). The test
+expects, per dataset:
+
+```
+fixtures/
+  <dataset>_segmentation_layercake3d.tif   label image (ZYX) from LayerCake3DSingleThreshold
+  <dataset>_metadata.txt                   plus layercake_threshold, layercake_offset,
+                                           layercake_min, layercake_max, layercake_watershed
+```
+
+It compares foreground IoU and objects matched by centroid rather than
+label ids - see the test's docstring for why a few per cent may differ.
 
 **Synthetic** (deterministic, seed=42, independent of image segmentation —
 isolates clustering/DR algorithmic parity), from the real `KMeans` and

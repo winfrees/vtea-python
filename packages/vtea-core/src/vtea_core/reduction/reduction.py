@@ -17,9 +17,17 @@ from sklearn.manifold import TSNE as _TSNE
 from sklearn.manifold import Isomap as _Isomap
 from sklearn.manifold import SpectralEmbedding
 
+from vtea_core.measurements.normalize import Normalization, normalize_features
 
-def pca(data: np.ndarray, n_components: int) -> np.ndarray:
-    """Principal Component Analysis embedding."""
+
+def pca(data: np.ndarray, n_components: int, *, normalize: Normalization = "none") -> np.ndarray:
+    """Principal Component Analysis embedding.
+
+    `normalize` rescales each feature first - Java's "Z-scale all data" is
+    `"zscore"`, and for PCA it is the difference between components of the
+    correlation and of the covariance matrix. Every reduction step takes it.
+    """
+    data = normalize_features(data, normalize)
     return _PCA(n_components=n_components).fit_transform(data)
 
 
@@ -33,20 +41,40 @@ def pca_explained_variance(data: np.ndarray, n_components: int) -> np.ndarray:
     return np.cumsum(model.explained_variance_ratio_)
 
 
-def isomap(data: np.ndarray, n_components: int, *, n_neighbors: int = 5) -> np.ndarray:
+def isomap(
+    data: np.ndarray,
+    n_components: int,
+    *,
+    n_neighbors: int = 5,
+    normalize: Normalization = "none",
+) -> np.ndarray:
     """Isomap manifold embedding."""
+    data = normalize_features(data, normalize)
     return _Isomap(n_components=n_components, n_neighbors=n_neighbors).fit_transform(data)
 
 
-def laplacian_eigenmap(data: np.ndarray, n_components: int, *, n_neighbors: int = 5) -> np.ndarray:
+def laplacian_eigenmap(
+    data: np.ndarray,
+    n_components: int,
+    *,
+    n_neighbors: int = 5,
+    normalize: Normalization = "none",
+) -> np.ndarray:
     """Laplacian Eigenmap embedding (scikit-learn calls this SpectralEmbedding)."""
+    data = normalize_features(data, normalize)
     return SpectralEmbedding(n_components=n_components, n_neighbors=n_neighbors).fit_transform(data)
 
 
 def tsne(
-    data: np.ndarray, n_components: int = 2, *, perplexity: float = 30.0, random_state: int | None = None
+    data: np.ndarray,
+    n_components: int = 2,
+    *,
+    perplexity: float = 30.0,
+    random_state: int | None = None,
+    normalize: Normalization = "none",
 ) -> np.ndarray:
     """t-distributed Stochastic Neighbor Embedding."""
+    data = normalize_features(data, normalize)
     return _TSNE(n_components=n_components, perplexity=perplexity, random_state=random_state).fit_transform(data)
 
 
@@ -58,6 +86,7 @@ def umap(
     min_dist: float = 0.1,
     metric: str = "euclidean",
     random_state: int | None = None,
+    normalize: Normalization = "none",
 ) -> np.ndarray:
     """Uniform Manifold Approximation and Projection embedding.
 
@@ -86,6 +115,7 @@ def umap(
             'Install it with `pip install "vtea-core[umap]"` (or `pip install umap-learn`).'
         ) from exc
 
+    data = normalize_features(data, normalize)
     return UMAP(
         n_components=n_components,
         n_neighbors=n_neighbors,

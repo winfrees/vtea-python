@@ -312,6 +312,7 @@ def test_a_step_that_assigns_ids_says_so(category, function_name):
     assigns_ids = {
         ("segmentation", "label_components"),
         ("segmentation", "watershed_split"),
+        ("segmentation", "layercake_3d"),
         ("segmentation", "cellpose_segmentation"),
         ("segmentation", "filter_by_size"),
         ("segmentation", "watershed_ownership"),

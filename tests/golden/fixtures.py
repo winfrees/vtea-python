@@ -50,6 +50,18 @@ def load_label_mask(dataset_basename: str) -> np.ndarray:
     return tifffile.imread(path)
 
 
+def layercake_fixture_path(dataset_basename: str) -> Path:
+    return FIXTURES_DIR / f"{dataset_basename}_segmentation_layercake3d.tif"
+
+
+def load_layercake_labels(dataset_basename: str) -> np.ndarray:
+    """Label image (ZYX) from the Java LayerCake3DSingleThreshold run, with
+    its parameters in the metadata file under `layercake_*` keys."""
+    import tifffile
+
+    return tifffile.imread(_require(layercake_fixture_path(dataset_basename)))
+
+
 def load_metadata(dataset_basename: str) -> dict[str, str]:
     """key=value pairs from the generator's <dataset>_metadata.txt."""
     path = _require(FIXTURES_DIR / f"{dataset_basename}_metadata.txt")

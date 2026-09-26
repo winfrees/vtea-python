@@ -276,12 +276,34 @@ class FeatureCatalog:
         return cls([FeatureDescriptor.from_dict(entry) for entry in data.get("features", [])])
 
 
+# What a derived column from a step outside clustering/reduction measures,
+# by the producing function. The VAE steps are clustering and reduction by
+# another route, and are described the same way so they are coloured and
+# offered as the same kind of thing.
+_DERIVED_BY_FUNCTION = {
+    "vae.vae_clustering": "cluster assignment",
+    "vae.vae_reduction": "reduced dimension",
+    "vae.vae_features": "latent feature",
+    "vae.vae_anomaly": "reconstruction error",
+}
+
+# The neighbourhood type a neighbourhood hands back to its members - a
+# category, like a cluster id, and described as one.
+NEIGHBORHOOD_TYPE_MEASUREMENT = "neighborhood type"
+
+
 def _derived_measurement(function: str, name: str) -> str:
     category = function.split(".", 1)[0]
     if category == "clustering":
         return "cluster assignment"
     if category == "reduction":
         return "reduced dimension"
+    if function in _DERIVED_BY_FUNCTION:
+        return _DERIVED_BY_FUNCTION[function]
+    if category == "neighborhoods":
+        if name.endswith("neighborhood_type"):
+            return NEIGHBORHOOD_TYPE_MEASUREMENT
+        return "neighborhood feature"
     return name
 
 
