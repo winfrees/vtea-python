@@ -53,6 +53,11 @@ _UNITS = {
     "threshold_mean": "a.u.",
 }
 
+# The measurement names the measurement steps produce, so a column called
+# `mean_ch2` can be read from its name and one called `gate_bright` is not
+# mistaken for an intensity.
+KNOWN_MEASUREMENTS = frozenset(_UNITS)
+
 
 @dataclass
 class FeatureDescriptor:

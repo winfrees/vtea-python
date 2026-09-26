@@ -1,10 +1,11 @@
 # Saving and archiving VTEA work
 
 Design for making a VTEA session reloadable, and for exporting it in a form
-that can be deposited with a paper. Two pieces are already built - the gate
-JSON (`vtea_core.gates.io`) and the feature catalog behind the data
-dictionary (`vtea_core.measurements.FeatureCatalog`); this document is the
-plan for the rest.
+that can be deposited with a paper. Built so far: the gate JSON
+(`vtea_core.gates.io`), the feature catalog behind the data dictionary
+(`vtea_core.measurements.FeatureCatalog`), tier 1 - the protocol file
+(`vtea_core.workflow.io`) - and the table export with its dictionary
+(`vtea_core.export`). See "Build order" at the end for what remains.
 
 ## The problem
 
@@ -230,5 +231,13 @@ have delivered something.
 8. **`datacite.json` / `CITATION.cff`** — a small metadata form in the
    export dialog (title, authors, ORCIDs, licence, keywords).
 
-Steps 1–3 are the ones worth doing next; 4–5 make the first publishable
-export; 6–8 complete the archive.
+**Steps 1–4 are built** (milestone M3 in `PORT_PLAN.md`). Where they
+differ from the sketch above: the file holds two step lists, `processing`
+and `analysis`, because the builder runs two pipelines; axes, the voxel size
+and the measure-every-segmentation switch are recorded; gates are keyed by
+table (objects, cells); the plot view is not saved; and a parameter that is
+not plain data is refused on save, naming the step and parameter, rather
+than written to a sidecar file - no step in the menu takes one yet. The
+export writes CSV or Parquet (through DuckDB), with the dictionary as
+`<name>.dictionary.csv`, and adds one boolean column per gate. Steps 5–8
+make the publishable bundle and complete the archive.

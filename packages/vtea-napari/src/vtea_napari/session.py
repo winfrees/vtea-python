@@ -141,6 +141,9 @@ class AnalysisSession(QObject):
         # Gates drawn before any table was published - the explorer can be
         # driven directly, without the builder.
         self._loose_gates = GateSet()
+        # Gates read from a saved protocol, keyed by table name, waiting for
+        # a run to publish the table they were drawn on.
+        self._pending_gates: dict[str, GateSet] = {}
 
     # -- data -------------------------------------------------------------
 
@@ -173,6 +176,8 @@ class AnalysisSession(QObject):
             existing = self.tables.get(name)
             if existing is not None:
                 view.gate_set = existing.gate_set
+            elif name in self._pending_gates:
+                view.gate_set = self._pending_gates.pop(name)
         self.tables = published
         if self.active_table not in self.tables:
             self.active_table = OBJECT_TABLE if OBJECT_TABLE in self.tables else (
@@ -389,6 +394,47 @@ class AnalysisSession(QObject):
             self._loose_gates = gate_set
         else:
             view.gate_set = gate_set
+
+    def gates_by_table(self) -> dict[str, GateSet]:
+        """Every non-empty gate set, keyed by the table it was drawn on -
+        what a saved protocol carries. Gates loaded from a protocol but not
+        yet placed (no run since) are included, so saving straight after
+        opening loses nothing."""
+        gates = {name: gate_set for name, gate_set in self._pending_gates.items() if len(gate_set)}
+        for name, view in self.tables.items():
+            if len(view.gate_set):
+                gates[name] = view.gate_set
+        if not self.tables and len(self._loose_gates):
+            gates.setdefault(OBJECT_TABLE, self._loose_gates)
+        return gates
+
+    def restore_gates(self, gates: dict[str, GateSet]) -> None:
+        """Put gates read from a protocol back on their tables - now, for a
+        table that exists, or when a run first publishes it."""
+        self._pending_gates = {}
+        for name, gate_set in gates.items():
+            view = self.tables.get(name)
+            if view is None:
+                self._pending_gates[name] = gate_set
+            else:
+                view.gate_set = gate_set
+        self.gates_changed.emit()
+
+    def clear_results(self) -> None:
+        """Forget the last run: its context, tables, catalog and ledger.
+
+        For opening a protocol, whose steps the old results no longer
+        describe. Painted image gates and hand-corrected links stay - they
+        are inputs somebody made, not outputs of the run.
+        """
+        self.context = {}
+        self._table = None
+        self.tables = {}
+        self._loose_gates = GateSet()
+        self.active_table = OBJECT_TABLE
+        self.feature_catalog = FeatureCatalog()
+        self.ledger = None
+        self.data_changed.emit()
 
     def set_gate_set(self, gate_set: GateSet) -> None:
         self.gate_set = gate_set

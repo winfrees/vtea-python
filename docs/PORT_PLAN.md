@@ -237,11 +237,11 @@ parity is reached**. Measured against that goal, the honest status is:
   number equals a Java number has been checked. The one Java measurement
   semantic checked by reading source (standard deviation divides by n - 1)
   turned out to differ from the port, and has been fixed.
-- **Persistence: not built.** A protocol cannot be saved or reopened, and
-  the measurement table cannot be exported. Java VTEA's primary output is
-  that exported table (`ObjectCSVFileType`), and its users save workflows
-  (`WorkflowFileType`). This is the largest gap between "the GUI works" and
-  "a lab can switch".
+- **Persistence: the minimum is built (M3, below).** A protocol saves as
+  `*.vtea.json` and reopens in another session to re-run to the same table,
+  and the Object Explorer exports its table as CSV or Parquet with a data
+  dictionary - the equivalents of Java's `WorkflowFileType` and
+  `ObjectCSVFileType`. Importing *Java* workflow files is still M4.
 
 So the roadmap table above reads **Phase 0: partial (harness built,
 fixtures never generated); Phases 1 and 4: done; Phases 2-3: partial;
@@ -312,7 +312,7 @@ Extend `GoldenFixtureGenerator` with:
 id) and cluster ARI are compared for real segmentations, and each
 difference is either fixed or documented as intended.
 
-### M3. Persistence: the minimum a lab needs (2-3 weeks)
+### M3. Persistence: the minimum a lab needs - **done**
 
 Tier 1 of `docs/SAVING_AND_ARCHIVING.md` - the protocol as `*.vtea.json`
 (save, open, re-run on a new image) - plus a measurement-table export
@@ -322,6 +322,19 @@ Object Explorer. Tiers 2-3 of that document can follow later.
 **Done when** a protocol saved in one napari session re-runs identically
 in another, and the explorer's table (with class, cluster and gate columns)
 opens in Excel/R.
+
+What was built: `vtea_core.workflow.io` (`Protocol`, `save_protocol`,
+`load_protocol` - both step stacks, axes, voxel size, the measure-every-
+segmentation switch, gates per table, the source image's name/shape/SHA-256
+and the package versions), `vtea_core.export.export_table` (CSV, or Parquet
+through DuckDB so pyarrow is not needed, plus `<name>.dictionary.csv`), and
+Save…/Open… in the builder and Export… in the explorer. Pinned by a test that
+saves in one napari session, opens in a fresh one and compares the re-run
+table frame-for-frame. Deliberately not in the file: results (recomputed),
+painted image-gate regions (layer data), and hand-corrected association
+links (saved separately through the Associations tab). Tiers 2-3 of
+`docs/SAVING_AND_ARCHIVING.md` - the archive zip and the publication bundle -
+remain, and are not on the path to cutover.
 
 ### M4. Close the algorithm gaps users will notice (3-5 weeks)
 

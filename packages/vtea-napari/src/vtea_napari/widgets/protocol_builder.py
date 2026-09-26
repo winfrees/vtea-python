@@ -24,6 +24,7 @@ means closing either pane loses nothing.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -47,7 +49,19 @@ from vtea_core.blocked import format_bytes
 from vtea_core.classes import LabelSet
 from vtea_core.measurements import FeatureCatalog, feature_matrix
 from vtea_core.objects import AssociationSet, CellCollection, Ownership
-from vtea_core.workflow import Calibration, Pipeline, Step, estimate_seconds, format_duration
+from vtea_core.workflow import (
+    PROTOCOL_SUFFIX,
+    Calibration,
+    Pipeline,
+    Protocol,
+    ProtocolError,
+    Step,
+    describe_source,
+    estimate_seconds,
+    format_duration,
+    load_protocol,
+    save_protocol,
+)
 from vtea_core.workflow import rename_segmentation as rename_measured_segmentation
 from vtea_core.workflow import sync_measurement_steps as sync_measurements
 
@@ -87,6 +101,11 @@ PREVIEW_BYTES_PER_VOXEL = 24
 # A dock this wide already shows every control; past that it is just taking
 # screen away from the image canvas, which is the thing being analysed.
 MAX_WIDTH_SCREEN_FRACTION = 0.30
+
+PROTOCOL_FILE_FILTER = "VTEA protocol (*.vtea.json);;JSON (*.json);;All files (*)"
+# Save hashes the source image on the GUI thread; above this it records the
+# file's size instead, so clicking Save never stalls for a checksum.
+SOURCE_HASH_LIMIT_BYTES = 512 * 1024**2
 
 
 def feature_columns(name: str, result, n_objects: int) -> dict[str, np.ndarray]:
@@ -511,6 +530,23 @@ class ProtocolBuilderWidget(QWidget):
         top_row.addWidget(self.preview_control)
 
         top_row.addStretch()
+
+        # The protocol as a file: what lets the same analysis run on the
+        # next image, or on another lab's, without rebuilding it by hand.
+        self.save_protocol_button = QPushButton("Save…")
+        self.save_protocol_button.setToolTip(
+            "Save this protocol (both step stacks, the axis and voxel-size settings, "
+            "and the gates) as a .vtea.json file"
+        )
+        self.save_protocol_button.clicked.connect(self.save_protocol_dialog)
+        top_row.addWidget(self.save_protocol_button)
+        self.open_protocol_button = QPushButton("Open…")
+        self.open_protocol_button.setToolTip(
+            "Open a saved .vtea.json protocol. Replaces the current steps; results "
+            "are recomputed when you run it."
+        )
+        self.open_protocol_button.clicked.connect(self.open_protocol_dialog)
+        top_row.addWidget(self.open_protocol_button)
 
         # The explorer is where the results are looked at, so it is worth
         # being able to open it from here rather than hunting the Plugins
@@ -1831,6 +1867,133 @@ class ProtocolBuilderWidget(QWidget):
             for column, values in feature_columns(step.name, result, len(frame)).items():
                 frame[column] = values
         return frame
+
+    # -- protocol files ---------------------------------------------------
+
+    def current_protocol(self, *, include_gates: bool = True) -> Protocol:
+        """What this builder would save: both step stacks, how the image's
+        axes are read, the voxel size, and the gates drawn on the results."""
+        layer = self.source_layer()
+        data = None if layer is None else layer.data
+        path = getattr(getattr(layer, "source", None), "path", None)
+        return Protocol(
+            processing=self.pipeline,
+            analysis=self.analysis_pipeline,
+            channel_axis=self.pipeline.channel_axis,
+            z_axis=self.z_axis,
+            spacing=self.spacing_control.spacing(),
+            measure_every_segmentation=self.measure_all_check.isChecked(),
+            gates=self.session.gates_by_table() if include_gates else {},
+            source={}
+            if layer is None
+            else describe_source(
+                path,
+                name=layer.name,
+                shape=getattr(data, "shape", None),
+                dtype=getattr(data, "dtype", None),
+                hash_limit=SOURCE_HASH_LIMIT_BYTES,
+            ),
+        )
+
+    def save_protocol_to(self, path, *, include_gates: bool = True) -> Path:
+        path = save_protocol(self.current_protocol(include_gates=include_gates), path)
+        self.status_label.setText(f"Saved protocol ({len(self.all_steps())} steps) to {path}")
+        return path
+
+    def load_protocol_from(self, path) -> Protocol:
+        """Replace the steps and settings with a saved protocol's.
+
+        The last run's results are dropped rather than kept beside steps
+        they no longer describe; the gates come back on their tables at the
+        next run. The pipelines are refilled in place, since both step
+        stacks and the session hold them.
+        """
+        protocol = load_protocol(path)
+        self._close_scratch()
+        self.pipeline.steps[:] = protocol.processing.steps
+        self.analysis_pipeline.steps[:] = protocol.analysis.steps
+        self.pipeline.channel_axis = protocol.channel_axis
+        self.analysis_pipeline.channel_axis = protocol.channel_axis
+        self.measure_all_check.blockSignals(True)
+        self.measure_all_check.setChecked(protocol.measure_every_segmentation)
+        self.measure_all_check.blockSignals(False)
+        self.last_context = {}
+        self.blocked_ledgers = {}
+        self._computed_signatures.clear()
+        self.session.clear_results()
+        self.session.restore_gates(protocol.gates)
+        self.refresh_steps()
+
+        notes = self._apply_protocol_axes(protocol)
+        notes += self._apply_protocol_spacing(protocol)
+        self.refresh_plan()
+        self.status_label.setText(
+            " ".join([f"Opened {Path(path).name}: {len(protocol.steps)} steps."] + notes)
+        )
+        return protocol
+
+    def _apply_protocol_axes(self, protocol: Protocol) -> list[str]:
+        """Point the axis pickers where the protocol says, and say so when
+        the image on screen has no such axis - a protocol re-run on a
+        differently shaped image is the normal case, and a silently wrong
+        channel axis is the failure it invites."""
+        notes = []
+        if protocol.channel_axis is not None and (
+            self.channel_axis_combo.findData(protocol.channel_axis) < 0
+        ):
+            notes.append(
+                f"This image has no axis {protocol.channel_axis} for channels - "
+                "check the Channel axis picker."
+            )
+        position = self.z_axis_combo.findData(protocol.z_axis)
+        if position >= 0:
+            self.z_axis_combo.setCurrentIndex(position)
+            self.z_axis = protocol.z_axis
+        elif protocol.z_axis is not None:
+            notes.append(f"This image has no axis {protocol.z_axis} for depth.")
+        return notes
+
+    def _apply_protocol_spacing(self, protocol: Protocol) -> list[str]:
+        """The saved voxel size fills in for an image that records none. An
+        image that does record one keeps its own - the file describes the
+        specimen it came from, the protocol only the one it was built on."""
+        saved = protocol.spacing
+        if saved is None or not saved.is_known:
+            return []
+        current = self.spacing_control.spacing()
+        if current is None or not current.is_known:
+            self.spacing_control.set_spacing(saved)
+            return [f"Voxel size set from the protocol: {saved.describe()}."]
+        if tuple(current.values) != tuple(saved.values) or current.unit != saved.unit:
+            return [
+                (
+                    f"Kept this image's voxel size ({current.describe()}); "
+                    f"the protocol was built at {saved.describe()}."
+                )
+            ]
+        return []
+
+    def save_protocol_dialog(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save protocol", f"protocol{PROTOCOL_SUFFIX}", PROTOCOL_FILE_FILTER
+        )
+        if not path:
+            return
+        if not path.endswith(PROTOCOL_SUFFIX):
+            path = str(Path(path).with_suffix("")) + PROTOCOL_SUFFIX
+        try:
+            self.save_protocol_to(path)
+        except (OSError, ProtocolError) as exc:  # report, don't crash napari
+            self.status_label.setText(f"Could not save the protocol: {exc}")
+
+    def open_protocol_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Open protocol", "", PROTOCOL_FILE_FILTER)
+        if not path:
+            return
+        try:
+            self.load_protocol_from(path)
+        except (OSError, ProtocolError, KeyError, ValueError) as exc:
+            self.status_label.setText(f"Could not open the protocol: {exc}")
 
     def open_object_explorer(self):
         """Open (or raise) the Object Explorer on the same session.

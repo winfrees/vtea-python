@@ -170,6 +170,16 @@ table.
   means: everything about a step that decides what it computes, and
   deliberately not its name
 
+- **workflow.io** (new): `Protocol`/`save_protocol`/`load_protocol` - a
+  protocol as versioned `*.vtea.json` (tier 1 of
+  docs/SAVING_AND_ARCHIVING.md): the processing and analysis steps, axes,
+  voxel size, gates per table, the source image's identity and the package
+  versions that ran it. Parameters are plain data, never pickled or
+  `eval`'d; one that cannot be represented is refused on save by name
+- **export** (new): `export_table` - the feature table as CSV or Parquet
+  (via DuckDB, no pyarrow), with `data_dictionary` written beside it as
+  `<name>.dictionary.csv`, one row per column, uncatalogued columns included
+
 There is no separate `deeplearning` module - see PORT_PLAN.md's "Why deep
 learning isn't a separate module". `cellpose_segmentation` lives in
 `segmentation` next to the other volume→label-mask functions; the
@@ -181,8 +191,8 @@ forward" for the order): the LayerCake3D, FloodFill3D and Region2D
 segmentations (LayerCake3D is the Java default); z-normalisation of the
 feature table before clustering/reduction; neighbourhood measurements
 (`ClassFraction`, `ClassSums`, `TotalObjects`); deterministic-annealing
-clustering and the four VAE plugins; protocol save/open and measurement
-export (only gates and associations save today); `bioio` vendor-format
+clustering and the four VAE plugins; import of Java workflow XML files;
+`bioio` vendor-format
 readers (the `bioformats` extra is declared, nothing uses it yet);
 `bioimageio.core` generic model inference (the DeepImageJ replacement);
 linear unmixing and ImageJ macro execution (deferred per PORT_PLAN.md's open
@@ -219,11 +229,12 @@ src/vtea_core/
   imageprocessing/  Gaussian blur, median filter, contrast, background subtraction
   classification/   class_map (label-remap) + a small torch 3D CNN
                     (train_classifier/predict) for supervised object classification
+  export/           Feature table + data dictionary as CSV/Parquet
   workflow/         Step/Pipeline engine + the category -> function step registry
                     driving vtea-napari's protocol builder widget, the
                     measurement-per-segmentation rules (measure.py) and the
                     a priori step-duration estimates behind its progress
-                    bars (cost.py)
+                    bars (cost.py), and the saved protocol format (io.py)
 ```
 
 Steps are found through `vtea_core.workflow.STEP_REGISTRY`, a plain dict.
