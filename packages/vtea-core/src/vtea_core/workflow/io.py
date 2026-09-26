@@ -33,6 +33,7 @@ from typing import Any
 
 import numpy as np
 
+from vtea_core.context.spec import ContextSpec
 from vtea_core.data.spacing import Spacing
 from vtea_core.gates.gate import GateSet
 from vtea_core.gates.io import gate_set_from_dict, gate_set_to_dict
@@ -41,7 +42,8 @@ from vtea_core.workflow.registry import STEP_REGISTRY
 
 # Bumped only for a breaking layout change; a reader checks it so a file
 # from a future version fails clearly instead of half-loading.
-PROTOCOL_FORMAT_VERSION = 1
+# 2 adds the `context` section; a protocol without one is still written as 1.
+PROTOCOL_FORMAT_VERSION = 2
 
 PROTOCOL_SUFFIX = ".vtea.json"
 
@@ -96,6 +98,10 @@ class Protocol:
     measure_every_segmentation: bool = True
     gates: dict[str, GateSet] = field(default_factory=dict)
     source: dict[str, Any] = field(default_factory=dict)
+    # The hierarchy of levels the analysis moves between - subcellular,
+    # cellular, neighbourhoods of any depth - as definitions, rebuilt from
+    # each run's results (see vtea_core.context).
+    context: ContextSpec = field(default_factory=ContextSpec)
     # Filled in on save and read back on load; informational only.
     created: str = ""
     environment: dict[str, Any] = field(default_factory=dict)
@@ -269,8 +275,12 @@ def file_sha256(path: str | Path, chunk_bytes: int = 1 << 20) -> str:
 
 
 def protocol_to_dict(protocol: Protocol, *, environment: dict[str, Any] | None = None) -> dict:
-    return {
-        "vtea_protocol_version": PROTOCOL_FORMAT_VERSION,
+    data = {
+        # Version 2 only when there is a context section to read: a
+        # protocol without one is still one every earlier VTEA can open,
+        # while one with it must not open in a VTEA that would silently drop
+        # its levels.
+        "vtea_protocol_version": PROTOCOL_FORMAT_VERSION if protocol.context else 1,
         "created": protocol.created or datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": dict(protocol.source),
         "axes": {"channel_axis": protocol.channel_axis, "z_axis": protocol.z_axis},
@@ -281,6 +291,34 @@ def protocol_to_dict(protocol: Protocol, *, environment: dict[str, Any] | None =
         "gates": {name: gate_set_to_dict(gates) for name, gates in protocol.gates.items()},
         "environment": capture_environment() if environment is None else environment,
     }
+    if protocol.context:
+        data["context"] = _encode_context(protocol.context)
+    return data
+
+
+def _encode_context(context: ContextSpec) -> dict[str, Any]:
+    data = context.to_dict()
+    for level in data["levels"]:
+        for section in ("build", "measure", "classify"):
+            level[section] = {
+                key: encode_value(value, where=f"level '{level['name']}', {section} '{key}'")
+                for key, value in level[section].items()
+            }
+    return data
+
+
+def _decode_context(data: dict[str, Any] | None) -> ContextSpec:
+    if not data:
+        return ContextSpec()
+    for level in data.get("levels", []):
+        for section in ("build", "measure", "classify"):
+            level[section] = {
+                key: decode_value(value) for key, value in level.get(section, {}).items()
+            }
+    try:
+        return ContextSpec.from_dict(data)
+    except (KeyError, ValueError) as error:
+        raise ProtocolError(f"the protocol's context section cannot be read: {error}") from error
 
 
 def protocol_from_dict(data: dict[str, Any]) -> Protocol:
@@ -310,6 +348,7 @@ def protocol_from_dict(data: dict[str, Any]) -> Protocol:
         measure_every_segmentation=bool(data.get("measure_every_segmentation", True)),
         gates={name: gate_set_from_dict(entry) for name, entry in data.get("gates", {}).items()},
         source=dict(data.get("source", {})),
+        context=_decode_context(data.get("context")),
         created=data.get("created", ""),
         environment=dict(data.get("environment", {})),
     )

@@ -31,6 +31,7 @@ from vtea_core.neighborhoods.measure import (
 from vtea_core.neighborhoods.model import (
     CENTRED_METHODS,
     GRID,
+    MEMBER_ID,
     METHODS,
     NEAREST,
     NEIGHBORHOOD_FORMAT_VERSION,
@@ -57,6 +58,7 @@ __all__ = [
     "COMPOSITION_MEASUREMENTS",
     "GRID",
     "MEMBER",
+    "MEMBER_ID",
     "METHODS",
     "MISSING_CATEGORY",
     "NEAREST",

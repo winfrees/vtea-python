@@ -139,7 +139,9 @@ class TestRoundTrip:
     def test_the_file_is_plain_json_with_a_version(self, tmp_path):
         path = save_protocol(make_protocol(), tmp_path / "p.vtea.json")
         data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["vtea_protocol_version"] == PROTOCOL_FORMAT_VERSION
+        # No context section: written as version 1, which every earlier VTEA
+        # can open. Only a protocol with levels needs version 2.
+        assert data["vtea_protocol_version"] == 1 < PROTOCOL_FORMAT_VERSION
         assert data["processing"][0]["function"] == "threshold_mask"
         assert "numpy" in data["environment"]["packages"]
 

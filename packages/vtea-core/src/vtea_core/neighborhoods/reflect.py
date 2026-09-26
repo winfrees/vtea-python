@@ -110,7 +110,8 @@ def reflect_neighborhoods(
     object_ids = data[id_column].to_numpy()
     result = pd.DataFrame({id_column: object_ids})
     membership = neighborhoods.membership()
-    counts = membership.groupby(id_column).size()
+    member = neighborhoods.member_column
+    counts = membership.groupby(member).size()
     result[f"{prefix}n_neighborhoods"] = (
         pd.Series(object_ids).map(counts).fillna(0).astype(np.int64).to_numpy()
     )
@@ -126,8 +127,8 @@ def reflect_neighborhoods(
             result[f"{prefix}{name}"] = values
         return result
 
-    joined = membership[[NEIGHBORHOOD_ID, id_column]].join(table[columns], on=NEIGHBORHOOD_ID)
-    grouped = joined.groupby(id_column)
+    joined = membership[[NEIGHBORHOOD_ID, member]].join(table[columns], on=NEIGHBORHOOD_ID)
+    grouped = joined.groupby(member)
     for name in columns:
         if name in categories:
             voted = grouped[name].agg(_most_frequent)

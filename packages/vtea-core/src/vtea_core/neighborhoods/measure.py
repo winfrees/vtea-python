@@ -117,7 +117,10 @@ def neighborhood_features(
         return frame
 
     membership = neighborhoods.membership()
-    rows = membership.merge(data, on=id_column, how="left")
+    member = neighborhoods.member_column
+    rows = membership.merge(
+        data.rename(columns={id_column: member}), on=member, how="left", suffixes=("", "_member")
+    )
 
     frame["mean_distance"] = [n.mean_distance for n in neighborhoods]
 

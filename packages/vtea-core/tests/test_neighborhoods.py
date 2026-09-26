@@ -358,3 +358,23 @@ class TestAsSteps:
         reflected = context["neighborhood_reflection"]
         assert len(reflected) == len(table)
         assert NEIGHBORHOOD_TYPE in reflected.columns
+
+
+class TestNeighborhoodsOfNeighborhoods:
+    def test_members_that_are_neighbourhoods_do_not_collide_with_their_parents(self):
+        """Both levels are identified by `neighborhood_id`; the member side is
+        `member_id`, so neither overwrites the other."""
+        table = two_halves()
+        first = build_neighborhoods(table, radius=12)
+        first_table = classify_neighborhoods(
+            neighborhood_features(first, table, class_column="kind"), n_clusters=2
+        )
+        second = build_neighborhoods(first_table, radius=25, id_column="neighborhood_id")
+        membership = second.membership()
+        assert {"neighborhood_id", "member_id"} <= set(membership.columns)
+        assert membership["member_id"].isin(first_table["neighborhood_id"]).all()
+        second_table = neighborhood_features(second, first_table, class_column=NEIGHBORHOOD_TYPE)
+        assert "Class_1_ClassFraction" in second_table.columns
+        reflected = reflect_neighborhoods(second, second_table, first_table, relation="member")
+        assert list(reflected["neighborhood_id"]) == list(first_table["neighborhood_id"])
+        assert reflected["n_neighborhoods"].min() >= 1

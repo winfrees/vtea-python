@@ -43,6 +43,8 @@ METHODS = (NEAREST, RADIUS, GRID)
 CENTRED_METHODS = frozenset({NEAREST, RADIUS})
 
 NEIGHBORHOOD_ID = "neighborhood_id"
+# A member's id in a membership table whose members are neighbourhoods.
+MEMBER_ID = "member_id"
 
 
 @dataclass(frozen=True)
@@ -151,11 +153,19 @@ class NeighborhoodSet:
     def sizes(self) -> np.ndarray:
         return np.array([len(n.members) for n in self.neighborhoods], dtype=np.int64)
 
+    @property
+    def member_column(self) -> str:
+        """What the members' ids are called in `membership()`: their own id
+        column - except for neighbourhoods of neighbourhoods, whose members
+        are themselves identified by `neighborhood_id`, and are called
+        `member_id` so the two columns do not collide."""
+        return MEMBER_ID if self.id_column == NEIGHBORHOOD_ID else self.id_column
+
     def membership(self) -> pd.DataFrame:
         """The many-to-many relationship as a table: one row per (neighbourhood,
         member) pair, with `is_seed` marking the object a neighbourhood is
         centred on. Everything that joins neighbourhoods to objects goes
-        through this."""
+        through this. The members' column is `member_column`."""
         rows_n: list[int] = []
         rows_o: list[int] = []
         seeds: list[bool] = []
@@ -167,7 +177,7 @@ class NeighborhoodSet:
         return pd.DataFrame(
             {
                 NEIGHBORHOOD_ID: np.asarray(rows_n, dtype=np.int64),
-                self.id_column: np.asarray(rows_o, dtype=np.int64),
+                self.member_column: np.asarray(rows_o, dtype=np.int64),
                 "is_seed": np.asarray(seeds, dtype=bool),
             }
         )
