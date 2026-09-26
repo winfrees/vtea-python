@@ -226,10 +226,12 @@ parity is reached**. Measured against that goal, the honest status is:
   Java 2.0 work never finished. Association, cells, classes and label sets
   (`docs/OBJECT_ASSOCIATION.md`, "Classes, label sets and image gates"
   above) are new capability, not port. About 1,500 core tests pass.
-- **Algorithm coverage (Phases 2-3): partial.** The inventory below lists
-  every `@Plugin` in the Java source. Most of what users reach every day is
-  covered; the Java *default* segmentation (LayerCake3D) and several
-  processors are not.
+- **Algorithm coverage (Phases 2-3): partial, and the gaps users would
+  notice first are closing.** The inventory below lists every `@Plugin` in
+  the Java source. LayerCake3D (the Java default segmentation),
+  z-normalisation, the neighbourhood measurements and the four VAE plugins
+  are now ported (M4, below); FloodFill3D, Region2D, heatmap/violin plots
+  and the Java workflow-XML import are not.
 - **Parity (the Phase 0 harness and Phase 5): not started.** No Java
   fixture has ever been generated. `tests/golden/test_parity.py` now holds
   real assertions (it previously only called the loaders), so fixtures are
@@ -255,15 +257,15 @@ it has been validated against Java output (none has - see above).
 
 | Java extension point | Ported | Not ported |
 |---|---|---|
-| `Segmentation` (18) | `SingleThreshold` (`threshold_mask`), `MorphoLibJ`/`Imglib2ConnectedComponents` (`label_components` + `watershed_split`), `CellposeSegmentation`, `Points` (`labels_from_points`), `PreLabelled` (`import_labels`), all `Chunked*` variants (via `vtea_core.blocked`, not as separate methods) | **`LayerCake3DSingleThreshold` / `...kDTree` / `...LargeScale`** (the Java default: 2D objects per slice linked across z - produces different splits from 3D connected components on touching nuclei), `FloodFill3DSingleThreshold`, `Region2DSingleThreshold`, `DeepImageJSegmentation` (`bioimageio.core`), `ImageJROIBased` |
-| `FeatureProcessing` (18) | `KMeans`/`KMeansClust`, `GaussianMix`, `WardCluster`/`CompleteCluster`/`SingleCluster` (`hierarchical` linkage), `Xmeans`/`GMeansClust` (both as `auto_k_kmeans`, BIC - not the Smile algorithms), `PCAReduction`, `Isomap`, `LaplacianEigenMap`, `TSNEReductionAdjust`, `DeepLearningClassification` (`classification`, CNN) | `DeterministicAnnealingClust`, the four `VAE*` plugins (anomaly detection, clustering, reduction, feature extraction); the **z-normalisation option** every Java clustering/reduction protocol carries (its first protocol entry) |
+| `Segmentation` (18) | `SingleThreshold` (`threshold_mask`), `MorphoLibJ`/`Imglib2ConnectedComponents` (`label_components` + `watershed_split`), `LayerCake3DSingleThreshold` / `...kDTree` / `...LargeScale` (`layercake_3d` - the Java default, ported for continuity: 2D regions per slice, ImageJ-style watershed, linked across z by bounding-box centre; the kD-tree and large-scale variants are the same algorithm, and `layercake_3d` uses a kd-tree for its linking anyway), `CellposeSegmentation`, `Points` (`labels_from_points`), `PreLabelled` (`import_labels`), all `Chunked*` variants (via `vtea_core.blocked`, not as separate methods) | `FloodFill3DSingleThreshold`, `Region2DSingleThreshold`, `DeepImageJSegmentation` (`bioimageio.core`), `ImageJROIBased` |
+| `FeatureProcessing` (18) | `KMeans`/`KMeansClust`, `GaussianMix`, `WardCluster`/`CompleteCluster`/`SingleCluster` (`hierarchical` linkage), `Xmeans`/`GMeansClust` (both as `auto_k_kmeans`, BIC - not the Smile algorithms), `PCAReduction`, `Isomap`, `LaplacianEigenMap`, `TSNEReductionAdjust`, `DeepLearningClassification` (`classification`, CNN); the four `VAE*` plugins (`vae_features`, `vae_reduction`, `vae_clustering`, `vae_anomaly`, plus `train_vae` - the `vae` category, needs torch); the **z-normalisation option** ("Z-scale all data", the first entry of every clustering/reduction protocol) as `normalize="zscore"` on every clustering and reduction step, with `robust` and `minmax` beside it | `DeterministicAnnealingClust` |
 | `Measurements` (8) | `Count`, `Mean`, `Sum`, `StandardDeviation`, `Minimum`, `Maximum`, `ThresholdMean` | (`TheAnswer` is a joke plugin) |
 | `Morphology` (4) | `Ring` (`label_ring`), `Grow_*` (`expand_labels`) | Connectivity semantics: Java grows by 6/26-connected or cross-shaped voxel steps, the port by Euclidean distance in physical units. Same intent, different voxels - needs a parity fixture or an explicit decision |
 | `ImageProcessing` (7) | `Gaussian`, `Median3D`, `Denoise` (a fixed median), `EnhanceContrast`, `BackgroundSubtraction` | `LinearUnmixing`, `IJMacro` (see open question on macros) |
-| `NeighborhoodMeasurements` (3) | - | `ClassFraction`, `ClassSums`, `TotalObjects` (per-object neighbourhood composition - spatial analysis users publish on) |
+| `NeighborhoodMeasurements` (3) | `ClassFraction`, `ClassSums`, `TotalObjects` (`neighborhood_features`, same column names), and the neighbourhood construction behind them (Nearest-k, Spatial by cell, Spatial by point, Randomize: `build_neighborhoods`) - plus what the Java never had, reflecting a neighbourhood's composition and type back onto its members. See [`NEIGHBORHOODS.md`](NEIGHBORHOODS.md) | - |
 | `PlotMaker` (2) | - | `Heatmap`, `ViolinPlot` |
 | `FileType` (7) | `ZarrFileType` | `ObjectCSVFileType` (**measurement export**), `WorkflowFileType`/`XMLFileType`/`ProcessingFileType`/`SegmentationFileType` (**protocol save/load**, and import of existing Java files), `IJ1MacroFileType` |
-| `Processor` (11) | Segmentation, image processing, feature, explorer, gate-math processors (the `Pipeline` engine) | `DatasetNormalizationProcessor`, `ReduceObjectSizeProcessor`, `AddImageFeature*` (adding a per-object feature measured on another image) |
+| `Processor` (11) | Segmentation, image processing, feature, explorer, gate-math processors (the `Pipeline` engine), `NeighborhoodMeasurementsProcessor` (`neighborhood_features`) | `DatasetNormalizationProcessor` (a stub in the Java source: every method throws "Not supported yet", so there is nothing to port), `ReduceObjectSizeProcessor`, `AddImageFeature*` (adding a per-object feature measured on another image) |
 | `LUT` (6) | Replaced by matplotlib colormaps, plus a categorical LUT | - (deliberately) |
 | `GateMath` | `&`, `\|`, `~` on boolean arrays, and the class expression language | - |
 
@@ -336,7 +338,7 @@ links (saved separately through the Associations tab). Tiers 2-3 of
 `docs/SAVING_AND_ARCHIVING.md` - the archive zip and the publication bundle -
 remain, and are not on the path to cutover.
 
-### M4. Close the algorithm gaps users will notice (3-5 weeks)
+### M4. Close the algorithm gaps users will notice (3-5 weeks) - **in progress**
 
 In priority order: LayerCake3D (the Java default, so existing protocols
 and published numbers depend on it); z-normalisation for clustering and
@@ -345,10 +347,35 @@ reduction; neighbourhood measurements (`ClassFraction`, `ClassSums`,
 workflow-XML import converter. `bioio` vendor formats if collaborators use
 CZI/LIF/ND2 rather than TIFF.
 
+Done so far:
+
+- **LayerCake3D** - `vtea_core.segmentation.layercake_3d`, a `segmentation`
+  step. Its module docstring records each Java rule it follows (bounding-box
+  centres, the running midpoint, branching, next-slice-only linking, the
+  inclusive threshold) and the three places it deliberately does not: the
+  Java's list-removal loop bug that skips regions, its non-reproducible
+  region order, and its 2D offset-0 edge case. Its parity test
+  (`tests/golden/test_parity.py::test_layercake3d_matches_java`) is written
+  and skips until M2's fixture exists; the fixture format is in
+  `tests/golden/README.md`.
+- **z-normalisation** - `normalize=` on every clustering and reduction step
+  (`vtea_core.measurements.normalize`), off by default as the Java checkbox
+  was. The z-score divides by n, as the Java does.
+- **Neighbourhood measurements** - `vtea_core.neighborhoods` and the
+  Neighborhoods pane; see [`NEIGHBORHOODS.md`](NEIGHBORHOODS.md). Built as a
+  second level of objects that reflects back onto the first, which the Java
+  original was not.
+- **The VAE plugins** - moved up from "later": `vtea_core.classification.vae`,
+  the `vae` protocol category. Same architecture and loss as the Java stack;
+  a linear decoder output where the Java had a sigmoid it could not
+  reconstruct z-scored crops through, and a real PCA where the Java took the
+  first latent dimensions. Java checkpoints cannot be loaded and have to be
+  retrained.
+
 Deliberately later or dropped, with a decision recorded here:
-`DeterministicAnnealingClust` and the `VAE*` plugins (check with users
-whether anyone runs them), `DeepImageJSegmentation` via `bioimageio.core`,
-`LinearUnmixing`, `IJMacro`, `ImageJROIBased`.
+`DeterministicAnnealingClust` (disabled in the Java source itself),
+`DeepImageJSegmentation` via `bioimageio.core`, `LinearUnmixing`,
+`IJMacro`, `ImageJROIBased`.
 
 **Done when** every row of the inventory above is either ported with a
 parity test or marked as dropped with a reason.
