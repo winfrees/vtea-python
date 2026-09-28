@@ -109,12 +109,17 @@ The two panes are views of one analysis, sharing a
 builder publishes each run into it, the explorer plots and gates it, and
 hiding or closing either pane loses nothing.
 
-A third pane, **Neighborhoods**, builds neighbourhoods from those results:
-a second level of objects made of the first, measured by composition (the
-Java `ClassFraction`/`ClassSums`) and clustered into types. It draws them on
-the same viewer as the objects, and hands each neighbourhood's
-characteristics back to its members, so a cell can be gated on the kind of
-neighbourhood it lives in. See `docs/NEIGHBORHOODS.md`.
+A third pane, **Context**, moves the analysis between length scales. One
+slider runs through the levels: pieces of cells, cells, neighbourhoods of
+them, neighbourhoods of those. The Object Explorer and the viewer follow
+it. A new level is defined from the one showing, with a radius slider that
+previews it. Its entities are measured by composition (the Java
+`ClassFraction`/`ClassSums`) and clustered into types, and each level's
+type is handed down to every level beneath it, so a lysosome can be gated
+on the kind of neighbourhood its cell lives in. Levels above the cells are
+drawn as hull outlines with a chosen fill pattern and colour, for the
+gated entities only unless all are asked for. Level definitions are saved
+with the protocol. See `docs/CONTEXTS.md` and `docs/NEIGHBORHOODS.md`.
 
 **Data larger than memory** runs through the same protocol, a tile at a
 time: `vtea_core.blocked` carries the memory budget, the tile plan, the

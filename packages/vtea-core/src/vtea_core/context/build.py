@@ -82,15 +82,24 @@ def build_context(
     cells: dict[str, Any] | None = None,
     cell_tables: dict[str, pd.DataFrame] | None = None,
     spacing: Spacing | None = None,
+    on_error: str = "raise",
 ) -> ContextGraph:
     """The levels `spec` defines, built from a run's results.
 
     `measurement_tables` maps a segmentation name to its per-object table;
     `cells` maps a `build_cells` step name to its CellSet, and `cell_tables`
     the same name to its per-cell table (optional - without one, a cellular
-    level has only ids and positions). A level whose source the run did not
-    produce is refused by name rather than skipped.
+    level has only ids and positions). A cellular level may also be made
+    straight from a segmentation, when a protocol has no cells: its objects
+    stand in for them.
+
+    A level whose source the run did not produce is refused by name. With
+    `on_error="skip"` - what a GUI wants, after a re-run that renamed a
+    segmentation - that level and every level built on it are left out
+    instead, and the reasons are listed in `graph.errors`.
     """
+    if on_error not in ("raise", "skip"):
+        raise ValueError(f"on_error must be 'raise' or 'skip', got {on_error!r}")
     measurement_tables = measurement_tables or {}
     cells = cells or {}
     cell_tables = cell_tables or {}
@@ -99,13 +108,52 @@ def build_context(
 
     for level in spec:
         rank = spec.rank(level.name)
-        if level.tier == SUBCELLULAR:
-            _add_subcellular(graph, level, rank, measurement_tables)
-        elif level.tier == CELLULAR:
-            _add_cellular(graph, level, rank, cells, cell_tables, measurement_tables)
-        elif level.tier == NEIGHBORHOOD:
-            _add_neighborhood(graph, spec, level, rank, spacing)
+        try:
+            if level.tier == NEIGHBORHOOD and level.source not in graph.levels:
+                raise ValueError(
+                    f"level '{level.name}' is built from '{level.source}', which could not be built"
+                )
+            if level.tier == SUBCELLULAR:
+                _add_subcellular(graph, level, rank, measurement_tables)
+            elif level.tier == CELLULAR:
+                _add_cellular(graph, level, rank, cells, cell_tables, measurement_tables)
+            elif level.tier == NEIGHBORHOOD:
+                _add_neighborhood(graph, spec, level, rank, spacing)
+        except (ValueError, KeyError) as error:
+            if on_error == "raise":
+                raise
+            graph.levels.pop(level.name, None)
+            graph.errors[level.name] = str(error)
     return graph
+
+
+def base_levels(
+    measurement_tables: dict[str, pd.DataFrame] | None = None,
+    cells: dict[str, Any] | None = None,
+) -> list[LevelSpec]:
+    """The levels a run defines by itself, before anyone builds on them.
+
+    With cells, every measured segmentation is subcellular and every
+    `build_cells` result cellular. Without, there is nothing to be a piece
+    of, and each segmentation's objects are the cellular level.
+    """
+    measurement_tables = measurement_tables or {}
+    cells = {name: value for name, value in (cells or {}).items() if hasattr(value, "__iter__")}
+    if not cells:
+        return [LevelSpec(name, CELLULAR, name) for name in measurement_tables]
+    levels = [LevelSpec(name, SUBCELLULAR, name) for name in measurement_tables]
+    levels += [LevelSpec(name, CELLULAR, name) for name in cells]
+    return levels
+
+
+def with_base_levels(spec: ContextSpec, base: list[LevelSpec]) -> ContextSpec:
+    """`spec` with the run's base levels it does not already define put
+    first, so the levels a person defined can be built on them."""
+    defined = {level.name for level in spec}
+    missing = [level for level in base if level.name not in defined]
+    order = {tier: index for index, tier in enumerate((SUBCELLULAR, CELLULAR, NEIGHBORHOOD))}
+    missing.sort(key=lambda level: order[level.tier])
+    return ContextSpec(missing + list(spec))
 
 
 def _add_subcellular(graph, level: LevelSpec, rank: int, tables) -> None:
@@ -122,6 +170,15 @@ def _add_subcellular(graph, level: LevelSpec, rank: int, tables) -> None:
 
 def _add_cellular(graph, level: LevelSpec, rank: int, cells, cell_tables, tables) -> None:
     cell_set = cells.get(level.source)
+    if cell_set is None and level.source in tables:
+        # No cells: a segmentation's objects stand in for them.
+        graph.add_level(
+            Level(
+                level.name, CELLULAR, tables[level.source], "object_id", rank=rank,
+                labels_key=level.source,
+            )
+        )
+        return
     if cell_set is None:
         raise ValueError(
             f"cellular level '{level.name}' is made from '{level.source}', which is not a "

@@ -312,23 +312,19 @@ widget and run it):
   "Object Explorer" section for what was simplified vs. the Java original
   (one gate type, no dead `GateManager` port, real hierarchy where Java had
   none).
-- **`NeighborhoodWidget`** — the "Neighborhoods" dock widget (also opened
-  from the builder's **Neighborhoods** button): neighbourhoods as a second
-  level of objects, on the same viewer as the first. It builds them from
-  any table the protocol produced (objects or cells), by the Java methods
-  (around each object within a radius, the k nearest, or grid points, with
-  a randomised null model), measures their class composition, clusters them
-  into types, and hands each neighbourhood's characteristics back to its
-  members as `<name>.*` columns on their table, merged by id so they
-  survive a re-run. On the viewer: a Points layer of neighbourhood centres
-  coloured by any neighbourhood feature (click one to select it), a Labels
-  layer painting every object by its neighbourhood type, and a layer
-  showing only the selected neighbourhood's members. The neighbourhood
-  table joins the Object Explorer's table menu, and a gate on neighbourhoods
-  centred on cells lights up those cells. The same analysis exists as
-  `vtea_core.neighborhoods` pipeline steps for scripts, deliberately not in
-  the protocol builder's menu. See
-  [`/docs/NEIGHBORHOODS.md`](../../docs/NEIGHBORHOODS.md).
+- **`ContextWidget`**: the "Context" dock widget (also opened from the
+  builder's **Context** button), for moving between length scales. A
+  slider runs through the levels of the analysis (pieces of cells, cells,
+  neighbourhoods of them, neighbourhoods of those), and the Object Explorer
+  follows it. From the level showing, it defines the next level up: a
+  radius slider previews one neighbourhood, and the new level can be
+  measured by class composition and clustered into types. Each level's
+  type is handed down to every level beneath it. Levels above the cells are
+  drawn as hull outlines with a chosen fill pattern (none, solid, hatch,
+  cross-hatch, dots) and colours, for the gated entities only unless all
+  are asked for. Moving level can carry the gated selection up or down.
+  Level definitions are saved in the protocol's `context` section. See
+  [`/docs/CONTEXTS.md`](../../docs/CONTEXTS.md).
 - **`ScatterPlotWidget`** — the matplotlib-backed plot: click to add a gate
   vertex, double-click to close it, right-click to cancel; in rectangle mode
   two clicks (opposite corners) make the gate, still stored as a 4-vertex
@@ -388,5 +384,5 @@ widget and run it):
 ```bash
 pip install -e "../vtea-core" -e ".[dev]"
 napari
-# Plugins menu -> VTEA -> Protocol Builder, -> Object Explorer, or -> Neighborhoods
+# Plugins menu -> VTEA -> Protocol Builder, -> Object Explorer, or -> Context
 ```

@@ -127,6 +127,8 @@ class ContextGraph:
         # The definitions the levels were built from, when they were - how
         # each is drawn travels with them.
         self.spec = None
+        # Levels that could not be built, and why - see build_context.
+        self.errors: dict[str, str] = {}
 
     # -- structure --------------------------------------------------------
 
@@ -229,6 +231,41 @@ class ContextGraph:
             matrix = matrix @ self._matrix(link, own)
             matrix.data[:] = 1.0  # membership, not a count of routes to it
         return sparse.csr_matrix(matrix)
+
+    def related(self, source: str, ids, target: str) -> np.ndarray:
+        """The entities of `target` related to `ids` of `source`: the
+        neighbourhoods a set of cells is in, the pieces of a set of cells,
+        the cells of a set of neighbourhoods. Moves up or down; between two
+        levels on different branches it goes through the lowest level both
+        stand on, if there is one."""
+        if source == target:
+            return np.unique(np.asarray(ids))
+        start = self.level(source)
+        selected = np.isin(start.ids, np.asarray(ids))
+        try:
+            matrix = self.membership_matrix(source, target, relation="member")
+            hits = np.asarray(matrix[selected].sum(axis=0)).ravel() > 0
+            return self.level(target).ids[hits]
+        except ValueError:
+            pass
+        try:
+            matrix = self.membership_matrix(target, source, relation="member")
+            hits = np.asarray(matrix[:, selected].sum(axis=1)).ravel() > 0
+            return self.level(target).ids[hits]
+        except ValueError:
+            pass
+        for common in self.stack():
+            if common.name in (source, target):
+                continue
+            try:
+                below_source = self.membership_matrix(common.name, source, relation="member")
+                below_target = self.membership_matrix(common.name, target, relation="member")
+            except ValueError:
+                continue
+            shared = np.asarray(below_source[:, selected].sum(axis=1)).ravel() > 0
+            hits = np.asarray(below_target[shared].sum(axis=0)).ravel() > 0
+            return self.level(target).ids[hits]
+        return np.empty(0, dtype=self.level(target).ids.dtype)
 
     # -- the operators ----------------------------------------------------
 

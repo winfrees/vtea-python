@@ -24,10 +24,19 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from qtpy.QtCore import QObject, Signal
+from vtea_core.context import (
+    CELLULAR,
+    NEIGHBORHOOD,
+    SUBCELLULAR,
+    ContextGraph,
+    ContextSpec,
+    base_levels,
+    build_context,
+    with_base_levels,
+)
 from vtea_core.data import Spacing
 from vtea_core.gates import GateSet
 from vtea_core.measurements import FeatureCatalog
-from vtea_core.neighborhoods import NEIGHBORHOOD_ID, NeighborhoodSet
 from vtea_core.objects import AssociationSet, CellCollection, ObjectRef
 from vtea_core.workflow import Pipeline
 
@@ -77,41 +86,6 @@ class TableView:
     gate_set: GateSet = field(default_factory=GateSet)
 
 
-@dataclass
-class NeighborhoodResult:
-    """A neighbourhood analysis made in the Neighborhoods pane.
-
-    Two levels of objects and the link between them: the neighbourhoods and
-    their table (rows are neighbourhoods), which table their members are
-    rows of (`source_table`), and `reflected` - what each member took on from
-    the neighbourhoods it belongs to, keyed by the member's id and merged
-    onto `source_table` whenever that table is published.
-
-    `labels_key` is the label image a neighbourhood row highlights. For a
-    neighbourhood centred on an object, its id is that object's id, so it is
-    the source table's own label image; a grid neighbourhood has no object to
-    light up and leaves it empty.
-    """
-
-    neighborhoods: NeighborhoodSet
-    table: pd.DataFrame
-    source_table: str = OBJECT_TABLE
-    labels_key: str = ""
-    reflected: pd.DataFrame | None = None
-
-    @property
-    def member_id_column(self) -> str:
-        return self.neighborhoods.id_column
-
-    def view(self) -> TableView:
-        return TableView(
-            frame=self.table,
-            id_column=NEIGHBORHOOD_ID,
-            labels_key=self.labels_key,
-            noun="neighborhoods",
-        )
-
-
 class AnalysisSession(QObject):
     """One analysis: the run context, the table derived from it, and the
     gates drawn on that table.
@@ -125,8 +99,9 @@ class AnalysisSession(QObject):
 
     data_changed = Signal()
     gates_changed = Signal()
-    # A neighbourhood analysis was added, replaced or removed.
-    neighborhoods_changed = Signal()
+    # The level definitions, the levels built from them, or which level is
+    # being looked at changed.
+    context_changed = Signal()
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -179,16 +154,17 @@ class AnalysisSession(QObject):
         self.manual_links: dict[ObjectRef, ObjectRef | None] = {}
         self._table: pd.DataFrame | None = None
         # What the builder last published, before anything the session adds
-        # to it (image gates, reflected neighbourhood columns) - kept so those
-        # can be re-applied when they change without re-running the builder.
+        # to it - kept so the context levels can be rebuilt without
+        # re-running the builder.
         self._source_table: pd.DataFrame | None = None
         self._source_views: dict[str, TableView] = {}
-        # Neighbourhood analyses made in the Neighborhoods pane, by name. Kept
-        # here for the same reason image gates are: the builder rebuilds its
-        # tables on every run, and an analysis made on them has to survive
-        # that - its neighbourhood table is published beside them, and what
-        # it reflected onto the objects is merged back onto theirs by id.
-        self.neighborhood_results: dict[str, NeighborhoodResult] = {}
+        # The context: level definitions (saved with the protocol), what the
+        # last run gave them to be built from, the levels built, and which
+        # level every pane is looking at. See vtea_core.context.
+        self.context_spec = ContextSpec()
+        self.context_inputs: dict[str, dict] = {}
+        self.context_graph: ContextGraph | None = None
+        self.active_level: str = ""
         # Gates drawn before any table was published - the explorer can be
         # driven directly, without the builder.
         self._loose_gates = GateSet()
@@ -203,6 +179,7 @@ class AnalysisSession(QObject):
         context: dict[str, Any],
         table: pd.DataFrame | None = None,
         tables: dict[str, TableView] | None = None,
+        context_inputs: dict[str, dict] | None = None,
     ) -> None:
         """Publish a new run context, the flat per-object feature table
         derived from it, and any further tables the run produced.
@@ -211,18 +188,26 @@ class AnalysisSession(QObject):
         builder knows the step graph that names their columns. Gates survive
         a re-run: a table that was already here keeps the gates drawn on it,
         since they are drawn on features that still exist.
+
+        `context_inputs` - the measurement table per segmentation, the cells
+        per `build_cells` step, and their per-cell tables - is what the
+        context levels are rebuilt from; every level is rebuilt on each run.
         """
         self.context = context
         self._source_table = table
         self._source_views = dict(tables or {})
+        if context_inputs is not None:
+            self.context_inputs = dict(context_inputs)
+            self._build_context()
         self._assemble_tables()
         self.data_changed.emit()
+        if context_inputs is not None:
+            self.context_changed.emit()
 
     def _assemble_tables(self) -> None:
         """Publish the builder's tables with everything the session adds to
-        them: image-gate columns, the neighbourhood tables made in the
-        Neighborhoods pane, and the columns those reflected onto their
-        members."""
+        them: image-gate columns, and one table per context level - with the
+        characteristics every level above it handed down."""
         table = self._decorate(OBJECT_TABLE, "object_id", self._source_table)
         self._table = table
         published = {
@@ -231,8 +216,13 @@ class AnalysisSession(QObject):
         }
         if table is not None:
             published.setdefault(OBJECT_TABLE, TableView(table))
-        for name, result in self.neighborhood_results.items():
-            published.setdefault(name, result.view())
+        # Level tables only once there is a level above the cells: before
+        # that, each is a copy of a table the builder already published, and
+        # offering it twice is a choice with no difference behind it.
+        levels = self.context_levels()
+        if any(level.tier == NEIGHBORHOOD for level in levels):
+            for level in levels:
+                published.setdefault(level.name, self._level_view(level))
         for name, view in published.items():
             existing = self.tables.get(name)
             if existing is not None:
@@ -250,59 +240,103 @@ class AnalysisSession(QObject):
             return None
         if id_column == "object_id":
             frame = self.apply_image_gates(frame)
-        return self.apply_reflections(frame, name)
-
-    # -- neighbourhoods ---------------------------------------------------
-
-    def source_frame(self, name: str) -> pd.DataFrame | None:
-        """A table as the builder published it, before the session's own
-        additions - what a neighbourhood analysis should be built from, so
-        a second analysis is not built on the first one's reflected
-        columns."""
-        if name == OBJECT_TABLE and OBJECT_TABLE not in self._source_views:
-            return self._source_table
-        view = self._source_views.get(name)
-        return None if view is None else view.frame
-
-    def apply_reflections(self, frame: pd.DataFrame | None, table: str = OBJECT_TABLE):
-        """Merge what neighbourhoods reflected onto `table`'s rows, by id.
-
-        By id rather than by row, like an image gate, so a re-run that adds
-        or drops objects leaves the rest with their values and the new ones
-        with none - rather than every value shifting a row.
-        """
-        if frame is None:
-            return None
-        results = [
-            result
-            for result in self.neighborhood_results.values()
-            if result.source_table == table
-            and result.reflected is not None
-            and result.member_id_column in frame.columns
-        ]
-        if not results:
-            return frame
-        frame = frame.copy()
-        for result in results:
-            reflected = result.reflected.set_index(result.member_id_column)
-            ids = frame[result.member_id_column]
-            for column in reflected.columns:
-                frame[column] = ids.map(reflected[column]).to_numpy()
         return frame
 
-    def set_neighborhood_result(self, name: str, result: NeighborhoodResult) -> None:
-        """Add or replace a neighbourhood analysis and republish the tables."""
-        self.neighborhood_results[name] = result
-        self._assemble_tables()
-        self.data_changed.emit()
-        self.neighborhoods_changed.emit()
+    # -- context ----------------------------------------------------------
 
-    def remove_neighborhood_result(self, name: str) -> None:
-        if self.neighborhood_results.pop(name, None) is None:
+    def _build_context(self) -> None:
+        """Rebuild every level from the last run. A level whose source is
+        gone (a renamed segmentation) is left out and says why, rather than
+        taking every other level with it."""
+        inputs = self.context_inputs
+        if not inputs:
+            self.context_graph = None
             return
+        spec = with_base_levels(
+            self.context_spec,
+            base_levels(inputs.get("measurement_tables"), inputs.get("cells")),
+        )
+        self.context_graph = build_context(
+            spec,
+            measurement_tables=inputs.get("measurement_tables"),
+            cells=inputs.get("cells"),
+            cell_tables=inputs.get("cell_tables"),
+            spacing=self.spacing,
+            on_error="skip",
+        )
+        if self.active_level not in self.context_graph.levels:
+            levels = self.context_levels()
+            self.active_level = levels[0].name if levels else ""
+
+    def context_levels(self) -> list:
+        """The built levels, lowest first - what the context slider shows."""
+        return [] if self.context_graph is None else self.context_graph.stack()
+
+    def context_errors(self) -> dict[str, str]:
+        return {} if self.context_graph is None else dict(self.context_graph.errors)
+
+    def level_display(self, name: str):
+        """How a level is drawn, from its definition (defaults for a level
+        the run defined by itself)."""
+        from vtea_core.context import LevelDisplay
+
+        level = self.context_spec.get(name)
+        return level.display if level is not None else LevelDisplay()
+
+    @staticmethod
+    def _level_view(level) -> TableView:
+        noun = {
+            SUBCELLULAR: "objects",
+            CELLULAR: "cells" if level.id_column == "cell_id" else "objects",
+            NEIGHBORHOOD: "neighborhoods",
+        }[level.tier]
+        return TableView(
+            frame=level.table, id_column=level.id_column, labels_key=level.labels_key, noun=noun
+        )
+
+    def set_context_spec(self, spec: ContextSpec) -> None:
+        """Replace the level definitions and rebuild from the last run."""
+        self.context_spec = spec
+        self.refresh_context()
+
+    def refresh_context(self) -> None:
+        """Rebuild the levels and republish every table."""
+        self._build_context()
         self._assemble_tables()
         self.data_changed.emit()
-        self.neighborhoods_changed.emit()
+        self.context_changed.emit()
+
+    def set_active_level(self, name: str) -> None:
+        """Look at one level: the explorer switches to its table, and every
+        pane that follows the context redraws for it."""
+        if self.context_graph is None or name not in self.context_graph.levels:
+            return
+        changed = name != self.active_level
+        self.active_level = name
+        self.set_active_table(name)  # a no-op until level tables are published
+        if changed:
+            self.context_changed.emit()
+
+    def gated_ids(self, name: str) -> np.ndarray:
+        """The entities of a level selected by its visible gates - what is
+        drawn for a level whose display is "gated", and what a selection
+        carries to the other levels."""
+        view = self.tables.get(name)
+        if view is None or view.frame is None or view.frame.empty:
+            return np.empty(0, dtype=np.int64)
+        selected = np.zeros(len(view.frame), dtype=bool)
+        for gate in view.gate_set:
+            if not gate.visible:
+                continue
+            if gate.x_axis not in view.frame.columns or gate.y_axis not in view.frame.columns:
+                continue
+            selected |= np.asarray(view.gate_set.mask(gate.id, view.frame), dtype=bool)
+        return view.frame.loc[selected, view.id_column].to_numpy()
+
+    def related_ids(self, source: str, ids, target: str) -> np.ndarray:
+        if self.context_graph is None:
+            return np.empty(0, dtype=np.int64)
+        return self.context_graph.related(source, ids, target)
 
     # -- image gates ------------------------------------------------------
 
@@ -367,6 +401,17 @@ class AnalysisSession(QObject):
             if descriptor.measurement in CATEGORICAL_MEASUREMENTS
         }
         names |= set(self.image_gates)
+        if frame is None:
+            frame = self.results_table()
+        if frame is not None:
+            # A neighbourhood type, on its own level's table or handed down
+            # to a level below as `<level>.neighborhood_type`.
+            names |= {
+                str(column)
+                for column in frame.columns
+                if str(column) == "neighborhood_type"
+                or str(column).endswith(".neighborhood_type")
+            }
         frame = self.results_table() if frame is None else frame
         if frame is not None:
             names |= {
@@ -550,15 +595,18 @@ class AnalysisSession(QObject):
         self._table = None
         self._source_table = None
         self._source_views = {}
-        # Made from the old results, so they describe tables that are gone.
-        self.neighborhood_results = {}
+        # The levels were built from the old results; their definitions stay
+        # (a protocol being opened replaces them itself).
+        self.context_inputs = {}
+        self.context_graph = None
+        self.active_level = ""
         self.tables = {}
         self._loose_gates = GateSet()
         self.active_table = OBJECT_TABLE
         self.feature_catalog = FeatureCatalog()
         self.ledger = None
         self.data_changed.emit()
-        self.neighborhoods_changed.emit()
+        self.context_changed.emit()
 
     def set_gate_set(self, gate_set: GateSet) -> None:
         self.gate_set = gate_set

@@ -362,7 +362,7 @@ Done so far:
   (`vtea_core.measurements.normalize`), off by default as the Java checkbox
   was. The z-score divides by n, as the Java does.
 - **Neighbourhood measurements** - `vtea_core.neighborhoods` and the
-  Neighborhoods pane; see [`NEIGHBORHOODS.md`](NEIGHBORHOODS.md). Built as a
+  Context pane; see [`NEIGHBORHOODS.md`](NEIGHBORHOODS.md). Built as a
   second level of objects that reflects back onto the first, which the Java
   original was not.
 - **The VAE plugins** - moved up from "later": `vtea_core.classification.vae`,

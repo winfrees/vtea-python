@@ -27,7 +27,7 @@ _REQUIRED_COMMANDS = (
     "napari.get_reader",  # needs napari_builtins.io -> imageio (+ its metadata)
     "vtea-napari.protocol_builder",
     "vtea-napari.object_explorer",
-    "vtea-napari.neighborhoods",
+    "vtea-napari.context",
 )
 
 

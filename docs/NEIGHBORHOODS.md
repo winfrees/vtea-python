@@ -119,45 +119,24 @@ to the Object Explorer as its own table (rows are neighbourhoods), and the
 reflected columns join the object table as
 `reflect_neighborhoods_1.neighborhood_type` and so on.
 
-**Interactively**: the **Neighborhoods** pane (Plugins → VTEA →
-Neighborhoods, or the button beside "Object Explorer" in the builder) does
-the four steps in one go from any table the protocol produced, objects or
-cells, and draws both levels on the same napari viewer:
+**Interactively**: the **Context** pane (Plugins → VTEA → Context, or
+the builder's Context button) is where neighbourhoods are defined, as a
+level above the one showing, and where every level is moved between. See
+[`CONTEXTS.md`](CONTEXTS.md). A level's definition is saved in the
+protocol's `context` section and rebuilt from each run. Its type is handed
+down to every level beneath it, onto that level's own table in the Object
+Explorer.
 
-- a Points layer, one point per neighbourhood at its centre, sized to its
-  reach and coloured by any neighbourhood feature. Clicking a point selects
-  that neighbourhood;
-- a Labels layer painting every object by what it took on (its
-  neighbourhood type, by default), so the tissue reads as regions of one
-  kind of neighbourhood or another;
-- a members layer showing only the selected neighbourhood's objects.
-
-What the pane builds is held in the shared session as a
-`NeighborhoodResult`, as image gates are. It is published beside the
-builder's tables and its reflected columns are merged back onto their table
-**by id** on every builder run, so a re-run that adds or drops objects
-leaves the rest with their values. Each analysis is built from the table
-as the builder published it, never from another analysis's reflected
-columns. Opening a protocol clears them: they describe results that are
-gone.
-
-The pane's reflected columns are for the Object Explorer: they are
-deliberately *not* handed to the builder's steps, because a clustering with
-no feature selection uses every numeric column and would change silently
-the moment a pane analysis existed. A protocol that wants to classify cells
-by their neighbourhood (`cd8 AND reflect_neighborhoods_1.neighborhood_type == 2`)
-has to carry the four neighbourhood steps itself, which today means adding
-them from a script (see "As steps" above).
+Columns handed down this way are deliberately *not* fed to the builder's
+steps. A clustering with no feature selection uses every numeric column,
+and would change silently the moment a level was defined.
 
 ## Not done
 
-- **Neighbourhoods of neighbourhoods.** The pane offers only object and
-  cell tables as members. The core functions take any table with
-  `centroid-*` columns and an id column, so the pane change is small, but
-  nobody has asked for the analysis yet.
-- **Saving a pane-built analysis.** It is not in the protocol file: a
-  protocol carries steps, and the pane's analysis is a result. Add the four
-  steps to the protocol to carry it. `save_neighborhoods`/
+- **Neighbourhoods of neighbourhoods** are supported through the Context
+  pane (see `CONTEXTS.md`).
+- **Saving a built level.** The protocol saves level *definitions*; the
+  levels are rebuilt on each run. `save_neighborhoods`/
   `load_neighborhoods` persist a `NeighborhoodSet` from a script.
 - **Parity.** No Java neighbourhood fixture exists (see `PORT_PLAN.md`
   M1/M2). The composition columns are simple enough to check by hand, and

@@ -64,9 +64,49 @@ one are still written as version 1, so earlier VTEA builds keep opening them.
 | C1 | `ContextGraph`, sparse aggregate/reflect operators, circularity rule | **done** |
 | C2 | Subcellular levels linked to cells; reflection cell → piece, and chained | **done** (in `build_context`) |
 | C3 | Neighbourhoods of neighbourhoods to any depth | **done**, with a fix to `NeighborhoodSet.membership()` (members that are themselves neighbourhoods now use `member_id` instead of colliding with `neighborhood_id`) |
-| C6 | Level definitions in the protocol's `context` section | **done** (save/load; the builder does not write it yet) |
-| C4 | The session holds the graph; every explorer table is a view of a level; `NeighborhoodResult` retired; the builder runs `build_context` after each run | next |
-| C5 | GUI: a context slider (Subcellular ▸ Cellular ▸ Neighbourhoods ▸ Neighbourhoods² …, "+" to define the next level) that switches every pane at once; hull outlines with pattern and colour; overlays of the gated neighbourhoods only; cross-level selection (select a neighbourhood and its cells and their pieces light up); a separate radius slider to preview a level being defined | after C4 |
+| C6 | Level definitions in the protocol's `context` section | **done**: the builder's Save… writes it and Open… restores it |
+| C4 | The session holds the graph, rebuilt from every builder run; each level is a table in the Object Explorer; the Neighborhoods pane and `NeighborhoodResult` are retired | **done** |
+| C5 | The Context pane: the level slider; defining the next level; hull outlines with pattern and colour; gated-only drawing; carrying a selection across levels; a radius preview | **done**; see "What was built" below |
+
+### What was built (C4, C5)
+
+- **Levels come from the run.** Every measured segmentation is a
+  subcellular level and every `build_cells` result a cellular one. With no
+  cells, each segmentation is the cellular level. Levels a person defines
+  are built on these and saved. A level whose source is missing after a
+  re-run (a renamed segmentation) is left out with its reason shown, and
+  the other levels are still built.
+- **Level tables in the explorer** appear once a level above the cells
+  exists. Before that, each would repeat a table the builder already
+  published.
+- **The Context pane** (Plugins → VTEA → Context, or the builder's Context
+  button):
+  - the slider runs through the levels, and the explorer's table follows
+    it (changing the table in the explorer moves the slider too);
+  - **Define neighbourhoods of this level** builds the next level from the
+    one showing. Class columns handed down from that rank or above are not
+    offered, since a level cannot be defined on its own type;
+  - the radius slider previews one neighbourhood at the chosen size (the
+    one nearest the middle of the field) and reports how many members
+    neighbourhoods get;
+  - **Display** sets the outline colour, fill pattern (none, solid, hatch,
+    cross-hatch, dots), fill colour and opacity, and whether to draw gated
+    neighbourhoods or all of them. All of it is saved with the definition;
+  - **Carry the gated selection** follows what is gated on the level being
+    left: up to the neighbourhoods those entities are in (drawn as
+    outlines), or down to their pieces (highlighted on the label image);
+  - **Remove this level** removes it and every level built on it.
+
+### Not done yet
+
+- **Hulls are per-slice 2D outlines.** A 3D view shows them as stacked
+  outlines, not a surface.
+- **Clicking an outline does not select its neighbourhood.** Selection
+  goes through the Object Explorer's gates.
+- **The context runs in memory only.** A blocked run's cells (a membership
+  table rather than `Cell` objects) cannot seed a cellular level yet.
+
+### C5 design notes
 
 ### C5 notes
 

@@ -9,7 +9,7 @@ child takes on its parents' characteristics, through any number of links).
 See docs/CONTEXTS.md.
 """
 
-from vtea_core.context.build import build_context
+from vtea_core.context.build import base_levels, build_context, with_base_levels
 from vtea_core.context.graph import (
     AGGREGATIONS,
     LINK_KINDS,
@@ -52,5 +52,7 @@ __all__ = [
     "LevelDisplay",
     "LevelSpec",
     "Link",
+    "base_levels",
     "build_context",
+    "with_base_levels",
 ]

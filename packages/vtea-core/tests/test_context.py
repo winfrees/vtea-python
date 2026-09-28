@@ -315,3 +315,106 @@ class TestInTheProtocol:
         assert "context" not in data
         assert data["vtea_protocol_version"] == 1
         assert not load_protocol(path).context
+
+
+class TestRelated:
+    def test_up_down_and_across(self):
+        graph = small_graph()
+        assert set(graph.related("lysosomes", [1], "nbhd")) == {10}
+        assert set(graph.related("nbhd", [20], "lysosomes")) == {3, 4}
+        assert set(graph.related("cells", [10], "cells")) == {10}
+
+    def test_across_branches_through_the_level_both_stand_on(self):
+        graph = small_graph()
+        graph.add_level(
+            Level("other", NEIGHBORHOOD, pd.DataFrame({"neighborhood_id": [7]}), "neighborhood_id", rank=2)
+        )
+        graph.link("cells", "other", pd.DataFrame({"child": [20], "parent": [7]}), MEMBER_OF)
+        assert set(graph.related("other", [7], "nbhd")) == {10, 20}
+
+
+class TestBaseLevels:
+    def test_with_cells_segmentations_are_pieces(self):
+        from vtea_core.context import base_levels
+
+        levels = base_levels({"nuclei": None, "lysosomes": None}, {"cells": CellSet()})
+        assert [(level.name, level.tier) for level in levels] == [
+            ("nuclei", SUBCELLULAR), ("lysosomes", SUBCELLULAR), ("cells", CELLULAR)
+        ]
+
+    def test_without_cells_objects_are_the_cellular_level(self):
+        from vtea_core.context import base_levels
+
+        assert [level.tier for level in base_levels({"nuclei": None})] == [CELLULAR]
+
+    def test_defined_levels_come_after_the_base(self):
+        from vtea_core.context import with_base_levels
+
+        spec = ContextSpec([LevelSpec("nuclei", SUBCELLULAR, "nuclei")])
+        merged = with_base_levels(spec, [LevelSpec("cells", CELLULAR, "c"), LevelSpec("nuclei", SUBCELLULAR, "nuclei")])
+        assert [level.name for level in merged] == ["cells", "nuclei"]
+
+    def test_skip_leaves_out_what_cannot_be_built_and_what_stands_on_it(self):
+        nuclei, _lysosomes, _cells = two_halves()
+        spec = ContextSpec(
+            [
+                LevelSpec("nuclei", CELLULAR, "nuclei"),
+                LevelSpec("ghost", SUBCELLULAR, "gone"),
+                LevelSpec("n", NEIGHBORHOOD, "ghost", build={"radius": 10.0}),
+            ]
+        )
+        graph = build_context(spec, measurement_tables={"nuclei": nuclei}, on_error="skip")
+        assert list(graph.levels) == ["nuclei"]
+        assert set(graph.errors) == {"ghost", "n"}
+
+
+class TestGeometry:
+    def test_a_padded_hull_encloses_its_points(self):
+        from vtea_core.context.geometry import contains, hull_polygon
+
+        points = np.array([[0, 0], [0, 10], [10, 0], [10, 10], [5, 5]])
+        polygon = hull_polygon(points, pad=2)
+        assert contains(polygon, points).all()
+        assert polygon.min() == pytest.approx(-2, abs=0.1)
+
+    def test_one_point_is_a_disc(self):
+        from vtea_core.context.geometry import hull_polygon
+
+        polygon = hull_polygon(np.array([[5.0, 5.0]]), pad=3)
+        np.testing.assert_allclose(np.linalg.norm(polygon - 5, axis=1), 3, atol=1e-9)
+
+    def test_patterns_stay_inside(self):
+        from vtea_core.context.geometry import contains, hull_polygon, pattern_for
+
+        polygon = hull_polygon(np.array([[0, 0], [0, 20], [20, 0], [20, 20]]), pad=1)
+        kind, segments = pattern_for(polygon, "crosshatch", 3)
+        assert kind == "lines" and len(segments) > 10
+        ends = np.vstack(segments)
+        grown = hull_polygon(polygon, pad=0.5)
+        assert contains(grown, ends).all()
+        kind, dots = pattern_for(polygon, "dots", 3)
+        assert kind == "points" and contains(polygon, dots).all()
+        assert pattern_for(polygon, "solid", 3) == (None, None)
+
+    def test_outlines_of_gated_neighbourhoods_on_every_slice_they_span(self):
+        from vtea_core.context.geometry import level_outlines
+
+        table = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3],
+                "centroid-0": [2.0, 4.0, 30.0],
+                "centroid-1": [0.0, 5.0, 100.0],
+                "centroid-2": [0.0, 5.0, 100.0],
+            }
+        )
+        spec = ContextSpec(
+            [
+                LevelSpec("nuclei", CELLULAR, "nuclei"),
+                LevelSpec("n", NEIGHBORHOOD, "nuclei", build={"radius": 10.0}),
+            ]
+        )
+        graph = build_context(spec, measurement_tables={"nuclei": table})
+        outlines = level_outlines(graph, "n", ids=[1])
+        assert {entity for entity, _z, _polygon in outlines} == {1}
+        assert sorted(z for _entity, z, _polygon in outlines) == [2, 3, 4]
+        assert level_outlines(graph, "nuclei") == []

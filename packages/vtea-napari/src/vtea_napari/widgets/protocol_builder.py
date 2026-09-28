@@ -448,7 +448,7 @@ class ProtocolBuilderWidget(QWidget):
         # id, an ROI, or any boolean combination of them - which is what a
         # class is. See vtea_core.classes.
         "classes",
-        # Not "neighborhoods": the Neighborhoods pane is where they are built,
+        # Not "neighborhoods": the Context pane is where they are built,
         # and offering the same four steps here as well was confusing. The
         # steps stay registered in vtea_core, so a script can still run them,
         # a saved protocol that carries them still opens and runs, and the
@@ -605,13 +605,13 @@ class ProtocolBuilderWidget(QWidget):
         self.explorer_button.setToolTip("Open the plot and gate manager for these results")
         self.explorer_button.clicked.connect(self.open_object_explorer)
         top_row.addWidget(self.explorer_button)
-        self.neighborhoods_button = QPushButton("Neighborhoods")
-        self.neighborhoods_button.setToolTip(
-            "Build neighbourhoods from these results - a second level of objects, made of "
-            "the objects - and see both on this viewer"
+        self.context_button = QPushButton("Context")
+        self.context_button.setToolTip(
+            "Move between levels - pieces of cells, cells, neighbourhoods of them - and "
+            "define the next level up"
         )
-        self.neighborhoods_button.clicked.connect(self.open_neighborhoods)
-        top_row.addWidget(self.neighborhoods_button)
+        self.context_button.clicked.connect(self.open_context)
+        top_row.addWidget(self.context_button)
 
         root.addLayout(top_row)
 
@@ -1502,7 +1502,7 @@ class ProtocolBuilderWidget(QWidget):
             return
         for column, mask in self.session.gate_columns(frame).items():
             frame[column] = mask
-        # Not the columns the Neighborhoods pane reflected onto the objects:
+        # Not columns a context level handed down to the objects:
         # a clustering with no feature selection uses every numeric column,
         # and its input changing because a pane was used would be invisible.
         # A protocol that wants them carries the neighbourhood steps itself.
@@ -1975,6 +1975,7 @@ class ProtocolBuilderWidget(QWidget):
             spacing=self.spacing_control.spacing(),
             measure_every_segmentation=self.measure_all_check.isChecked(),
             gates=self.session.gates_by_table() if include_gates else {},
+            context=self.session.context_spec,
             source={}
             if layer is None
             else describe_source(
@@ -2012,6 +2013,7 @@ class ProtocolBuilderWidget(QWidget):
         self.blocked_ledgers = {}
         self._computed_signatures.clear()
         self.session.clear_results()
+        self.session.context_spec = protocol.context
         self.session.restore_gates(protocol.gates)
         self.refresh_steps()
 
@@ -2108,22 +2110,22 @@ class ProtocolBuilderWidget(QWidget):
         self.viewer.window.add_dock_widget(explorer, name="Object Explorer", area="right")
         return explorer
 
-    def open_neighborhoods(self):
-        """Open (or raise) the Neighborhoods pane on the same session."""
+    def open_context(self):
+        """Open (or raise) the Context pane on the same session."""
         if self.viewer is None:
-            self.status_label.setText("The Neighborhoods pane needs a napari viewer.")
+            self.status_label.setText("The Context pane needs a napari viewer.")
             return None
-        from vtea_napari.widgets.neighborhoods import NeighborhoodWidget
+        from vtea_napari.widgets.context import ContextWidget
 
         for widget in QApplication.topLevelWidgets():
-            for existing in widget.findChildren(NeighborhoodWidget):
+            for existing in widget.findChildren(ContextWidget):
                 if existing.session is self.session:
                     existing.show()
                     existing.raise_()
                     return existing
 
-        pane = NeighborhoodWidget(napari_viewer=self.viewer, session=self.session)
-        self.viewer.window.add_dock_widget(pane, name="Neighborhoods", area="right")
+        pane = ContextWidget(napari_viewer=self.viewer, session=self.session)
+        self.viewer.window.add_dock_widget(pane, name="Context", area="right")
         return pane
 
     def _publish_results(self) -> None:
@@ -2143,7 +2145,42 @@ class ProtocolBuilderWidget(QWidget):
             self.last_context,
             self.results_table(),
             {**self.measurement_tables(), **self.cell_tables(), **self.neighborhood_tables()},
+            context_inputs=self.context_inputs(),
         )
+
+    def _resolve_key(self, key: str) -> str:
+        """A step's input as the *name* of the step it reads - a shared key
+        ("labels", "cells") means whichever step last wrote it."""
+        if not key or key in self.step_names():
+            return key
+        producers = [step.name for step in self.all_steps() if step.output_key == key and step.name]
+        return producers[-1] if producers else key
+
+    def context_inputs(self) -> dict:
+        """What the context levels are built from: one measurement table per
+        segmentation (keyed by the segmentation's step name, which is what a
+        saved level definition names), the cells of every build_cells step,
+        and the per-cell table made from each."""
+        measurement_tables = {}
+        cells = {}
+        cell_tables = {}
+        for step in self.all_steps():
+            result = self.last_context.get(step.name) if step.name else None
+            if step.output_key == "measurements" and isinstance(result, pd.DataFrame):
+                segmentation = self._resolve_key(self._segmentation_measured_by(step))
+                if segmentation and not result.empty:
+                    measurement_tables[segmentation] = result
+            elif step.output_key == "cells" and isinstance(result, CellCollection):
+                cells[step.name] = result
+            elif step.output_key == "cell_table" and isinstance(result, pd.DataFrame):
+                source = self._resolve_key(step.input_keys.get("cells", ""))
+                if source:
+                    cell_tables[source] = result
+        return {
+            "measurement_tables": measurement_tables,
+            "cells": cells,
+            "cell_tables": cell_tables,
+        }
 
     def measurement_ledger(self):
         """The seam ledger behind the published measurement table, if any.
