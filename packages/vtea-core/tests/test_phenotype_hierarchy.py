@@ -68,6 +68,7 @@ def test_counts_report_overlaps(tree, frame):
     assert c.loc["T cell", "% of parent"] == pytest.approx(60.0)
     assert c.loc["CD4 T", "count"] == 1 and c.loc["CD4 T", "overlap"] == 1
     assert c.loc["CD8 T", "overlap"] == 0
+    assert c.loc["Other immune", "overlap"] == 0  # "the rest of the parent": not an overlap
 
 
 def test_rules_can_use_clusters_gates_and_backticks(frame):

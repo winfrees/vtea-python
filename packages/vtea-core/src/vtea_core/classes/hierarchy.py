@@ -215,8 +215,9 @@ class PhenotypeTree:
 
     def counts(self, frame: pd.DataFrame) -> pd.DataFrame:
         """One row per phenotype: depth, count, % of its parent and of all
-        objects, and how many of its objects also satisfy an earlier sibling
-        ("overlap", resolved to that sibling in `assign`)."""
+        objects, and how many objects its rule also matches that an earlier
+        sibling claimed ("overlap", resolved to that sibling in `assign`; 0 for a
+        rule-less "rest of the parent" phenotype)."""
         rows = []
         total = len(frame)
         for node in self:
@@ -230,7 +231,9 @@ class PhenotypeTree:
                 "path": self.path(node.name), "rule": node.rule, "count": n,
                 "% of parent": 100.0 * n / parent_n if parent_n else 0.0,
                 "% of all": 100.0 * n / total if total else 0.0,
-                "overlap": int((inclusive & ~exclusive).sum()),
+                # A rule-less phenotype is "the rest of its parent": overlapping its
+                # earlier siblings is its definition, not a problem to report.
+                "overlap": int((inclusive & ~exclusive).sum()) if node.rule.strip() else 0,
             })
         return pd.DataFrame(rows, columns=["phenotype", "parent", "depth", "path", "rule", "count",
                                            "% of parent", "% of all", "overlap"])
