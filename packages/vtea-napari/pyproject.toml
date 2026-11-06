@@ -20,7 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt5]", "ruff>=0.16,<0.17"]
+# napari 0.10 dropped its pyqt5 extra (it needs Qt 6.7+), so the tests install PyQt6.
+dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt6]", "ruff>=0.16,<0.17"]
 standalone = ["napari[pyqt5]", "pyinstaller>=6.0"]
 
 [project.scripts]

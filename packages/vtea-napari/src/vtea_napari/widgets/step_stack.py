@@ -179,6 +179,11 @@ class StepStackWidget(QWidget):
             item = self._steps_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                # Detach now: deleteLater only runs when Qt next processes deferred
+                # deletes, and until then the old card is still a child of this
+                # widget (findChildren sees it, and with PyQt6 that outlives the
+                # refresh).
+                widget.setParent(None)
                 widget.deleteLater()
 
         self._cards.clear()
