@@ -6,7 +6,8 @@ needs is the rule - a range of a feature, a cluster id, a napari ROI, a
 gate, or any boolean combination of them - written down so it re-runs on the
 next acquisition. See steps.py for the protocol steps, expression.py for the
 little language a rule is written in, and labelset.py for the sets those
-labels are grouped into and the hierarchies they combine into.
+labels are grouped into and the hierarchies they combine into, and hierarchy.py
+for phenotype trees (cell types defined coarse-to-fine, each within its parent).
 """
 
 from vtea_core.classes.expression import (
@@ -15,6 +16,12 @@ from vtea_core.classes.expression import (
     evaluate,
     parse,
     referenced_columns,
+)
+from vtea_core.classes.hierarchy import (
+    Phenotype,
+    PhenotypeTree,
+    load_phenotypes,
+    save_phenotypes,
 )
 from vtea_core.classes.labelset import (
     COMBINE_MODES,
@@ -50,6 +57,8 @@ __all__ = [
     "LabelSet",
     "LabelSetCollection",
     "ObjectLabel",
+    "Phenotype",
+    "PhenotypeTree",
     "class_columns",
     "class_from_expression",
     "class_from_range",
@@ -59,6 +68,8 @@ __all__ = [
     "evaluate",
     "label_image",
     "label_set",
+    "load_phenotypes",
     "parse",
     "referenced_columns",
+    "save_phenotypes",
 ]
