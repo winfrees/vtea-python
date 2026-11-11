@@ -153,3 +153,52 @@ class TestReferencedColumns:
         table = a_table()
         wanted = referenced_columns("gate_high AND missing_feature")
         assert wanted - set(table.columns) == {"missing_feature"}
+
+
+class TestQuotedColumnNames:
+    def test_single_and_double_quotes_name_a_column_where_one_is_expected(self):
+        table = a_table()
+        expected = list(evaluate("`cell type` == 'T' AND kmeans_1 == 3", table))
+        assert list(evaluate("'cell type' == 'T' AND kmeans_1 == 3", table)) == expected
+        assert list(evaluate('"cell type" == "T" AND kmeans_1 == 3', table)) == expected
+
+    def test_after_a_comparison_a_quoted_text_is_still_a_value(self):
+        assert list(evaluate("'cell type' == 'T'", a_table())) == [True, False, True, False, True]
+
+    def test_quoted_names_in_a_range_and_with_symbols(self):
+        table = a_table()
+        assert list(evaluate("50 <= 'mean_ch2' <= 150 & 'gate_high'", table)) == [False, True, True, False, False]
+
+    def test_referenced_columns_unquotes_them(self):
+        assert referenced_columns("'cell type' == 'T' | `gate_high`") == {"cell type", "gate_high"}
+
+
+class TestHelpfulErrors:
+    def test_a_name_with_spaces_left_unquoted_says_how_to_write_it(self):
+        with pytest.raises(ExpressionError, match="backticks or quotes, e.g. `Clustering 1 cluster`"):
+            evaluate("Clustering 1 cluster == 2", a_table())
+
+    def test_a_name_with_a_symbol_left_unquoted_says_how_to_write_it(self):
+        with pytest.raises(ExpressionError, match="backticks or quotes, e.g. `CD3\\+`"):
+            evaluate("CD3+ AND gate_high", a_table())
+
+    def test_an_unknown_column_suggests_the_closest(self):
+        with pytest.raises(ExpressionError, match="did you mean `mean_ch2`"):
+            evaluate("mean_ch3 > 5", a_table())
+
+
+class TestRenameColumns:
+    def test_columns_are_renamed_and_quoted_values_left_alone(self):
+        from vtea_core.classes import rename_columns
+
+        rule = "'old name' == 'old name' AND gate_high"
+        assert rename_columns(rule, {"old name": "new: name", "gate_high": "gate_low"}) == \
+            "`new: name` == 'old name' AND gate_low"
+
+    def test_where_columns_are(self):
+        from vtea_core.classes import column_references
+
+        rule = "50 <= `mean ch2` <= 150 & roi"
+        refs = column_references(rule)
+        assert [name for name, _, _ in refs] == ["mean ch2", "roi"]
+        assert [rule[a:b] for _, a, b in refs] == ["`mean ch2`", "roi"]
