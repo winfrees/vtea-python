@@ -298,5 +298,26 @@ backend is installed, because the import that would fail is inside the
 function. Picking UMAP without umap-learn therefore fails with the command
 to install it, rather than the step quietly not being there and the user
 concluding VTEA has no UMAP. Louvain falls back to `networkx` where igraph
-is missing, and Leiden to python-igraph's own implementation where
-`leidenalg` is.
+is missing. Leiden runs on python-igraph's own implementation by default and
+on `leidenalg` with `implementation="leidenalg"` (or where python-igraph has
+none). `openTSNE` (`pip install "vtea-core[opentsne]"`) is the faster t-SNE,
+`tsne(method="opentsne")`.
+
+## Speed of clustering and maps
+
+Measured on 50,000 objects x 20 features, 4 cores:
+
+| Step | Time | How |
+|---|---|---|
+| Neighbour search (`nearest_neighbors`) | 1.7 s | exact, every core (`n_jobs=-1`) |
+| Leiden, igraph (default) | 1.0 s | C implementation |
+| Leiden, `implementation="leidenalg"` | 14 s | the reference; the same objective and partitions |
+| UMAP, `random_state=0` | 25-46 s | umap-learn runs on one core when seeded |
+| UMAP, `random_state=None` | 8-10 s | every core (`n_jobs`), layout varies a little |
+| t-SNE, scikit-learn (20,000 objects) | 50 s | |
+| t-SNE, `method="opentsne"` (20,000 objects) | 30 s | every core |
+
+When several steps run on the same matrix (Leiden and UMAP, say), search the
+neighbours once and pass them on: `knn = nearest_neighbors(x)`, then
+`leiden(x, knn=knn)` and `umap(x, knn=knn)`. The data must be normalised the
+same way for all of them (normalise first, then pass `normalize="none"`).
