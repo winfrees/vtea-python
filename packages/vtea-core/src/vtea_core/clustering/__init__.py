@@ -15,7 +15,7 @@ features, and its top markers), which is what a cluster is named from.
 """
 
 from vtea_core.clustering.clustering import auto_k_kmeans, gaussian_mixture, hierarchical, kmeans
-from vtea_core.clustering.graph import leiden, louvain, shared_neighbor_graph
+from vtea_core.clustering.graph import leiden, louvain, nearest_neighbors, shared_neighbor_graph
 from vtea_core.clustering.profiles import cluster_profiles, describe_clusters, top_markers
 
 __all__ = [
@@ -27,6 +27,7 @@ __all__ = [
     "kmeans",
     "leiden",
     "louvain",
+    "nearest_neighbors",
     "shared_neighbor_graph",
     "top_markers",
 ]

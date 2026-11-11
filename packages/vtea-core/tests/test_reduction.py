@@ -58,7 +58,56 @@ class TestTSNE:
         np.testing.assert_array_equal(a, b)
 
 
+class TestTSNEMethods:
+    def test_opentsne_gives_an_embedding_and_is_reproducible(self):
+        pytest.importorskip("openTSNE")
+        data = make_correlated_data(n=60)
+        a = tsne(data, perplexity=5, random_state=0, method="opentsne")
+        b = tsne(data, perplexity=5, random_state=0, method="opentsne")
+        assert a.shape == (60, 2)
+        np.testing.assert_allclose(a, b)
+
+    def test_an_unknown_method_is_rejected(self):
+        with pytest.raises(ValueError, match="method"):
+            tsne(make_correlated_data(n=30), perplexity=5, method="fast")
+
+
 class TestUMAP:
+    def test_unseeded_runs_on_every_core(self):
+        pytest.importorskip("umap")
+        data = make_correlated_data(n=40)
+        embedding = umap_projection(data, n_neighbors=5, random_state=None, n_jobs=-1)
+        assert embedding.shape == (40, 2) and np.isfinite(embedding).all()
+
+    def test_a_shared_neighbour_search_gives_as_good_a_map(self):
+        """UMAP from a neighbour search made once (and shared with graph
+        clustering) keeps neighbourhoods as well as UMAP searching for
+        itself, and a seeded run of it is still reproducible. (Not the same
+        map: UMAP's own search draws on the random state first.)"""
+        pytest.importorskip("umap")
+        from sklearn.manifold import trustworthiness
+
+        from vtea_core.clustering import nearest_neighbors
+
+        rng = np.random.default_rng(3)
+        centres = rng.normal(0, 4, size=(4, 6))
+        data = centres[rng.integers(0, 4, 300)] + rng.normal(size=(300, 6))
+        knn = nearest_neighbors(data, n_neighbors=15)
+        own = umap_projection(data, random_state=0)
+        shared = umap_projection(data, random_state=0, knn=knn)
+        np.testing.assert_allclose(shared, umap_projection(data, random_state=0, knn=knn))
+        assert abs(trustworthiness(data, own, n_neighbors=10) - trustworthiness(data, shared, n_neighbors=10)) < 0.02
+
+    def test_a_knn_of_the_wrong_size_is_rejected(self):
+        pytest.importorskip("umap")
+        from vtea_core.clustering import nearest_neighbors
+
+        data = np.random.default_rng(3).normal(size=(40, 3))
+        with pytest.raises(ValueError, match="neighbours"):
+            umap_projection(data, n_neighbors=10, knn=nearest_neighbors(data, n_neighbors=4))
+        with pytest.raises(ValueError, match="rows"):
+            umap_projection(data, n_neighbors=5, knn=nearest_neighbors(data[:30], n_neighbors=5))
+
     def test_output_shape(self):
         umap = pytest.importorskip("umap")  # noqa: F841 - umap-learn is optional
         data = make_correlated_data(n=30)

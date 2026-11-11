@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from sklearn.metrics import adjusted_rand_score
 
-from vtea_core.clustering import leiden, louvain, shared_neighbor_graph
+from vtea_core.clustering import leiden, louvain, nearest_neighbors, shared_neighbor_graph
 from vtea_core.clustering.graph import _relabel_by_size
 
 igraph = pytest.importorskip("igraph")
@@ -100,6 +100,57 @@ class TestLeiden:
         first = leiden(data, random_state=7)
         second = leiden(data, random_state=7)
         np.testing.assert_array_equal(first, second)
+
+
+class TestNearestNeighbors:
+    def test_each_object_is_left_out_of_its_own_neighbours(self):
+        data, _ = make_three_blobs(n=10)
+        indices, distances = nearest_neighbors(data, n_neighbors=5)
+        assert indices.shape == distances.shape == (30, 5)
+        assert not (indices == np.arange(30)[:, None]).any()
+        assert (np.diff(distances, axis=1) >= 0).all()
+
+    def test_a_shared_search_gives_the_same_graph(self):
+        """The search made once and handed over is the graph the function
+        would have built itself - what lets UMAP and Leiden share one."""
+        data, _ = make_three_blobs()
+        own = shared_neighbor_graph(data, n_neighbors=8)
+        shared = shared_neighbor_graph(data, n_neighbors=8, knn=nearest_neighbors(data, n_neighbors=12))
+        np.testing.assert_array_equal(own[0], shared[0])
+        np.testing.assert_allclose(own[1], shared[1])
+
+    def test_a_search_of_other_objects_is_rejected(self):
+        data, _ = make_three_blobs(n=10)
+        with pytest.raises(ValueError, match="rows"):
+            shared_neighbor_graph(data, knn=nearest_neighbors(data[:20], n_neighbors=5))
+
+
+class TestLeidenImplementations:
+    def test_igraph_and_leidenalg_find_the_same_communities(self):
+        pytest.importorskip("leidenalg")
+        data, true_labels = make_three_blobs()
+        fast = leiden(data, random_state=0, implementation="igraph")
+        reference = leiden(data, random_state=0, implementation="leidenalg")
+        assert adjusted_rand_score(fast, reference) == 1.0
+        assert adjusted_rand_score(true_labels, fast) > 0.95
+
+    def test_both_are_deterministic_for_a_fixed_seed(self):
+        pytest.importorskip("leidenalg")
+        data, _ = make_three_blobs()
+        for implementation in ("igraph", "leidenalg"):
+            first = leiden(data, random_state=3, implementation=implementation)
+            np.testing.assert_array_equal(first, leiden(data, random_state=3, implementation=implementation))
+
+    def test_a_shared_search_gives_the_same_clusters(self):
+        data, _ = make_three_blobs()
+        knn = nearest_neighbors(data, n_neighbors=15)
+        np.testing.assert_array_equal(leiden(data, random_state=0), leiden(data, random_state=0, knn=knn))
+        np.testing.assert_array_equal(louvain(data, random_state=0), louvain(data, random_state=0, knn=knn))
+
+    def test_an_unknown_implementation_is_rejected(self):
+        data, _ = make_three_blobs(n=5)
+        with pytest.raises(ValueError, match="implementation"):
+            leiden(data, implementation="fast")
 
 
 class TestRelabelBySize:
