@@ -13,9 +13,12 @@ for phenotype trees (cell types defined coarse-to-fine, each within its parent).
 from vtea_core.classes.expression import (
     BOOLEAN_OPERATORS,
     ExpressionError,
+    column_references,
     evaluate,
     parse,
+    quote_column,
     referenced_columns,
+    rename_columns,
 )
 from vtea_core.classes.hierarchy import (
     Phenotype,
@@ -63,6 +66,7 @@ __all__ = [
     "class_from_expression",
     "class_from_range",
     "class_from_values",
+    "column_references",
     "combine_label_sets",
     "combine_labels",
     "evaluate",
@@ -70,6 +74,8 @@ __all__ = [
     "label_set",
     "load_phenotypes",
     "parse",
+    "quote_column",
     "referenced_columns",
+    "rename_columns",
     "save_phenotypes",
 ]

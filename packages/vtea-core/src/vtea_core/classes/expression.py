@@ -29,7 +29,9 @@ tighter than `OR` (as everywhere else), and parentheses to override that.
 A bare column is true where it is true (a boolean column) or non-zero (a
 numeric one), so `gate_high AND kmeans_1 == 3` reads the way it looks.
 Column names that are not identifiers - `nuclei_1.mean_ch0` is, `mean ch0`
-is not - can be written in backticks.
+is not - can be written in backticks, or in single or double quotes where a
+column is expected (`'mean ch0' > 5`); after a comparison a quoted text is a
+value (`phenotype == 'T cell'`).
 """
 
 from __future__ import annotations
@@ -106,8 +108,16 @@ def tokenize(expression: str) -> list[Token]:
             continue
         match = _TOKEN_PATTERN.match(expression, position)
         if match is None or match.end() == position:
+            hint = ""
+            if tokens and tokens[-1].kind == "name" and tokens[-1].position + len(tokens[-1].text) == position:
+                # `CD3+`: a symbol inside a name.
+                end = position
+                while end < len(expression) and not expression[end].isspace():
+                    end += 1
+                hint = (f"; a column name with symbols goes in backticks or quotes, "
+                        f"e.g. `{tokens[-1].text}{expression[position:end]}`")
             raise ExpressionError(
-                f"cannot read {expression[position]!r} at position {position} of {expression!r}"
+                f"cannot read {expression[position]!r} at position {position} of {expression!r}{hint}"
             )
         kind = match.lastgroup
         text = match.group(kind)
@@ -199,10 +209,20 @@ class BinaryOperation:
 
 def _column(frame: pd.DataFrame, name: str) -> pd.Series:
     if name not in frame.columns:
-        raise ExpressionError(
-            f"no column {name!r} in the table (columns: {', '.join(map(str, frame.columns))})"
-        )
+        raise ExpressionError(f"no column {name!r} in the table" + _suggest(name, frame.columns))
     return frame[name]
+
+
+def _suggest(name: str, columns) -> str:
+    """'; did you mean ...?' with the closest column names, if any are close."""
+    import difflib
+
+    names = [str(c) for c in columns]
+    close = difflib.get_close_matches(name, names, n=3, cutoff=0.6)
+    if not close:
+        lowered = name.lower()
+        close = [c for c in names if lowered in c.lower()][:3]
+    return f"; did you mean {', '.join(f'`{c}`' for c in close)}?" if close else ""
 
 
 def _truth(values: pd.Series) -> np.ndarray:
@@ -227,6 +247,7 @@ class _Parser:
         self.tokens = tokens
         self.expression = expression
         self.position = 0
+        self.column_tokens: list[Token] = []  # the tokens read as column names, in order
 
     # -- token helpers ----------------------------------------------------
 
@@ -258,8 +279,19 @@ class _Parser:
         node = self.parse_binary(0)
         if self.peek() is not None:
             token = self.peek()
+            hint = ""
+            before = self.tokens[self.position - 1] if self.position else None
+            if before is not None and before.kind == "name" and token.kind in ("name", "number"):
+                # `Clustering 1 cluster == 2`: a name with spaces, unquoted.
+                words = [before.text]
+                for later in self.tokens[self.position:]:
+                    if later.kind not in ("name", "number") or self._keyword(later):
+                        break
+                    words.append(later.text)
+                hint = (f"; a column name with spaces goes in backticks or quotes, "
+                        f"e.g. `{' '.join(words)}`")
             raise ExpressionError(
-                f"unexpected {token.text!r} at position {token.position} of {self.expression!r}"
+                f"unexpected {token.text!r} at position {token.position} of {self.expression!r}{hint}"
             )
         return node
 
@@ -291,7 +323,9 @@ class _Parser:
         if token.kind == "number":
             # Only meaningful as the low end of `50 <= x <= 150`.
             return self.parse_leading_range(float(token.text))
-        if token.kind in ("name", "backticked"):
+        if token.kind in ("name", "backticked", "string"):
+            # A quoted text where a column is expected names a column.
+            self.column_tokens.append(token)
             return self.parse_column(_column_name(token))
         raise ExpressionError(
             f"expected a column or '(' at position {token.position} of {self.expression!r}, "
@@ -306,8 +340,9 @@ class _Parser:
                 f"a number can only start a range ('50 <= x <= 150') in {self.expression!r}"
             )
         column = self.next()
-        if column.kind not in ("name", "backticked"):
+        if column.kind not in ("name", "backticked", "string"):
             raise ExpressionError(f"expected a column name in the range in {self.expression!r}")
+        self.column_tokens.append(column)
         second = self.next()
         if second.kind != "comparison" or second.text not in ("<", "<="):
             raise ExpressionError(
@@ -388,7 +423,42 @@ class _Parser:
 
 
 def _column_name(token: Token) -> str:
-    return token.text[1:-1] if token.kind == "backticked" else token.text
+    return token.text[1:-1] if token.kind in ("backticked", "string") else token.text
+
+
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+
+
+def quote_column(name: str) -> str:
+    """A column as it is written in a definition: bare when it is a plain
+    identifier that is not an operator word, else in backticks."""
+    plain = _IDENTIFIER.fullmatch(name) and name.upper() not in {*_PRECEDENCE, "NOT", "IN"}
+    return name if plain else f"`{name}`"
+
+
+def column_references(expression: str) -> list[tuple[str, int, int]]:
+    """Each column the definition reads, as (name, start, end) - its place in
+    the text, quotes included - in order. For rewriting a definition's
+    columns without touching anything else in it."""
+    parser = _Parser(tokenize(expression), expression)
+    if not expression or not expression.strip():
+        raise ExpressionError("an empty class definition selects nothing; write a condition")
+    parser.parse()
+    return [(_column_name(t), t.position, t.position + len(t.text)) for t in parser.column_tokens]
+
+
+def rename_columns(expression: str, mapping: dict[str, str]) -> str:
+    """The definition with the columns named in `mapping` renamed (and quoted
+    as needed). Values - `phenotype == 'T cell'` - are left alone, as is any
+    text that only looks like a column name."""
+    out, last = [], 0
+    for name, start, end in column_references(expression):
+        if name in mapping:
+            out.append(expression[last:start])
+            out.append(quote_column(mapping[name]))
+            last = end
+    out.append(expression[last:])
+    return "".join(out)
 
 
 def parse(expression: str):
