@@ -125,6 +125,9 @@ jobs:
 
       - name: Self-test - the packaged build resolves its plugins and reads an image
         shell: bash
+        # A packaged app that waits for something (an error dialog on Windows)
+        # must fail the job, not hold the runner for GitHub's 6-hour limit.
+        timeout-minutes: 10
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
@@ -138,6 +141,7 @@ jobs:
 
       - name: Smoke test - the binary launches without error
         shell: python
+        timeout-minutes: 10
         env:
           QT_QPA_PLATFORM: offscreen
         run: |

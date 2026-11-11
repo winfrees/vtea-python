@@ -206,7 +206,17 @@ def main(argv: list[str] | None = None) -> int:
     activate_external_torch()
 
     if "--self-test" in argv:
-        return self_test()
+        # Report an error, never raise it: a windowed (console=False) Windows
+        # build shows an unhandled exception in a message box and waits for a
+        # click, so on a CI runner the self-test hung until the job was
+        # cancelled hours later instead of failing.
+        try:
+            return self_test()
+        except BaseException:  # noqa: BLE001 - the verdict travels by exit code
+            import traceback
+
+            _emit("self-test failed with an error:\n" + traceback.format_exc())
+            return 1
 
     import napari
 

@@ -12,6 +12,8 @@
 
 import sys
 
+import importlib.util
+
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 datas = []
@@ -60,7 +62,15 @@ for package in (
     "npe2",
     "vtea_napari",
     "vtea_core",
+    # napari's logos and fonts, a separate distribution (napari-resources) since
+    # napari 0.7. napari_resources finds them with
+    # importlib.resources.files("napari_resources.resources.logos") - a string
+    # PyInstaller's analysis cannot follow - so without collecting it the build
+    # dies at startup with "No module named 'napari_resources.resources'".
+    "napari_resources",
 ):
+    if importlib.util.find_spec(package) is None:
+        continue  # e.g. napari_resources with a napari older than 0.7
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries

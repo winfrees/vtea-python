@@ -20,9 +20,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# napari 0.10 dropped its pyqt5 extra (it needs Qt 6.7+), so the tests install PyQt6.
+# napari 0.10 dropped its pyqt5 extra (it needs Qt 6.7+): napari[pyqt5] installs napari
+# with no Qt at all (pip only warns), so the tests and the standalone build use PyQt6.
 dev = ["pytest>=8.0", "pytest-qt", "napari[pyqt6]", "ruff>=0.16,<0.17"]
-standalone = ["napari[pyqt5]", "pyinstaller>=6.0"]
+standalone = ["napari[pyqt6]", "pyinstaller>=6.0"]
 
 [project.scripts]
 vtea-napari = "vtea_napari.app:main"
