@@ -7,9 +7,12 @@ name: Build standalone runtime
 # Versioning is internal to this workflow, not something a human has to
 # assign per release: the `version` job below reads the highest existing
 # `vMAJOR.MINOR.PATCH` git tag and bumps the patch number (v0.1.4 ->
-# v0.1.5; v0.1.0 if no tag exists yet), then creates and pushes that tag
-# itself. Pushing a `v*` tag by hand still works and is used verbatim
-# (skips the auto-bump) - useful for a deliberate major/minor bump.
+# v0.1.5; v0.1.0 if no tag exists yet). The tag is created and pushed by the
+# `release` job at the end, and only when every build and its tests passed -
+# a failed run leaves no tag (and no half-filled release) behind, and the
+# next run reuses the number. Pushing a `v*` tag by hand still works and is
+# used verbatim (skips the auto-bump) - useful for a deliberate major/minor
+# bump; its release is published the same way, once every build passed.
 #
 # Runs on every push to main (continuous delivery - each merge becomes a
 # release) and on-demand via workflow_dispatch; `concurrency` below
@@ -60,11 +63,7 @@ jobs:
           fi
           echo "Resolved next version: $next (latest existing: ${latest:-none})"
           echo "tag=$next" >> "$GITHUB_OUTPUT"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$next"
-          git push origin "$next"
+          # Not tagged here: the `release` job tags only once every build passed.
 
   build:
     needs: version
@@ -103,6 +102,17 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Qt's system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # PyQt6 (unlike PyQt5) loads the system's libEGL; GitHub's Ubuntu
+          # runners do not have it, and PyInstaller rightly does not bundle
+          # system graphics libraries (a Linux desktop has them). Without it
+          # the self-test fails with "libEGL.so.1: cannot open shared object
+          # file" when the widgets import QtGui.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libfontconfig1 libdbus-1-3
+
       - name: Install vtea-core and vtea-napari (standalone extra)
         run: |
           pip install -e "packages/vtea-core"
@@ -116,7 +126,13 @@ jobs:
           # CUDA build, which makes a 4.9 GB bundle - over the 2 GiB cap on
           # a release asset - and cannot be stripped back down to CPU. The
           # spec hard-fails on a CUDA torch rather than building it.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          #
+          # torchvision comes from the same CPU index, installed with torch:
+          # left to `pip install cellpose`, it came from PyPI, whose Linux
+          # torchvision is built against the CUDA torch, so its compiled ops
+          # did not load with the CPU one ("operator torchvision::nms does not
+          # exist" when the self-test imported Cellpose).
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install cellpose
 
       - name: Build
@@ -228,8 +244,49 @@ jobs:
           name: ${{ matrix.asset_name }}
           path: ${{ matrix.asset_name }}.7z
 
-      - name: Publish to GitHub Release
+  # Tag and publish only after every build (and its self-test and smoke test)
+  # passed. `needs: build` waits for the whole matrix; with the default
+  # success() condition a single failed or cancelled build skips this job, so
+  # nothing is tagged or published and the version number is used again next
+  # time.
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the existing tags, to see whether this one exists
+
+      - name: Download the four bundles
+        uses: actions/download-artifact@v6
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create and push the version tag
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ls -l release-assets
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            # A tag pushed by hand, or a re-run of this job: fine when it is
+            # this commit, an error when it names another one.
+            tagged="$(git rev-list -n1 "$TAG")"
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::$TAG already exists on $tagged, not on this commit ($GITHUB_SHA)"
+              exit 1
+            fi
+            echo "$TAG already points at this commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+
+      - name: Publish the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
-          files: ${{ matrix.asset_name }}.7z
+          files: release-assets/*.7z
