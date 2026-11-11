@@ -161,3 +161,22 @@ re-run on the next acquisition.
 - **Parity.** No Java neighbourhood fixture exists (see `PORT_PLAN.md`
   M1/M2). The composition columns are simple enough to check by hand, and
   the tests do.
+
+## Spatial features and enrichment (`vtea_core.spatial`)
+
+Per-object features that describe where an object is relative to objects of
+each class (phenotype, cluster, gate), so they can be gated and clustered
+like any measurement:
+
+- `nearest_distance` - centroid to the nearest *other* object of each class.
+- `neighbors_within` - count and fraction of each class within a radius.
+- `surface_distance` - exact mask-to-mask distance (anisotropic voxels via
+  `Spacing`): one distance transform per class for non-members, and a
+  bounded window per member for the distance to the other members.
+- `contacts` / `touching_pairs` - touching masks (face, or with
+  `connectivity` up to `ndim`, edge and corner contact).
+
+`vtea_core.spatial.enrichment` adds the two usual neighbourhood statistics:
+`type_enrichment` (class x neighbourhood type, log2 observed/expected) and
+`neighbor_enrichment` (pairwise neighbour enrichment: the neighbour graph is
+fixed and class labels permuted, giving z-scores and empirical p-values).
