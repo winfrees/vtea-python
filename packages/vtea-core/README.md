@@ -311,11 +311,16 @@ Measured on 50,000 objects x 20 features, 4 cores:
 |---|---|---|
 | Neighbour search (`nearest_neighbors`) | 1.7 s | exact, every core (`n_jobs=-1`) |
 | Leiden, igraph (default) | 1.0 s | C implementation |
-| Leiden, `implementation="leidenalg"` | 14 s | the reference; the same objective and partitions |
+| Leiden, `implementation="leidenalg"` | 14 s | the reference; the same objective (igraph reaches the same or higher modularity) |
 | UMAP, `random_state=0` | 25-46 s | umap-learn runs on one core when seeded |
 | UMAP, `random_state=None` | 8-10 s | every core (`n_jobs`), layout varies a little |
 | t-SNE, scikit-learn (20,000 objects) | 50 s | |
 | t-SNE, `method="opentsne"` (20,000 objects) | 30 s | every core |
+
+igraph's Leiden optimises modularity at least as well as leidenalg's. On small
+tables of very uniform populations that can mean a large population split in
+two where leidenalg kept it whole; lower `resolution` if that happens (or pass
+`implementation="leidenalg"`).
 
 When several steps run on the same matrix (Leiden and UMAP, say), search the
 neighbours once and pass them on: `knn = nearest_neighbors(x)`, then

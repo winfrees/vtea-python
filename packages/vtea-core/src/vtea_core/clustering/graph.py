@@ -37,8 +37,14 @@ done once and handed to several steps (`nearest_neighbors`, then `knn=` here
 and in `vtea_core.reduction.umap`). Leiden runs on igraph's own C
 implementation by default: it optimises the same objective as `leidenalg`'s
 `RBConfigurationVertexPartition`, and on 50,000 objects it is about 14 times
-faster (1 s against 14 s), with partitions as close to leidenalg's as two
-leidenalg runs with different seeds are to each other.
+faster (1 s against 14 s). It reaches the same or a higher modularity. On
+well-separated populations the two give the same communities; on heavily
+overlapping ones they differ about as much as two leidenalg runs with
+different seeds do. One difference to know: on small tables of very uniform
+populations, igraph may split a large population in two where leidenalg
+keeps it whole - the split has the higher modularity, which is what the
+resolution limit of modularity looks like. Lower `resolution` (or use
+`implementation="leidenalg"`) to keep such populations together.
 """
 
 from __future__ import annotations
@@ -302,9 +308,11 @@ def leiden(
     `implementation`: "igraph" (the default) is python-igraph's own Leiden,
     in C; "leidenalg" is the leidenalg package, the reference
     implementation, about 14 times slower on 50,000 objects. Both maximise
-    the same modularity at the same resolution, so this is the same
-    clustering by a faster route. leidenalg is used instead when the
-    installed python-igraph has no Leiden of its own.
+    the same modularity at the same resolution; igraph reaches the same or
+    a higher value, which on a small table of uniform populations can mean
+    one large population split in two (see the module docstring).
+    leidenalg is used instead when the installed python-igraph has no
+    Leiden of its own.
     """
     if implementation not in ("igraph", "leidenalg"):
         raise ValueError(f"implementation must be 'igraph' or 'leidenalg', not {implementation!r}")
