@@ -16,8 +16,11 @@ first family of the classification workbench.
   the lowest validation loss (early stopping after `patience` epochs without
   improvement). Classes are weighted so that rare classes count as much as
   common ones.
-- **Fine-tuning** (`start_from=` a trained model with the same classes and
-  features) continues from its weights and keeps its preprocessing.
+- **Fine-tuning** (`start_from=` a trained model with the same features)
+  continues from its weights and keeps its preprocessing and hidden layers.
+  Labels may bring **new classes**: the model keeps its classes and gets an
+  output for each new one (a two-class model's single logistic output becomes
+  the equivalent pair of softmax outputs first).
 - **Prediction** is a NumPy forward pass from the saved weights: a model folder
   holds plain arrays, never a pickle. Objects missing a feature get no
   prediction (NaN probabilities).
@@ -148,12 +151,15 @@ class ANNClassifier:
         if start_from is not None:
             if not start_from.trained:
                 raise ValueError("the model to fine-tune is not trained")
-            if sorted(start_from.classes) != classes or start_from.features != self.features:
+            if start_from.features != self.features:
                 raise ValueError(
-                    "fine-tuning keeps the model's classes and features; train a new model for "
-                    f"different ones (model: {start_from.classes}, labels: {classes})"
+                    "fine-tuning keeps the model's features; train a new model for different ones "
+                    f"(model: {start_from.features})"
                 )
-            classes = list(start_from.classes)
+            # The model's classes stay; labels may add new ones.
+            classes = sorted(set(start_from.classes) | set(classes))
+            self.hidden = start_from.hidden
+            self.transform, self.cofactor = start_from.transform, start_from.cofactor
         if validation is None and len(y_all) >= 50:
             train, val = split(y_all, validation=0.15, random_state=self.random_state)
             x_val, y_val = x_all[val], y_all[val]
@@ -202,9 +208,8 @@ class ANNClassifier:
             for epoch in range(1, self.max_epochs + 1):
                 mlp.partial_fit(x_tr, y_tr, sample_weight=weights, classes=self.classes)
                 if epoch == 1 and start_from is not None:
-                    for mine, theirs in zip(
-                        mlp.coefs_ + mlp.intercepts_, start_from.coefs_ + start_from.intercepts_
-                    ):
+                    coefs, intercepts = _carry_over(start_from, self.classes, self.random_state)
+                    for mine, theirs in zip(mlp.coefs_ + mlp.intercepts_, coefs + intercepts):
                         mine[...] = theirs  # in place: the optimiser keeps references
                 self._take(mlp)
                 history["train_loss"].append(float(mlp.loss_))
@@ -251,6 +256,10 @@ class ANNClassifier:
             else None,
         )
         return history
+
+    def new_classes(self, start_from) -> list[str]:
+        """Classes this model has that `start_from` did not (after fine-tuning)."""
+        return [c for c in self.classes if c not in start_from.classes]
 
     def _take(self, mlp) -> None:
         self.coefs_ = [c.copy() for c in mlp.coefs_]
@@ -356,3 +365,27 @@ class ANNClassifier:
         model.out_activation = config.get("out_activation", "softmax")
         model.card = read_card(folder)
         return model
+
+
+def _carry_over(model, classes, random_state):
+    """The weights of trained `model` for a network over `classes` (a superset of
+    its classes): hidden layers as they are; the output layer with each old class's
+    weights in its new place and small random weights for the new classes, which
+    start below the old ones so they are learnt rather than assumed."""
+    coefs = [c.copy() for c in model.coefs_]
+    intercepts = [b.copy() for b in model.intercepts_]
+    if list(classes) == list(model.classes):
+        return coefs, intercepts  # the same classes: as trained
+    out_w, out_b = coefs[-1], intercepts[-1]
+    if out_w.shape[1] == 1:  # logistic: p(c1) = s(z) = softmax([0, z])[1]
+        out_w = np.column_stack([np.zeros(out_w.shape[0]), out_w[:, 0]])
+        out_b = np.array([0.0, out_b[0]])
+    rng = np.random.default_rng(random_state)
+    new_w = rng.normal(0, 0.01, size=(out_w.shape[0], len(classes)))
+    new_b = np.full(len(classes), float(out_b.min()) - 1.0)
+    for k, c in enumerate(classes):
+        if c in model.classes:
+            j = model.classes.index(c)
+            new_w[:, k], new_b[k] = out_w[:, j], out_b[j]
+    coefs[-1], intercepts[-1] = new_w, new_b
+    return coefs, intercepts

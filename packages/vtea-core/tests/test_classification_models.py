@@ -175,10 +175,8 @@ def test_fine_tuning_adapts_a_model_to_new_data():
     ]
     assert after > 0.9 and after >= before
     assert tuned.mean_ is model.mean_  # the original preprocessing is kept
-    with pytest.raises(ValueError, match="keeps the model's classes"):
-        ANNClassifier(FEATURES).fit(
-            ObjectData(new), np.where(new_kind == "other", "x", "y"), start_from=model
-        )
+    with pytest.raises(ValueError, match="keeps the model's features"):
+        ANNClassifier(FEATURES[:2]).fit(ObjectData(new), new_kind, start_from=model)
 
 
 def test_object_data_subset_keeps_the_graph_consistent():
@@ -188,3 +186,38 @@ def test_object_data_subset_keeps_the_graph_consistent():
     sub = data.subset([0, 1, 4])
     assert sub.table["a"].tolist() == [0, 1, 4]
     assert sorted(map(tuple, sub.graph)) == [(0, 1), (2, 0)]
+
+
+def test_fine_tuning_adds_new_classes_and_keeps_the_old_ones():
+    table, kind = cell_types(n=600)
+    two = np.where(kind == "other", "other", "T")  # first: T cells vs the rest
+    model = ANNClassifier(FEATURES, random_state=0)
+    model.fit(ObjectData(table), two)
+    assert model.classes == ["T", "other"] and model.coefs_[-1].shape[1] == 1  # logistic output
+    # New labels split T into CD8 T and CD4 T: the model gains two classes.
+    new_labels = np.where(kind == "other", "other", kind)
+    labels = np.where(new_labels == "other", "other", new_labels)
+    tuned = ANNClassifier(FEATURES, hidden=(5,), random_state=0, max_epochs=150)
+    tuned.fit(ObjectData(table), labels, start_from=model)
+    assert tuned.classes == ["CD4 T", "CD8 T", "T", "other"] and tuned.hidden == model.hidden
+    assert tuned.new_classes(model) == ["CD4 T", "CD8 T"]
+    out = predictions(tuned, ObjectData(table))
+    m = evaluate(labels, out["class"], ["CD4 T", "CD8 T", "other"])
+    assert m["balanced_accuracy"] > 0.95
+
+
+def test_carrying_a_logistic_output_over_to_softmax_keeps_the_predictions():
+    from vtea_core.classification.ann import _carry_over
+
+    table, kind = cell_types(n=300)
+    model = ANNClassifier(FEATURES, max_epochs=20)
+    model.fit(ObjectData(table), np.where(kind == "other", "other", "T"))
+    coefs, intercepts = _carry_over(model, ["T", "other", "zzz"], 0)
+    wide = ANNClassifier(FEATURES)
+    wide.classes, wide.mean_, wide.scale_ = ["T", "other", "zzz"], model.mean_, model.scale_
+    wide.coefs_, wide.intercepts_, wide.out_activation = coefs, intercepts, "softmax"
+    p_old = model.predict_proba(ObjectData(table))
+    p_new = wide.predict_proba(ObjectData(table))
+    # The old classes keep their ratio; the new class starts unlikely.
+    np.testing.assert_allclose(p_new[:, 1] / (p_new[:, 0] + p_new[:, 1]), p_old[:, 1], rtol=1e-6)
+    assert p_new[:, 2].mean() < 0.3
