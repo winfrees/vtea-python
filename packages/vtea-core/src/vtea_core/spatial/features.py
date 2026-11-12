@@ -143,36 +143,59 @@ def surface_distance(
     top = int(labels.max()) if labels.size else 0
     boxes = ndi.find_objects(labels.astype(np.int64, copy=False)) if top > 0 else []
     present = np.array([0 < i <= len(boxes) and boxes[i - 1] is not None for i in ids], dtype=bool)
+    surface = _surface_voxels(labels) if top > 0 else None
     for target in class_targets(values, targets):
         member = _members(values, target) & present
         column = np.full(len(ids), np.nan)
         member_ids = ids[member]
         if len(member_ids):
-            inside = np.isin(labels, member_ids)
+            lookup = np.zeros(top + 1, dtype=bool)  # label -> member, faster than np.isin
+            lookup[member_ids] = True
+            inside = lookup[labels]
             dist = ndi.distance_transform_edt(~inside, sampling=sampling)
             others = present & ~member
             if others.any():
-                column[others] = ndi.minimum(dist, labels, index=ids[others])
+                column[others] = _label_minimum(dist, labels, top)[ids[others]]
             if len(member_ids) > 1:
-                column[member] = _within_class(labels, member_ids, boxes, sampling)
+                column[member] = _within_class(labels, surface, member_ids, boxes, sampling, lookup)
         out[f"surface distance to {target}"] = column
     return out
 
 
-def _within_class(labels, member_ids, boxes, sampling) -> np.ndarray:
-    """Distance from each member to the nearest other member, mask to mask."""
-    # One voxel of each member: the distance between two of them bounds the
-    # distance between the two masks from above.
+def _surface_voxels(labels) -> np.ndarray:
+    """Object voxels with a face neighbour of another label (or background).
+
+    The closest pair of voxels of two disjoint masks is always made of two such
+    voxels: from an inner voxel, the face neighbour towards the other mask is in
+    the same mask and closer. So distances between masks need only these."""
+    surface = np.zeros(labels.shape, dtype=bool)
+    for axis in range(labels.ndim):
+        a = [slice(None)] * labels.ndim
+        b = [slice(None)] * labels.ndim
+        a[axis], b[axis] = slice(1, None), slice(None, -1)
+        differ = labels[tuple(a)] != labels[tuple(b)]
+        surface[tuple(a)] |= differ
+        surface[tuple(b)] |= differ
+    return surface & (labels > 0)
+
+
+def _within_class(labels, surface, member_ids, boxes, sampling, lookup) -> np.ndarray:
+    """Distance from each member to the nearest other member, mask to mask: in a
+    window around the member, nearest surface voxel to surface voxel."""
+    # One voxel of each member, the most central one: the distance between two of
+    # them bounds the distance between the two masks from above (the more central,
+    # the tighter the bound, and the smaller the window searched below).
     anchors = np.empty((len(member_ids), labels.ndim))
     for k, i in enumerate(member_ids):
         box = boxes[i - 1]
-        local = np.argwhere(labels[box] == i)[0]
+        voxels = np.argwhere(labels[box] == i)
+        middle = (np.asarray([s.stop - s.start for s in box]) - 1) / 2
+        local = voxels[np.argmin((((voxels - middle) * sampling) ** 2).sum(axis=1))]
         anchors[k] = [s.start + v for s, v in zip(box, local)]
     physical = anchors * sampling
     bound, _ = cKDTree(physical).query(physical, k=2)
     bound = bound[:, 1]
     result = np.empty(len(member_ids))
-    member_set = np.asarray(member_ids)
     for k, i in enumerate(member_ids):
         box = boxes[i - 1]
         pad = np.ceil(bound[k] / sampling).astype(int) + 1
@@ -180,14 +203,24 @@ def _within_class(labels, member_ids, boxes, sampling) -> np.ndarray:
             slice(max(s.start - p, 0), min(s.stop + p, n))
             for s, p, n in zip(box, pad, labels.shape)
         )
-        local = labels[window]
-        other = np.isin(local, member_set) & (local != i)
-        if not other.any():  # cannot happen (the bound reaches one), kept safe
+        points = np.argwhere(surface[window])  # few voxels: filter those, not the window
+        which = labels[window][tuple(points.T)]
+        other = points[lookup[which] & (which != i)]
+        if not len(other):  # cannot happen (the bound reaches one), kept safe
             result[k] = bound[k]
             continue
-        dist = ndi.distance_transform_edt(~other, sampling=sampling)
-        result[k] = dist[local == i].min()
+        own = points[which == i]
+        dist, _ = cKDTree(other * sampling).query(own * sampling, k=1)
+        result[k] = dist.min()
     return result
+
+
+def _label_minimum(values, labels, top) -> np.ndarray:
+    """Minimum of `values` over each label 0..top (inf where a label is absent),
+    without the sort ndimage.minimum makes."""
+    out = np.full(top + 1, np.inf)
+    np.minimum.at(out, labels.ravel(), values.ravel())
+    return out
 
 
 def touching_pairs(labels: np.ndarray, connectivity: int = 1) -> np.ndarray:
