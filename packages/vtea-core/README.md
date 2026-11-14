@@ -108,6 +108,15 @@ table.
   cell carries the kind of neighbourhood it lives in. Membership is a
   many-to-many table, not an association, because neighbourhoods overlap.
   See docs/NEIGHBORHOODS.md
+- **trajectory** (new): lineages and pseudotime through cell types or
+  neighbourhood types - `slingshot` (Slingshot's cluster MST from a chosen
+  start cluster, forced end clusters, simultaneous principal curves with
+  shrinkage, per-lineage pseudotime and weights; numpy/scipy, no R), and what
+  changes along each lineage: `feature_trends` (a marker's pseudotime
+  spectrum), `association` (Spearman with pseudotime, start vs end, BH
+  q-values) and `composition_along` (cell-type or neighbourhood-type
+  fractions by pseudotime). One dataset; atlas / cohort trajectories are
+  planned. See docs/TRAJECTORIES.md
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`,
   `auto_k_kmeans`; plus `louvain` and `leiden` (new) - community detection
   over a shared-nearest-neighbour graph (`shared_neighbor_graph`), which
@@ -252,6 +261,8 @@ src/vtea_core/
                     each object is in)
   neighborhoods/    Neighbourhoods as objects made of objects: built, measured
                     by composition, typed, and reflected back onto members
+  trajectory/       Lineages, principal curves and pseudotime (Slingshot-style)
+                    from clusters, and features / classes along each lineage
   classes/          Class rules (range / values / boolean expression), the
                     label sets an object's n labels live in, and the
                     hierarchies two sets combine into
