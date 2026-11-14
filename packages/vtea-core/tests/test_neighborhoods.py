@@ -63,6 +63,34 @@ class TestBuild:
         assert neighborhoods.get(3).members == (2, 3, 4)
         assert all(len(n.members) == 3 for n in neighborhoods)
 
+    def test_nearest_keeps_exactly_k_others_when_positions_tie(self):
+        """Objects at the same position tie at distance 0, so the tree may not
+        return the object itself among its k + 1 nearest; it must still get
+        exactly k others, not k + 1."""
+        table = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4, 5, 6],
+                "centroid-0": [0.0] * 6,
+                "centroid-1": [0.0, 0.0, 0.0, 0.0, 10.0, 20.0],
+            }
+        )
+        for k in (1, 2, 3):
+            neighborhoods = build_neighborhoods(table, method="nearest", k=k)
+            assert all(len(n.members) == k + 1 for n in neighborhoods)
+            assert all(n.seed in n.members for n in neighborhoods)
+
+    def test_centred_neighbourhoods_overlap(self):
+        """A neighbourhood is drawn around every object, so they overlap: an
+        object is a member of its own and of every neighbour's, and no object
+        is shared out to a single neighbourhood."""
+        table = two_halves()
+        for method, settings in (("radius", {"radius": 20}), ("nearest", {"k": 8})):
+            neighborhoods = build_neighborhoods(table, method=method, **settings)
+            per_object = neighborhoods.membership().groupby("object_id").size()
+            assert len(per_object) == len(table)
+            assert (per_object >= 1).all() and per_object.median() > 1
+            assert per_object.sum() == neighborhoods.sizes().sum()
+
     def test_nearest_with_k_above_the_count_takes_everything(self):
         neighborhoods = build_neighborhoods(line_table(), method="nearest", k=50)
         assert neighborhoods.get(1).members == (1, 2, 3, 4, 5)
