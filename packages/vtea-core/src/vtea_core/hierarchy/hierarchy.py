@@ -34,10 +34,12 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from scipy.spatial import cKDTree
 
 from vtea_core.data.spacing import Spacing
 from vtea_core.hierarchy.build import build_regions, build_windows, voxel_positions
 from vtea_core.hierarchy.level import OBJECTS, REGIONS, WINDOWS, ObjectLevel, one_hot
+from vtea_core.hierarchy.measure import composition
 from vtea_core.neighborhoods.reflect import MISSING_CATEGORY, _most_frequent
 from vtea_core.spatial.features import touching_pairs
 
@@ -289,6 +291,97 @@ class Hierarchy:
             return True
         return self.is_stale(parent.name)
 
+    # -- describing ------------------------------------------------------------
+
+    def centers(self, name: str) -> np.ndarray:
+        """Physical centre of each object: a window's seed, a region's members'
+        mean, an object's own position."""
+        level = self[name]
+        if level.kind == OBJECTS:
+            return self.positions(name)
+        below = self.positions(level.parent)
+        if level.kind == WINDOWS:
+            return below[level.seeds]
+        m = sparse.csr_matrix(level.membership, dtype=np.float64)
+        counts = np.maximum(np.asarray(m.sum(axis=1)).ravel(), 1)
+        return (m @ below) / counts[:, None]
+
+    def composition(self, name: str, of: str, classes: str) -> pd.DataFrame:
+        """Composition of each object of `name` over the classes of any level
+        below it (`of`), through every level in between - a level-2 window
+        described by the cells it reaches, not only by its parts."""
+        table = self[of].table
+        if classes not in table.columns:
+            raise ValueError(f"level {of!r} has no column {classes!r}")
+        return composition(self.expand(name, of), table[classes])
+
+    def describe(
+        self,
+        name: str,
+        families=("diversity", "arrangement"),
+        *,
+        classes: str | None = None,
+        sigma: float | None = None,
+        radii=(),
+        types: str | None = None,
+        add: bool = True,
+    ) -> pd.DataFrame:
+        """Feature families (see `vtea_core.hierarchy.features`) for a level,
+        measured from its members in the parent. `classes`: the parent column
+        for the class-based families (default: the one the level was built
+        on). `sigma` for `weighted` (default: half the window radius, or one
+        member spacing). `radii` for `multiscale`. `types`: this level's own
+        type column, for `interface`. With `add`, the columns are also added
+        to the level's table (replacing any of the same name)."""
+        from vtea_core.hierarchy import features as F
+
+        families = [families] if isinstance(families, str) else list(families)
+        unknown = set(families) - set(F.FAMILIES)
+        if unknown:
+            raise ValueError(f"unknown feature famil(ies) {sorted(unknown)}, expected {list(F.FAMILIES)}")
+        level = self[name]
+        blocks = []
+        if "interface" in families:
+            column = types or ""
+            if column not in level.table.columns:
+                raise ValueError(f"'interface' needs this level's type column (types=...), not {column!r}")
+            blocks.append(F.interface_distance(self.positions(name), level.table[column]))
+        member_families = [f for f in families if f != "interface"]
+        if member_families:
+            if level.membership is None:
+                raise ValueError(f"{name!r} is the segmentation: its objects have no members to describe")
+            parent = self[level.parent]
+            positions, centers = self.positions(level.parent), self.centers(name)
+            classes = classes or level.provenance.get("classes") or level.provenance.get("types")
+            needs_classes = {"weighted", "multiscale", "diversity", "contacts", "asymmetry"}
+            if needs_classes & set(member_families):
+                if not classes or classes not in parent.table.columns:
+                    raise ValueError(f"these families need a class column of {parent.name!r} (classes=...)")
+                labels = parent.table[classes]
+            radius = level.provenance.get("radius") if level.provenance.get("method") == "radius" else None
+            for family in member_families:
+                if family == "weighted":
+                    if sigma is None:
+                        sigma = radius / 2 if radius else _spacing(positions)
+                    blocks.append(F.weighted_composition(level.membership, positions, centers, labels, sigma))
+                elif family == "multiscale":
+                    blocks.append(F.multiscale_composition(positions, centers, labels, radii))
+                elif family == "diversity":
+                    blocks.append(F.diversity(level.membership, labels))
+                elif family == "arrangement":
+                    block = F.arrangement(level.membership, positions, centers, radius=radius)
+                    blocks.append(block)
+                elif family == "contacts":
+                    blocks.append(F.internal_contacts(level.membership, self.adjacency(parent.name), labels))
+                elif family == "asymmetry":
+                    blocks.append(F.asymmetry(level.membership, positions, centers, labels))
+        out = pd.concat(blocks, axis=1) if blocks else pd.DataFrame(index=range(len(level)))
+        out = out.loc[:, ~out.columns.duplicated(keep="last")]
+        if add:
+            table = level.table.drop(columns=[c for c in out.columns if c in level.table.columns])
+            level.table = pd.concat([table, out.set_index(table.index)], axis=1)
+        return out
+
     # -- moving between levels ---------------------------------------------
 
     def expand(self, name: str, to: str | None = None) -> sparse.csr_matrix:
@@ -478,6 +571,14 @@ class Hierarchy:
                 provenance=entry.get("provenance", {}),
             )
         return hierarchy
+
+
+def _spacing(positions: np.ndarray) -> float:
+    """The median nearest-neighbour distance (1.0 for fewer than two)."""
+    if len(positions) < 2:
+        return 1.0
+    gaps, _ = cKDTree(positions).query(positions, k=2)
+    return float(np.median(gaps[:, 1])) or 1.0
 
 
 def _category(values: pd.Series) -> np.ndarray:

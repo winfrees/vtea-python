@@ -21,11 +21,13 @@ See docs/HIERARCHY.md.
 """
 
 from vtea_core.hierarchy.build import WINDOW_METHODS, build_regions, build_windows, member_weights
+from vtea_core.hierarchy.features import FAMILIES, transform_composition
 from vtea_core.hierarchy.hierarchy import HIERARCHY_FORMAT_VERSION, Hierarchy
 from vtea_core.hierarchy.level import KINDS, LEVEL_ID, OBJECTS, REGIONS, WINDOWS, ObjectLevel
 from vtea_core.hierarchy.measure import aggregate, composition, shape
 
 __all__ = [
+    "FAMILIES",
     "HIERARCHY_FORMAT_VERSION",
     "KINDS",
     "LEVEL_ID",
@@ -41,4 +43,5 @@ __all__ = [
     "composition",
     "member_weights",
     "shape",
+    "transform_composition",
 ]

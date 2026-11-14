@@ -104,6 +104,92 @@ aggregate parent `features`.
   (`table.csv`, `membership.npz`, `seeds.npy`), `contacts.npy` and
   `hierarchy.json`.
 
+## Describing a level: feature families
+
+Composition is measured when a level is built. `Hierarchy.describe(level,
+families)` adds more, each from the level's members (`vtea_core.hierarchy.features`):
+
+| family | columns | what it separates |
+| --- | --- | --- |
+| `weighted` | `Class_<c>_WeightedFraction` | composition with near members counting more (Gaussian, `sigma`) |
+| `multiscale` | `Class_<c>_ClassFraction_r<r>` | composition at several radii |
+| `diversity` | `shannon`, `simpson`, `richness`, `dominant_class`, `dominant_fraction` | mixed interfaces from pure compartments |
+| `arrangement` | `radius_of_gyration`, `elongation`, `seed_offset`, `member_nn_distance`, `density` | strands (tubules), edges, crowding |
+| `contacts` | `internal_edges`, `homophily` | classes intermingled or side by side (needs touching masks) |
+| `asymmetry` | `asymmetry` | one half of the window unlike the other: borders and gradients |
+| `interface` | `distance_to_other_type` | distance to the nearest object of another type |
+
+`Hierarchy.composition(level, of, classes)` measures a level over the classes of
+any level below it (a level-2 window by the cells it reaches).
+`transform_composition` gives centred log-ratio or square-root compositions, and
+`vtea_core.spatial.membership_type_enrichment` counts cell type x neighbourhood
+type over every membership instead of only the seed cells.
+
+### Benchmark: which features find tissue structure
+
+`vtea_core.hierarchy.benchmark` (run with
+`scripts/benchmark_neighborhood_features.py`) builds synthetic tissues with known
+zones - two halves, 40 µm bands of three kinds, round immune aggregates, and an
+infiltration gradient (front / transition / hinterland) - in 2D and in an
+anisotropic 3D slab, about 10 µm between cells, five classes with zone-specific
+mixes and marker profiles. Windows of radius 30 µm around every cell are
+described by each feature set, clustered into the true number of zones, and
+scored by adjusted Rand index (ARI) against the zones, over 2 tissues x 3
+clustering seeds.
+
+Mean and worst ARI over the four tissues and both dimensionalities (k-means, and
+the best of the others):
+
+| features | k-means mean | k-means worst | stability | Gaussian mixture mean | Leiden mean |
+| --- | --- | --- | --- | --- | --- |
+| weighted composition (σ = r/2) | **0.83** | **0.68** | 1.00 | 0.64 | 0.43 |
+| composition (fractions) | 0.82 | 0.62 | 1.00 | 0.68 | 0.44 |
+| multiscale (r/2, r, 2r) | 0.82 | 0.56 | 0.97 | 0.59 | 0.58 |
+| composition + member markers | 0.77 | 0.53 | 0.94 | 0.66 | 0.60 |
+| composition, square root | 0.76 | 0.45 | 0.99 | 0.74 | 0.41 |
+| member markers only | 0.72 | 0.40 | 0.97 | 0.69 | 0.51 |
+| composition + asymmetry | 0.71 | 0.45 | 0.89 | 0.60 | 0.46 |
+| composition + diversity | 0.56 | 0.11 | 0.94 | 0.72 | 0.43 |
+| composition + arrangement | 0.54 | 0.31 | 0.79 | 0.40 | 0.40 |
+| composition, centred log-ratio | 0.46 | 0.10 | 0.86 | 0.50 | 0.28 |
+
+Radius sweep, k-means, mean ARI over the tissues:
+
+| features | r = 15 µm | r = 30 µm | r = 60 µm |
+| --- | --- | --- | --- |
+| composition | 0.65 | 0.82 | 0.63 |
+| weighted composition (σ = r/2) | 0.58 | **0.84** | **0.75** |
+| composition + member markers | 0.58 | 0.77 | 0.62 |
+
+What this says, and the defaults that follow:
+
+- **The radius matters more than the features.** Each tissue has a best scale:
+  aggregates and 40 µm bands are lost in large windows (bands: 0.69 at 30 µm,
+  0.20 at 60 µm), while halves and gradients do better with large ones
+  (infiltration: 0.45 at 15 µm, 0.87 at 60 µm). The
+  radius should be about the size of the structures sought, and is kept a
+  choice in the interface.
+- **Composition with k-means stays the default** (the CODEX recipe): as good as
+  anything else at the right radius, fast and stable.
+- **Weighted composition is the recommended option**: slightly better at the
+  right radius and much more forgiving of one that is too large (0.75 vs 0.63 at
+  60 µm), because distant members count less.
+- **Centred log-ratio hurts** here (rare classes' zero counts become large
+  negative values that dominate the distances), and square roots do not help:
+  composition is clustered untransformed by default.
+- **Diversity, arrangement and asymmetry do not help find zones** when added to
+  composition - they describe *where in* a zone a window is (an edge, a border,
+  a strand), which splits zones rather than finding them. They are offered as
+  features to gate, plot and colour by (borders, infiltration fronts), not for
+  defining types.
+- **k-means (or a Gaussian mixture) with a chosen number of types beats Leiden**
+  on these tissues; Leiden picks its own number and over-splits. Leiden stays
+  available for when the number of types is unknown.
+
+Limits: the tissues are synthetic, with classes known exactly; a published
+dataset with reference neighbourhoods (CODEX colorectal cancer, Schürch et al.
+2020) has not been run yet.
+
 ## Protocol steps
 
 Category `hierarchy`, one `Hierarchy` threaded through under the context key
