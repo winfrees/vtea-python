@@ -432,6 +432,47 @@ STEP_IO: dict[tuple[str, str], StepIO] = {
         channel_mode=CHANNEL_NONE,
         scaling=_TABLE_STEP,
     ),
+    # The hierarchy is one object threaded through its steps: made from the
+    # object table (and the label image, for touching masks), then each step
+    # adds or types a level and hands it on under the same key.
+    ("hierarchy", "hierarchy_from_objects"): StepIO(
+        ("data", "spacing", "labels"),
+        "hierarchy",
+        channel_mode=CHANNEL_NONE,
+        scaling=Scaling(
+            mode=TABLE,
+            bytes_per_voxel=0,
+            notes="reads the label image once for touching pairs; otherwise per object",
+        ),
+    ),
+    ("hierarchy", "add_windows_level"): StepIO(
+        ("hierarchy",),
+        "hierarchy",
+        channel_mode=CHANNEL_NONE,
+        scaling=Scaling(
+            mode=TABLE,
+            bytes_per_voxel=0,
+            notes="a kd-tree query per seed; membership grows with the window size",
+        ),
+    ),
+    ("hierarchy", "add_regions_level"): StepIO(
+        ("hierarchy",),
+        "hierarchy",
+        channel_mode=CHANNEL_NONE,
+        scaling=_TABLE_STEP,
+    ),
+    ("hierarchy", "classify_level"): StepIO(
+        ("hierarchy",),
+        "hierarchy",
+        channel_mode=CHANNEL_NONE,
+        scaling=_TABLE_STEP,
+    ),
+    ("hierarchy", "reflect_level"): StepIO(
+        ("hierarchy",),
+        "level_reflection",
+        channel_mode=CHANNEL_NONE,
+        scaling=_TABLE_STEP,
+    ),
     # A posterior over owners per voxel rather than one answer. `segmentation`
     # names the markers the ids belong to, taken from the wiring. Its output
     # is several times the size of the label image, which is why the large

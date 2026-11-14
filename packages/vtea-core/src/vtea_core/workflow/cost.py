@@ -63,7 +63,7 @@ class StepCost:
 # Categories whose steps all consume the per-object table rather than the
 # image, used to cost a step nobody has timed - see cost_for.
 TABLE_CATEGORIES = frozenset(
-    {"clustering", "reduction", "classes", "gates", "association", "cells", "neighborhoods"}
+    {"clustering", "reduction", "classes", "gates", "association", "cells", "neighborhoods", "hierarchy"}
 )
 
 # A step nobody has timed: assume it walks its input once, cheaply, and be
@@ -130,6 +130,17 @@ STEP_COSTS: dict[tuple[str, str], StepCost] = {
         per_object_ns=3000.0, per_object_feature_ns=400.0
     ),
     ("neighborhoods", "reflect_neighborhoods"): StepCost(per_object_ns=5000.0),
+    ("hierarchy", "hierarchy_from_objects"): StepCost(
+        per_object_ns=2000.0, notes="plus one pass over the label image for touching pairs"
+    ),
+    ("hierarchy", "add_windows_level"): StepCost(
+        per_object_ns=30000.0, notes="a kd-tree query per seed, then per member"
+    ),
+    ("hierarchy", "add_regions_level"): StepCost(
+        per_object_ns=40000.0, notes="per candidate pair: member-to-member kd-tree queries"
+    ),
+    ("hierarchy", "classify_level"): StepCost(per_object_ns=3000.0, per_object_feature_ns=400.0),
+    ("hierarchy", "reflect_level"): StepCost(per_object_ns=8000.0, notes="per membership through every level"),
     ("clustering", "kmeans"): StepCost(per_object_ns=3000.0, per_object_feature_ns=400.0),
     ("clustering", "gaussian_mixture"): StepCost(per_object_ns=6000.0, per_object_feature_ns=900.0),
     # Every one of these is either quadratic in the object count or an
