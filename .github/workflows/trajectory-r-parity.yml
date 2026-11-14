@@ -1,0 +1,52 @@
+name: Trajectory parity with R (slingshot, tradeSeq)
+
+# The Python ports in vtea_core.trajectory (slingshot, tradeseq) are checked
+# against the Bioconductor packages they follow. R and Bioconductor are not
+# needed by vtea-core itself, so this is a separate workflow: run it by hand,
+# and on pull requests that touch the trajectory code. It also writes the
+# validation report (simulation benchmark + R parity) as an artifact.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packages/vtea-core/src/vtea_core/trajectory/**"
+      - "packages/vtea-core/tests/test_trajectory*.py"
+      - "packages/vtea-core/tests/test_tradeseq.py"
+      - "scripts/validate_trajectory.py"
+      - ".github/workflows/trajectory-r-parity.yml"
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: r-slingshot-tradeseq-${{ runner.os }}-v1
+      - name: Install slingshot and tradeSeq
+        run: |
+          Rscript -e 'if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")'
+          Rscript -e 'BiocManager::install(c("slingshot", "tradeSeq"), ask = FALSE, update = FALSE)'
+          Rscript -e 'cat("slingshot", as.character(packageVersion("slingshot")), "tradeSeq", as.character(packageVersion("tradeSeq")), "\n")'
+      - name: Install vtea-core
+        run: pip install -e "packages/vtea-core[dev]"
+      - name: Parity tests
+        run: pytest packages/vtea-core/tests/test_trajectory_r_parity.py -v -rs
+      - name: Validation report
+        if: always()
+        run: python scripts/validate_trajectory.py --seeds 10 --r --out validation-report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trajectory-validation
+          path: validation-report

@@ -109,14 +109,18 @@ table.
   many-to-many table, not an association, because neighbourhoods overlap.
   See docs/NEIGHBORHOODS.md
 - **trajectory** (new): lineages and pseudotime through cell types or
-  neighbourhood types - `slingshot` (Slingshot's cluster MST from a chosen
-  start cluster, forced end clusters, simultaneous principal curves with
-  shrinkage, per-lineage pseudotime and weights; numpy/scipy, no R), and what
-  changes along each lineage: `feature_trends` (a marker's pseudotime
-  spectrum), `association` (Spearman with pseudotime, start vs end, BH
-  q-values) and `composition_along` (cell-type or neighbourhood-type
-  fractions by pseudotime). One dataset; atlas / cohort trajectories are
-  planned. See docs/TRAJECTORIES.md
+  neighbourhood types, and what changes along them - ports of Bioconductor
+  **Slingshot** (`slingshot`: cluster tree from a chosen start, forced ends,
+  simultaneous principal curves with shrinkage, reweighting and
+  reassignment, its defaults) and **tradeSeq** (`fit_gam`: a GAM per feature
+  with one cubic regression spline per lineage, Gaussian or negative
+  binomial; `association_test`, `start_vs_end_test`, `diff_end_test`,
+  `pattern_test`, `early_drivers_test`, `evaluate_k`), in numpy / scipy. The
+  R packages themselves run through `r_engine` when installed. Validated on
+  simulations with a known truth (`simulate`, `validate`,
+  docs/trajectory-validation/REPORT.md); parity with R is checked by the
+  `trajectory-r-parity` workflow. One dataset; atlas / cohort trajectories
+  are planned. See docs/TRAJECTORIES.md
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`,
   `auto_k_kmeans`; plus `louvain` and `leiden` (new) - community detection
   over a shared-nearest-neighbour graph (`shared_neighbor_graph`), which
@@ -261,8 +265,8 @@ src/vtea_core/
                     each object is in)
   neighborhoods/    Neighbourhoods as objects made of objects: built, measured
                     by composition, typed, and reflected back onto members
-  trajectory/       Lineages, principal curves and pseudotime (Slingshot-style)
-                    from clusters, and features / classes along each lineage
+  trajectory/       Slingshot and tradeSeq ports (lineages, pseudotime, GAMs and
+                    their tests), the R engine, simulations and validation
   classes/          Class rules (range / values / boolean expression), the
                     label sets an object's n labels live in, and the
                     hierarchies two sets combine into

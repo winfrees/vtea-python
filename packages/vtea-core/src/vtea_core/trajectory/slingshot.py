@@ -12,25 +12,36 @@ stages, and this is a port of that design to plain numpy / scipy:
    the path root -> leaf. **End** clusters, when given, are forced to be leaves
    (the MST is built without them and each is attached to its nearest other
    cluster), as in Slingshot's `end.clus`.
-2. **Curves.** Each lineage starts as the polyline through its clusters' means
-   and is refined into a principal curve (Hastie & Stuetzle 1989): the objects
-   of the lineage's clusters are projected onto the curve (their arc length is
-   the pseudotime), the curve is re-fitted as a smooth of the coordinates
-   against arc length, and so on. Lineages that share their first clusters are
-   **shrunk** towards their mean curve over the shared part, so they share a
-   trunk and part where the data part (Slingshot's simultaneous principal
-   curves). Objects in clusters shared by several lineages then get a weight
-   for each from their distance to each curve, and weights below `min_weight`
-   are dropped: an object on the trunk counts for every lineage, an object near
-   one branch only for that one.
+2. **Curves** (`getCurves`). Each lineage starts as the polyline through its
+   clusters' means (extended past the end centres, `extend = "y"`) and is
+   refined into a principal curve (Hastie & Stuetzle 1989), iterating:
+   - each coordinate is smoothed against the objects' arc length with a
+     weighted cubic smoothing spline of 5 degrees of freedom (R's
+     `smooth.spline(df = 5)`), evaluated at `approx_points` = 150 points;
+   - every object is projected onto every curve, with the curve ends
+     stretched (`stretch = 2`, as `princurve::project_to_curve`);
+   - at each branch point, deepest first, the curves of the lineages through
+     it are **shrunk** towards their average where they share objects, by the
+     survival function of a cosine kernel over the shared objects' arc
+     lengths (between the box-plot whiskers): Slingshot's simultaneous
+     principal curves, so lineages share a trunk and part where the data part;
+   - **reweight**: an object on several lineages is weighted 1 - Z^2 on each,
+     Z its distance to that curve as a quantile of the lineage's distances;
+     **reassign**: Z < 0.5 adds it to a lineage, Z > 0.9 with a weight < 0.1
+     drops it;
+   - until the total weighted squared distance changes by less than
+     `thresh` (0.001) of itself, or `maxit` (15) iterations.
 
-Pseudotime is the arc length along the curve from the start, in the units of
-the space (e.g. PCA of scaled features, or a UMAP map). NaN where an object is
-not on a lineage.
+Pseudotime is the arc length along the curve, 0 at the lineage's earliest
+object, in the units of the space (e.g. PCA of scaled features, or a UMAP
+map). NaN where an object is not on a lineage.
 
-What is not ported: Slingshot's artificial "omega" cluster that lets a graph
-fall apart into separate trees, and its smoothing spline (a Gaussian smoother
-on binned arc length is used, O(n) in the objects).
+Validated on simulations with a known truth and checked against R slingshot
+(`validate`, docs/TRAJECTORIES.md). Not ported: the artificial "omega"
+cluster that lets the graph fall apart into separate trees, and the "loess"
+smoother option. One known failure mode, shared with R slingshot: if no
+cluster covers a branch point, the first clusters of the branches are joined
+to each other rather than to the trunk.
 """
 
 from __future__ import annotations
@@ -203,23 +214,32 @@ def slingshot(
     *,
     ends=None,
     distance: str = "slingshot",
-    n_iter: int = 10,
-    n_points: int = 100,
-    span: float = 0.1,
-    shrink: bool = True,
-    min_weight: float = 0.1,
-    tol: float = 1e-3,
+    shrink: float = 1.0,
+    extend: str = "y",
+    reweight: bool = True,
+    reassign: bool = True,
+    thresh: float = 0.001,
+    maxit: int = 15,
+    stretch: float = 2.0,
+    approx_points: int = 150,
+    smoother_df: float = 5.0,
 ) -> Trajectory:
     """Lineages and pseudotime of the objects `points` (objects x dims, e.g. PCA
     of scaled features, or a 2D map) grouped by `labels` (one cluster per
     object; None / NaN for objects in none), starting from cluster `start`.
 
-    `ends`: clusters that must be ends of lineages. `n_iter`: principal-curve
-    iterations (stops early when the curves change by less than `tol` of the
-    data's spread). `n_points`: points on each curve. `span`: width of the
-    smoother, as a fraction of each lineage's length. `shrink`: shrink lineages
-    to their common curve where they share clusters. `min_weight`: an object's
-    weight on a lineage below this is dropped to 0."""
+    The arguments and their defaults are those of R slingshot's `slingshot()`
+    (`getLineages` + `getCurves`): `ends` (`end.clus`), `distance`
+    (`dist.method`: "slingshot" or "euclidean"), `shrink` (0..1), `extend`
+    ("y": the initial curve is extended past the first and last cluster
+    centres to reach their objects; "n": not), `reweight`, `reassign`,
+    `thresh` (relative change of the total squared distance that stops the
+    iterations), `maxit`, `stretch` (how far the curve ends are extended when
+    projecting, as `princurve::project_to_curve`), `approx_points` (points per
+    curve), and `smoother_df` (degrees of freedom of the smoothing spline,
+    slingshot's `smooth.spline(..., df = 5)`)."""
+    from vtea_core.trajectory.splines import smoothing_spline
+
     points = np.asarray(points, float)
     if points.ndim == 1:
         points = points[:, None]
@@ -233,32 +253,50 @@ def slingshot(
     )
     n, n_lin = len(points), len(lineages)
     index = {c: i for i, c in enumerate(clusters)}
-    # Initial weights: 1 for every object of the lineage's clusters.
     weights = np.zeros((n, n_lin))
     for j, lin in enumerate(lineages):
         weights[:, j] = np.isin(labels, np.array(lin, dtype=object))
-    curves = [_polyline_resample(centers[[index[c] for c in lin]], n_points) for lin in lineages]
-    scale = float(np.sqrt(((points - points.mean(axis=0)) ** 2).sum(axis=1).mean())) or 1.0
-    shared = _shared_prefixes(lineages)
-    lam = np.full((n, n_lin), np.nan)
-    dists = np.full((n, n_lin), np.inf)
-    for _ in range(max(int(n_iter), 1)):
-        new = []
+    # Initial curves: the polylines through the lineages' cluster centres.
+    curves = []
+    for lin in lineages:
+        vertices = centers[[index[c] for c in lin]]
+        if extend == "y":
+            vertices = _extend(vertices, points, labels, lin[0], lin[-1])
+        curves.append(_polyline_resample(vertices, approx_points))
+    lam = np.zeros((n, n_lin))
+    dists = np.zeros((n, n_lin))
+    for j in range(n_lin):
+        lam[:, j], dists[:, j] = _project(points, curves[j], stretch=stretch)
+    total = np.nansum(weights * dists**2)
+    plan = _shrink_plan(lineages)
+    labelled = weights.max(axis=1) > 0  # objects with a class in the tree
+    for _ in range(max(int(maxit), 1)):
         for j in range(n_lin):
             on = weights[:, j] > 0
-            lam_j, _ = _project(points[on], curves[j])
-            new.append(_smooth_curve(points[on], lam_j, weights[on, j], n_points, span, curves[j]))
-        if shrink and n_lin > 1:
-            new = _shrink(new, points, labels, lineages, weights, shared)
-        change = max(_curve_change(a, b) for a, b in zip(curves, new)) / scale
-        curves = new
-        if change < tol:
+            if on.sum() < 4:
+                continue
+            t = lam[on, j]
+            smooth = smoothing_spline(t, points[on], weights[on, j], df=smoother_df)
+            curves[j] = np.atleast_2d(smooth(np.linspace(t.min(), t.max(), approx_points)))
+            if curves[j].shape[0] != approx_points:
+                curves[j] = curves[j].T
+            lam[:, j], dists[:, j] = _project(points, curves[j], stretch=stretch)
+        if shrink > 0 and n_lin > 1:
+            curves = _shrink_hierarchical(curves, lam, labels, lineages, weights, plan, shrink)
+            for j in range(n_lin):
+                lam[:, j], dists[:, j] = _project(points, curves[j], stretch=stretch)
+        new_total = np.nansum(weights * dists**2)
+        if reweight or reassign:
+            weights = _reweight_reassign(weights, dists, reweight, reassign, labelled)
+        converged = abs(total - new_total) <= thresh * max(total, 1e-300)
+        total = new_total
+        if converged:
             break
+    pseudotime = np.full((n, n_lin), np.nan)
     for j in range(n_lin):
         on = weights[:, j] > 0
-        lam[on, j], dists[on, j] = _project(points[on], curves[j])
-    weights = _reweight(weights, dists, min_weight)
-    pseudotime = np.where(weights > 0, lam, np.nan)
+        if on.any():  # pseudotime 0 at the earliest object of the lineage
+            pseudotime[on, j] = lam[on, j] - lam[on, j].min()
     return Trajectory(
         clusters=clusters,
         centers=centers,
@@ -289,14 +327,37 @@ def _polyline_resample(vertices, n_points):
     return np.column_stack([np.interp(t, s, vertices[:, k]) for k in range(vertices.shape[1])])
 
 
+def _extend(vertices, points, labels, first, last):
+    """Slingshot's `extend = "y"`: the first and last segments are continued past
+    the end centres as far as the end clusters' objects reach along them."""
+    v = np.asarray(vertices, float).copy()
+    if len(v) < 2:
+        return v
+    out = [v]
+    for end, (a, b) in ((first, (0, 1)), (last, (-1, -2))):
+        u = v[a] - v[b]
+        norm = np.linalg.norm(u)
+        if norm == 0:
+            continue
+        u = u / norm
+        reach = ((points[labels == end] - v[a]) @ u).max(initial=0.0)
+        if reach > 0:
+            tip = v[a] + reach * u
+            out = [tip[None, :], *out] if a == 0 else [*out, tip[None, :]]
+    return np.vstack(out)
+
+
 def _arc(curve):
     seg = np.sqrt((np.diff(curve, axis=0) ** 2).sum(axis=1))
     return np.concatenate([[0.0], np.cumsum(seg)])
 
 
-def _project(points, curve, dense: int = 2000):
+def _project(points, curve, dense: int = 2000, stretch: float = 0.0):
     """(arc length, distance) of each point's nearest point on the polyline
-    `curve`. Points beyond either end project onto the end.
+    `curve`. With `stretch` (princurve's), the first and last segments are
+    extended by `stretch` times their length first, so points beyond the ends
+    are not all piled onto the end point; arc length is still measured from the
+    curve's own first point (negative before it).
 
     The curve is resampled to `dense` points and searched with a k-d tree; each
     point is then projected exactly onto the two segments either side of its
@@ -304,8 +365,15 @@ def _project(points, curve, dense: int = 2000):
     from scipy.spatial import cKDTree
 
     points = np.asarray(points, float)
+    curve = np.asarray(curve, float)
     if len(points) == 0:
         return np.zeros(0), np.zeros(0)
+    offset = 0.0
+    if stretch > 0 and len(curve) > 1:
+        head = curve[0] + stretch * (curve[0] - curve[1])
+        tail = curve[-1] + stretch * (curve[-1] - curve[-2])
+        offset = float(np.linalg.norm(head - curve[0]))
+        curve = np.vstack([head, curve, tail])
     arc = _arc(curve)
     if arc[-1] > 0:
         t = np.linspace(0, arc[-1], max(dense, len(curve)))
@@ -317,8 +385,8 @@ def _project(points, curve, dense: int = 2000):
     _, near = cKDTree(fine).query(points)
     best_lam = np.full(len(points), np.nan)
     best_d2 = np.full(len(points), np.inf)
-    for offset in (-1, 0):  # the segment before and the one after the nearest point
-        i = np.clip(near + offset, 0, len(fine) - 2)
+    for shift in (-1, 0):  # the segment before and the one after the nearest point
+        i = np.clip(near + shift, 0, len(fine) - 2)
         a, b = fine[i], fine[i + 1]
         ab = b - a
         len2 = (ab**2).sum(axis=1)
@@ -329,107 +397,122 @@ def _project(points, curve, dense: int = 2000):
         lam = t[i] + u * (t[i + 1] - t[i])
         better = d2 < best_d2
         best_d2[better], best_lam[better] = d2[better], lam[better]
-    return best_lam, np.sqrt(best_d2)
+    return best_lam - offset, np.sqrt(best_d2)
 
 
-def _smooth_curve(points, lam, weights, n_points, span, previous):
-    """A new curve: each coordinate smoothed against arc length (a Gaussian
-    smoother of the weighted means in bins of arc length), at `n_points` arc
-    lengths from the smallest to the largest. The previous curve is kept when
-    there are too few objects."""
-    if len(points) < 3 or not np.ptp(lam) > 0:
-        return previous
-    lo, hi = float(lam.min()), float(lam.max())
-    n_bins = max(n_points, 20)
-    edges = np.linspace(lo, hi, n_bins + 1)
-    which = np.clip(np.searchsorted(edges, lam, side="right") - 1, 0, n_bins - 1)
-    w_bin = np.bincount(which, weights=weights, minlength=n_bins)
-    sums = np.column_stack(
-        [
-            np.bincount(which, weights=weights * points[:, k], minlength=n_bins)
-            for k in range(points.shape[1])
+# ---- shrinkage ------------------------------------------------------------------------------
+
+
+def _shrink_plan(lineages):
+    """Branch points, deepest first: [(node, groups)] where `groups` are the sets
+    of lineages (indices) that go through `node` and then on to each child."""
+    out = []
+    depth_nodes = {}
+    for lin in lineages:
+        for d, node in enumerate(lin):
+            depth_nodes.setdefault((d, node), set())
+    for d, node in sorted(depth_nodes, key=lambda x: -x[0]):
+        through = [
+            j
+            for j, lin in enumerate(lineages)
+            if len(lin) > d and lin[d] == node and lin[: d + 1] == lineages[j][: d + 1]
         ]
-    )
-    centers = (edges[:-1] + edges[1:]) / 2
-    grid = np.linspace(lo, hi, n_points)
-    bandwidth = max(span * (hi - lo), (hi - lo) / n_bins)
-    kernel = np.exp(-0.5 * ((grid[:, None] - centers[None, :]) / bandwidth) ** 2)
-    # Kernel-weighted mean of the objects: sum K * (weighted sums) / sum K * (weights).
-    total = (kernel @ w_bin)[:, None]
-    if not (total > 0).all():
-        return previous
-    return (kernel @ sums) / total
-
-
-def _curve_change(a, b):
-    return float(np.sqrt(((a - b) ** 2).sum(axis=1)).mean())
-
-
-def _shared_prefixes(lineages):
-    """{(i, j): number of clusters lineages i and j share from the start}."""
-    out = {}
-    for i in range(len(lineages)):
-        for j in range(i + 1, len(lineages)):
-            k = 0
-            while k < min(len(lineages[i]), len(lineages[j])) and lineages[i][k] == lineages[j][k]:
-                k += 1
-            out[(i, j)] = k
+        children = {}
+        for j in through:
+            nxt = lineages[j][d + 1] if len(lineages[j]) > d + 1 else None
+            children.setdefault(nxt, []).append(j)
+        if len(children) > 1:
+            out.append((d, node, list(children.values())))
     return out
 
 
-def _shrink(curves, points, labels, lineages, weights, shared):
-    """Shrink each group of lineages towards their mean curve over the part they
-    share. The shrinking weight of a curve point is 1 up to the median arc length
-    of the shared clusters' objects and falls to 0 (cosine) by the largest, so
-    the lineages leave their common trunk where the data leave it."""
-    n_lin = len(curves)
-    out = [c.copy() for c in curves]
-    for j in range(n_lin):
-        partners = [k for k in range(n_lin) if k != j and shared[(min(j, k), max(j, k))] > 0]
-        if not partners:
-            continue
-        common = min(shared[(min(j, k), max(j, k))] for k in partners)
-        group = [j] + partners
-        trunk = np.array(lineages[j][:common], dtype=object)
-        on = np.isin(labels, trunk) & (weights[:, j] > 0)
-        if on.sum() < 2:
-            continue
-        lam_trunk, _ = _project(points[on], curves[j])
-        start, stop = float(np.median(lam_trunk)), float(np.max(lam_trunk))
-        arc_j = _arc(curves[j])
-        # The mean of the group's curves at the same arc lengths.
-        mean = np.zeros_like(curves[j])
-        for k in group:
-            arc_k = _arc(curves[k])
-            mean += np.column_stack(
-                [np.interp(arc_j, arc_k, curves[k][:, d]) for d in range(curves[k].shape[1])]
+def _avg_curve(curves):
+    """The mean of curves at the same arc lengths (each held at its end beyond its
+    length), over the longest one's arc length."""
+    arcs = [_arc(c) for c in curves]
+    grid = np.linspace(0, max(a[-1] for a in arcs), len(curves[0]))
+    total = np.zeros((len(grid), curves[0].shape[1]))
+    for c, a in zip(curves, arcs):
+        total += np.column_stack([np.interp(grid, a, c[:, k]) for k in range(c.shape[1])])
+    return total / len(curves)
+
+
+def _percent_shrinkage(lam_curve, lam_shared):
+    """Slingshot's cosine-kernel shrinkage weight at each curve point: 1 before the
+    shared objects' lower whisker, 0 after the upper, the survival function of
+    the kernel 1 + cos(pi u) in between (R `density(kernel = "cosine")`)."""
+    v = np.asarray(lam_shared, float)
+    v = v[np.isfinite(v)]
+    if len(v) < 2:
+        return np.zeros(len(lam_curve))
+    q1, q3 = np.percentile(v, [25, 75])
+    iqr = q3 - q1
+    lo = v[v >= q1 - 1.5 * iqr].min()
+    hi = v[v <= q3 + 1.5 * iqr].max()
+    if hi <= lo:
+        return np.zeros(len(lam_curve))
+    u = np.clip(2 * (np.asarray(lam_curve, float) - lo) / (hi - lo) - 1, -1, 1)
+    cdf = (u + 1) / 2 + np.sin(np.pi * u) / (2 * np.pi)
+    return 1.0 - cdf
+
+
+def _shrink_hierarchical(curves, lam, labels, lineages, weights, plan, shrink):
+    """At each branch point, deepest first: the curves of the lineages through it
+    are shrunk towards their average where they share objects (the clusters up
+    to the branch point), by `shrink` times the cosine weight."""
+    curves = [c.copy() for c in curves]
+    for depth, _node, groups in plan:
+        members = [j for g in groups for j in g]
+        avg = _avg_curve([curves[j] for j in members])
+        avg_arc = _arc(avg)
+        trunk = np.array(lineages[members[0]][: depth + 1], dtype=object)
+        shared = np.isin(labels, trunk)
+        for j in members:
+            on = shared & (weights[:, j] > 0)
+            arc_j = _arc(curves[j])
+            pct = _percent_shrinkage(arc_j, lam[on, j]) * shrink
+            target = np.column_stack(
+                [np.interp(arc_j, avg_arc, avg[:, k]) for k in range(avg.shape[1])]
             )
-        mean /= len(group)
-        w = np.ones(len(arc_j))
-        if stop > start:
-            frac = np.clip((arc_j - start) / (stop - start), 0, 1)
-            w = 0.5 * (1 + np.cos(np.pi * frac))
-        w[arc_j > stop] = 0.0
-        out[j] = w[:, None] * mean + (1 - w[:, None]) * curves[j]
-    return out
+            curves[j] = (1 - pct)[:, None] * curves[j] + pct[:, None] * target
+    return curves
 
 
-def _reweight(weights, dists, min_weight):
-    """Objects on several lineages: weight each by how close it is to that curve
-    compared with the closest (1 for the closest, (closest / d)^2 for the others),
-    dropping weights below `min_weight`. Objects on a shared trunk are about as
-    close to every curve and keep about 1 for each."""
-    out = weights.copy()
-    multi = (weights > 0).sum(axis=1) > 1
-    if multi.any():
-        d = np.where(weights[multi] > 0, dists[multi], np.inf)
-        best = d.min(axis=1, keepdims=True)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            w = np.where(np.isfinite(d), np.where(d > 0, (best / d) ** 2, 1.0), 0.0)
-        w[best[:, 0] == 0] = np.where(np.isfinite(d[best[:, 0] == 0]), 1.0, 0.0)
-        w[w < min_weight] = 0.0
-        out[multi] = w
-    return out
+def _reweight_reassign(weights, dists, reweight, reassign, labelled=None):
+    """Slingshot's reweighting and reassignment. Z is each object's distance to a
+    curve as a quantile of the distances of that lineage's objects. Reweight: an
+    object on several lineages gets 1 - Z^2 on each, scaled so its largest weight
+    is 1. Reassign: Z < 0.5 adds the object to the lineage (weight 1); an
+    object far from a curve (Z > 0.9) with a small weight (< 0.1) is dropped."""
+    w = weights.copy()
+    n, n_lin = w.shape
+    z = np.full((n, n_lin), np.nan)
+    for j in range(n_lin):
+        ref = np.sort(dists[w[:, j] > 0, j])
+        if len(ref):
+            z[:, j] = np.searchsorted(ref, dists[:, j], side="right") / len(ref)
+    if reweight:
+        multi = (w > 0).sum(axis=1) > 1
+        if multi.any():
+            zz = np.where(w[multi] > 0, z[multi], np.nan)
+            ww = 1 - zz**2
+            top = np.nanmax(ww, axis=1, keepdims=True)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ww = np.where(top > 0, ww / top, 1.0)
+            w[multi] = np.where(np.isfinite(ww), np.clip(ww, 0, 1), 0.0)
+    if reassign:  # only objects with a class (unclassed ones are outside the tree)
+        ok = np.ones(n, bool) if labelled is None else np.asarray(labelled, bool)
+        w[np.isfinite(z) & (z < 0.5) & ok[:, None]] = 1.0
+        drop = np.isfinite(z) & (z > 0.9) & (w < 0.1)
+        rows = drop.any(axis=1)
+        w[drop & rows[:, None]] = 0.0
+    # Every object keeps at least the lineage it is closest to (relative to that
+    # lineage's spread) when reweighting dropped all of them.
+    lost = (w.max(axis=1) <= 0) & (weights.max(axis=1) > 0)
+    if lost.any():
+        best = np.nanargmin(np.where(np.isfinite(z[lost]), z[lost], np.inf), axis=1)
+        w[np.flatnonzero(lost), best] = 1.0
+    return w
 
 
 def _sort_key(value):
