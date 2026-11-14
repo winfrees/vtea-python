@@ -119,3 +119,26 @@ On 100,000 cells in 3D (one core): windows 1.8 s, windows on windows 1.6 s,
 regions of cells 0.3 s, regions of windows 3.4 s (35,000 candidate pairs; the
 member weighting is per pair, about 0.1 ms each), expand through two levels
 0.6 s.
+
+## References
+
+The neighbourhood analyses this builds on (see also [NEIGHBORHOODS.md](NEIGHBORHOODS.md)):
+
+- Winfree S, McNutt AT, Khochare S, et al. Integrated cytometry with machine learning
+  applied to high-content imaging of human kidney tissue for in situ cell
+  classification and neighborhood analysis. *Laboratory Investigation* 103(6), 100104
+  (2023). doi:10.1016/j.labinv.2023.100104. VTEA tissue cytometry with NephNet3D
+  classification of kidney cell types from a nuclear stain, and neighbourhood analysis
+  of the classified cells in situ.
+- Lake BB, Menon R, Winfree S, et al. An atlas of healthy and injured cell states and
+  niches in the human kidney. *Nature* 619, 585–594 (2023).
+  doi:10.1038/s41586-023-05769-3. Injury neighbourhoods located by spatial
+  transcriptomics, and large-scale 3D imaging analysis of about 1.2 million
+  neighbourhoods linking them to active immune responses.
+- Asghari M, Sabo AR, Barwinska D, et al. Integration of spatial protein imaging and
+  transcriptomics in the human kidney tracks the regenerative potential of proximal
+  tubules. *Science Advances* 11(33), eadv8918 (2025). doi:10.1126/sciadv.adv8918.
+  Cell-centric neighbourhoods built with VTEA's "spatial by cell" method (55 µm
+  diameter, matched to the Visium spot), described by class sums and fractions,
+  clustered with Louvain into 19 niches, compared between reference and disease
+  tissue by odds ratio.
