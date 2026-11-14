@@ -170,10 +170,19 @@ def build_neighborhoods(
         )
 
     if method == NEAREST:
-        wanted = min(int(k) + 1, len(ids))  # the object itself comes back first
+        # Ask for one more than k, since the object itself is usually among
+        # them - but not always first, or at all: objects at the same position
+        # tie at distance 0 and come back in any order. So drop the object
+        # wherever it is and keep the k nearest others, which gives every
+        # neighbourhood exactly k + 1 members (or every object, when k is not
+        # smaller than the count).
+        wanted = min(int(k) + 1, len(ids))
         _distances, found = tree.query(physical, k=wanted)
         found = np.asarray(found).reshape(len(ids), wanted)
-        neighborhoods = [centred(row, found[row]) for row in range(len(ids))]
+        neighborhoods = [
+            centred(row, [index for index in found[row] if index != row][: int(k)])
+            for row in range(len(ids))
+        ]
     elif method == RADIUS:
         hits = tree.query_ball_point(physical, r=radius)
         neighborhoods = [centred(row, hits[row]) for row in range(len(ids))]

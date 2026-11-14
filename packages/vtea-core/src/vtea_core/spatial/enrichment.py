@@ -55,6 +55,22 @@ def type_enrichment(classes, types) -> pd.DataFrame:
     return out
 
 
+def membership_type_enrichment(membership, classes, types) -> pd.DataFrame:
+    """`type_enrichment` counted over memberships rather than seeds: each
+    (member, neighbourhood) pair counts once, as the member's class against
+    the neighbourhood's type. Overlapping neighbourhoods put a cell in many,
+    so this says which classes neighbourhoods of each type are *made of*,
+    where `type_enrichment` says which classes sit at their centres.
+    `membership`: (neighbourhoods x objects) sparse 0/1 in row order;
+    `classes`: per object; `types`: per neighbourhood."""
+    from scipy import sparse
+
+    coo = sparse.coo_matrix(membership)
+    return type_enrichment(
+        np.asarray(classes, dtype=object)[coo.col], np.asarray(types, dtype=object)[coo.row]
+    )
+
+
 def neighbor_graph(positions, *, radius: float | None = None, k: int | None = None) -> np.ndarray:
     """(edges, 2) directed neighbour pairs (i, j), i != j: every j within
     `radius` of i, or the `k` nearest j of each i."""
