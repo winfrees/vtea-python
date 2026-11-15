@@ -31,6 +31,9 @@ docs/OBJECT_ASSOCIATION.md
                        on the saving system)
 docs/NEIGHBORHOODS.md  Neighbourhoods as a second level of objects, and what
                        they reflect back onto the objects in them (built)
+docs/TRAJECTORIES.md   Lineages and pseudotime through cell types and
+                       neighbourhood types, one dataset (built), and the
+                       plan for atlas / cohort trajectories (planned)
 docs/LARGE_IMAGES.md   Strategy for datasets larger than RAM - memory
                        budgets, tiling, and the rules for objects a tile
                        boundary cuts in half (built; awaiting validation on
