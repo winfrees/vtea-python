@@ -26,7 +26,12 @@ type, pairwise neighbour enrichment against a permutation null) are in
 `vtea_core.spatial.enrichment`.
 """
 
-from vtea_core.spatial.enrichment import neighbor_enrichment, neighbor_graph, type_enrichment
+from vtea_core.spatial.enrichment import (
+    membership_type_enrichment,
+    neighbor_enrichment,
+    neighbor_graph,
+    type_enrichment,
+)
 from vtea_core.spatial.features import (
     class_targets,
     contacts,
@@ -39,6 +44,7 @@ from vtea_core.spatial.features import (
 __all__ = [
     "class_targets",
     "contacts",
+    "membership_type_enrichment",
     "nearest_distance",
     "neighbor_enrichment",
     "neighbor_graph",

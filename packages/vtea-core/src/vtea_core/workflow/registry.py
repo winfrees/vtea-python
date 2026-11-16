@@ -29,6 +29,13 @@ from vtea_core.clustering import (
     leiden,
     louvain,
 )
+from vtea_core.hierarchy.steps import (
+    add_regions_level,
+    add_windows_level,
+    classify_level,
+    hierarchy_from_objects,
+    reflect_level,
+)
 from vtea_core.imageprocessing import (
     enhance_contrast,
     gaussian_blur,
@@ -123,6 +130,16 @@ STEP_REGISTRY: dict[str, dict[str, Callable]] = {
         "neighborhood_features": neighborhood_features,
         "classify_neighborhoods": classify_neighborhoods,
         "reflect_neighborhoods": reflect_neighborhoods,
+    },
+    # The spatial hierarchy: neighbourhoods as objects, built again on
+    # themselves - windows (overlapping) and regions (functional units) at
+    # any depth, one Hierarchy threaded through. See vtea_core.hierarchy.
+    "hierarchy": {
+        "hierarchy_from_objects": hierarchy_from_objects,
+        "add_windows_level": add_windows_level,
+        "add_regions_level": add_regions_level,
+        "classify_level": classify_level,
+        "reflect_level": reflect_level,
     },
     "measurements": {
         "extract_measurements": extract_measurements,

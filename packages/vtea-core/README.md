@@ -108,6 +108,19 @@ table.
   cell carries the kind of neighbourhood it lives in. Membership is a
   many-to-many table, not an association, because neighbourhoods overlap.
   See docs/NEIGHBORHOODS.md
+- **trajectory** (new): lineages and pseudotime through cell types or
+  neighbourhood types, and what changes along them - ports of Bioconductor
+  **Slingshot** (`slingshot`: cluster tree from a chosen start, forced ends,
+  simultaneous principal curves with shrinkage, reweighting and
+  reassignment, its defaults) and **tradeSeq** (`fit_gam`: a GAM per feature
+  with one cubic regression spline per lineage, Gaussian or negative
+  binomial; `association_test`, `start_vs_end_test`, `diff_end_test`,
+  `pattern_test`, `early_drivers_test`, `evaluate_k`), in numpy / scipy. The
+  R packages themselves run through `r_engine` when installed. Validated on
+  simulations with a known truth (`simulate`, `validate`,
+  docs/trajectory-validation/REPORT.md); parity with R is checked by the
+  `trajectory-r-parity` workflow. One dataset; atlas / cohort trajectories
+  are planned. See docs/TRAJECTORIES.md
 - **clustering**: `kmeans`, `gaussian_mixture`, `hierarchical`,
   `auto_k_kmeans`; plus `louvain` and `leiden` (new) - community detection
   over a shared-nearest-neighbour graph (`shared_neighbor_graph`), which
@@ -252,6 +265,8 @@ src/vtea_core/
                     each object is in)
   neighborhoods/    Neighbourhoods as objects made of objects: built, measured
                     by composition, typed, and reflected back onto members
+  trajectory/       Slingshot and tradeSeq ports (lineages, pseudotime, GAMs and
+                    their tests), the R engine, simulations and validation
   classes/          Class rules (range / values / boolean expression), the
                     label sets an object's n labels live in, and the
                     hierarchies two sets combine into
